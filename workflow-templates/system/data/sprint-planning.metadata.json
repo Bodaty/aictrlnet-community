@@ -1,0 +1,85 @@
+{
+  "template": "sprint-planning-workflow",
+  "fileInfo": {
+    "definitionFile": "sprint-planning.json",
+    "thumbnailFile": "sprint-planning-thumbnail.png",
+    "documentationFile": "sprint-planning.md"
+  },
+  "searchKeywords": [
+    "sprint planning",
+    "agile",
+    "scrum",
+    "iteration planning",
+    "backlog refinement",
+    "story estimation",
+    "planning poker",
+    "velocity",
+    "capacity planning",
+    "team commitment",
+    "sprint goal",
+    "dependency management"
+  ],
+  "industryStandards": [
+    "Scrum Guide 2020",
+    "SAFe (Scaled Agile Framework)",
+    "LeSS (Large-Scale Scrum)",
+    "Evidence-Based Management",
+    "DORA Metrics",
+    "Team Topologies"
+  ],
+  "targetRoles": [
+    "Product Owner",
+    "Product Manager",
+    "Scrum Master",
+    "Agile Coach",
+    "Software Engineer",
+    "QA Engineer",
+    "UX Designer",
+    "Tech Lead",
+    "Engineering Manager",
+    "DevOps Engineer"
+  ],
+  "businessValue": {
+    "timeReduction": "30%",
+    "accuracyImprovement": "95%+",
+    "velocityImprovement": "25%",
+    "roiMetrics": {
+      "reducedPlanningTime": "2-4 hours saved per sprint",
+      "improvedPredictability": "90%+ sprint goal achievement",
+      "reducedWaste": "Zero missed dependencies"
+    }
+  },
+  "integrationRequirements": {
+    "required": [
+      "jira-adapter",
+      "github-adapter"
+    ],
+    "recommended": [
+      "slack-adapter",
+      "calendar-adapter",
+      "analytics-adapter"
+    ]
+  },
+  "licenseRequirements": {
+    "minimumEdition": "community",
+    "requiredFeatures": [
+      "ai-estimation",
+      "dependency-detection",
+      "capacity-planning",
+      "team-collaboration"
+    ]
+  },
+  "templateHistory": {
+    "version": "1.0.0",
+    "created": "2025-07-28",
+    "lastModified": "2025-07-28",
+    "author": "Research Claude",
+    "changeLog": [
+      {
+        "version": "1.0.0",
+        "date": "2025-07-28",
+        "changes": "Initial comprehensive template replacing basic 3-step version"
+      }
+    ]
+  }
+}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="0" skipped="0" tests="1" time="3.597" timestamp="2025-06-25T21:28:02.812513-05:00" hostname="Srirajasekhar-Koritalas-MacBookPro.local"><testcase classname="" name="" time="0.000"><error message="collection failure">venv/lib/python3.9/site-packages/pluggy/_hooks.py:512: in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+venv/lib/python3.9/site-packages/pluggy/_manager.py:120: in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+venv/lib/python3.9/site-packages/pytest_asyncio/plugin.py:626: in pytest_collectstart
+    pyobject = collector.obj
+E   AttributeError: 'Package' object has no attribute 'obj'</error></testcase></testsuite></testsuites>

@@ -1,0 +1,943 @@
+{
+  "version": "1.0",
+  "id": "tpl-sprint-planning-workflow",
+  "name": "Sprint Planning Workflow",
+  "description": "Comprehensive Agile sprint planning with AI-enhanced estimation and dependency management",
+  "metadata": {
+    "author": "System",
+    "created": "2025-07-28",
+    "updated": "2025-07-31",
+    "tags": [
+      "agile",
+      "scrum",
+      "planning",
+      "estimation",
+      "team-collaboration"
+    ],
+    "category": "engineering",
+    "complexity": "advanced",
+    "estimatedDuration": "1.5-2 hours",
+    "requiredCapabilities": [
+      "backlog-analysis",
+      "capacity-planning",
+      "risk-assessment",
+      "dependency-detection"
+    ],
+    "methodologies": [
+      "Agile",
+      "Scrum"
+    ],
+    "implementationNotes": [
+      "Converted from enhanced template system to spec-compliant format",
+      "Integrate with existing Agile tools (Jira, Azure DevOps, etc.)",
+      "Support both co-located and distributed teams",
+      "Maintain flexibility for team-specific practices",
+      "Enable real-time collaboration features",
+      "Track and learn from historical planning data"
+    ]
+  },
+  "parameters": [
+    {
+      "id": "sprint-duration",
+      "name": "sprintDuration",
+      "type": "select",
+      "label": "Sprint Duration",
+      "description": "Length of the sprint",
+      "required": true,
+      "default": "2-weeks",
+      "options": [
+        "1-week",
+        "2-weeks",
+        "3-weeks",
+        "4-weeks"
+      ]
+    },
+    {
+      "id": "team-size",
+      "name": "teamSize",
+      "type": "select",
+      "label": "Team Size",
+      "description": "Size of the development team",
+      "required": true,
+      "default": "5-8",
+      "options": [
+        "2-4",
+        "5-8",
+        "9-12",
+        "13+"
+      ]
+    },
+    {
+      "id": "planning-poker",
+      "name": "usePlanningPoker",
+      "type": "boolean",
+      "label": "Use Planning Poker",
+      "description": "Enable planning poker for estimation",
+      "required": false,
+      "default": true
+    },
+    {
+      "id": "include-buffer",
+      "name": "includeBuffer",
+      "type": "boolean",
+      "label": "Include Capacity Buffer",
+      "description": "Reserve capacity for unplanned work",
+      "required": false,
+      "default": true
+    },
+    {
+      "id": "buffer-percentage",
+      "name": "bufferPercentage",
+      "type": "number",
+      "label": "Buffer Percentage",
+      "description": "Percentage of capacity to reserve",
+      "required": false,
+      "default": 20,
+      "validation": "min:0,max:50",
+      "depends_on": {
+        "include-buffer": true
+      }
+    },
+    {
+      "id": "dependency-check",
+      "name": "checkDependencies",
+      "type": "boolean",
+      "label": "Check Cross-Team Dependencies",
+      "description": "Analyze dependencies with other teams",
+      "required": false,
+      "default": true
+    },
+    {
+      "id": "stakeholder-review",
+      "name": "requireStakeholderReview",
+      "type": "boolean",
+      "label": "Require Stakeholder Review",
+      "description": "Include stakeholder review in planning",
+      "required": false,
+      "default": false
+    }
+  ],
+  "workflow": {
+    "nodes": [
+      {
+        "id": "start-sprint-planning",
+        "type": "start",
+        "name": "Start Sprint Planning",
+        "position": {
+          "x": 100,
+          "y": 400
+        },
+        "config": {
+          "description": "Initiates sprint planning process",
+          "trigger": "scheduled|manual",
+          "schedule": "bi-weekly:thursday-2pm",
+          "requiredFields": [
+            "sprintNumber",
+            "startDate",
+            "endDate",
+            "teamId"
+          ],
+          "notifications": [
+            "team-members",
+            "stakeholders"
+          ]
+        }
+      },
+      {
+        "id": "backlog-prep-check",
+        "type": "decision",
+        "name": "Backlog Preparation Check",
+        "position": {
+          "x": 300,
+          "y": 400
+        },
+        "config": {
+          "description": "Verify backlog is ready for planning",
+          "criteria": "backlogReadiness",
+          "minimumRefinedStories": 20,
+          "storyPointsRequired": "2x-velocity",
+          "acceptanceCriteriaComplete": 90
+        }
+      },
+      {
+        "id": "ai-backlog-analysis",
+        "type": "aiProcess",
+        "name": "AI Backlog Analysis",
+        "position": {
+          "x": 500,
+          "y": 400
+        },
+        "config": {
+          "description": "AI analyzes backlog items for completeness",
+          "agent": "backlog-analyzer-agent",
+          "prompt": "Analyze backlog items for sprint {sprintNumber}. Check story completeness, identify dependencies, estimate complexity, and flag risks.",
+          "timeout": 1200,
+          "requiredFields": [
+            "backlogItems",
+            "teamVelocity",
+            "techStack"
+          ]
+        }
+      },
+      {
+        "id": "velocity-calculation",
+        "type": "process",
+        "name": "Calculate Team Velocity",
+        "description": "Calculate average velocity and trends",
+        "position": {
+          "x": 700,
+          "y": 400
+        },
+        "config": {
+          "lookbackSprints": 3,
+          "includeMetrics": [
+            "completed-points",
+            "committed-points",
+            "added-points"
+          ],
+          "calculateTrend": true,
+          "adjustForHolidays": true
+        }
+      },
+      {
+        "id": "capacity-planning",
+        "type": "aiProcess",
+        "name": "Team Capacity Planning",
+        "description": "Calculate available capacity considering time off",
+        "position": {
+          "x": 900,
+          "y": 400
+        },
+        "config": {
+          "agent": "capacity-planner-agent",
+          "prompt": "Calculate team capacity for sprint {sprintNumber} considering holidays, PTO, meetings, and focus factor. Include individual capacity.",
+          "dataSource": [
+            "calendar-api",
+            "hr-system"
+          ],
+          "focusFactor": 0.7
+        }
+      },
+      {
+        "id": "dependency-detection",
+        "type": "enhancedAdapter",
+        "name": "Dependency Detection",
+        "description": "Identify cross-team and technical dependencies",
+        "position": {
+          "x": 1100,
+          "y": 400
+        },
+        "config": {
+          "adapter": "dependency-analyzer",
+          "checkTypes": [
+            "api",
+            "database",
+            "library",
+            "team",
+            "external"
+          ],
+          "scanRepos": true,
+          "analyzeJiraLinks": true
+        }
+      },
+      {
+        "id": "risk-assessment",
+        "type": "aiProcess",
+        "name": "Sprint Risk Assessment",
+        "description": "Assess technical and delivery risks",
+        "position": {
+          "x": 1300,
+          "y": 400
+        },
+        "config": {
+          "agent": "risk-assessment-agent",
+          "prompt": "Assess risks for proposed sprint scope including technical debt, dependencies, team capacity, and external factors.",
+          "riskCategories": [
+            "technical",
+            "resource",
+            "dependency",
+            "scope",
+            "quality"
+          ],
+          "timeout": 900
+        }
+      },
+      {
+        "id": "send-pre-read",
+        "type": "process",
+        "name": "Send Pre-Read Materials",
+        "description": "Distribute planning materials to team",
+        "position": {
+          "x": 1500,
+          "y": 400
+        },
+        "config": {
+          "materials": [
+            "velocity-report",
+            "backlog-analysis",
+            "dependency-map",
+            "risk-summary"
+          ],
+          "channels": [
+            "email",
+            "slack"
+          ],
+          "deadline": "24-hours-before"
+        }
+      },
+      {
+        "id": "planning-meeting-start",
+        "type": "process",
+        "name": "Start Planning Meeting",
+        "description": "Begin synchronous planning session",
+        "position": {
+          "x": 1700,
+          "y": 400
+        },
+        "config": {
+          "meetingType": "video-conference",
+          "recordSession": true,
+          "requiredAttendees": [
+            "product-owner",
+            "scrum-master",
+            "dev-team"
+          ],
+          "optionalAttendees": [
+            "stakeholders"
+          ]
+        }
+      },
+      {
+        "id": "sprint-goal-definition",
+        "type": "hybrid",
+        "name": "Define Sprint Goal",
+        "description": "Collaboratively define sprint goal",
+        "position": {
+          "x": 1900,
+          "y": 400
+        },
+        "config": {
+          "aiComponent": "goal-suggestion",
+          "humanComponent": "goal-refinement",
+          "prompt": "Based on product roadmap and backlog priorities, suggest 2-3 potential sprint goals",
+          "votingEnabled": true
+        }
+      },
+      {
+        "id": "story-selection-fork",
+        "type": "decision",
+        "name": "Story Selection Method",
+        "description": "Choose story selection approach",
+        "position": {
+          "x": 2100,
+          "y": 400
+        },
+        "config": {
+          "criteria": "teamPreference",
+          "branches": {
+            "collaborative": "collaborative-selection",
+            "ai-assisted": "ai-selection",
+            "product-owner": "po-selection"
+          }
+        }
+      },
+      {
+        "id": "collaborative-selection",
+        "type": "process",
+        "name": "Collaborative Story Selection",
+        "description": "Team selects stories together",
+        "position": {
+          "x": 2300,
+          "y": 200
+        },
+        "config": {
+          "selectionMethod": "drag-drop",
+          "velocityGuidance": true,
+          "dependencyHighlight": true,
+          "realTimeSync": true
+        }
+      },
+      {
+        "id": "ai-selection",
+        "type": "aiProcess",
+        "name": "AI Story Selection",
+        "description": "AI recommends optimal story set",
+        "position": {
+          "x": 2300,
+          "y": 400
+        },
+        "config": {
+          "agent": "sprint-optimizer-agent",
+          "prompt": "Select optimal stories for sprint considering velocity, dependencies, team skills, and sprint goal. Maximize value delivery.",
+          "constraints": [
+            "velocity",
+            "dependencies",
+            "skills",
+            "goal-alignment"
+          ],
+          "humanApproval": true
+        }
+      },
+      {
+        "id": "po-selection",
+        "type": "process",
+        "name": "Product Owner Selection",
+        "description": "PO selects stories with team input",
+        "position": {
+          "x": 2300,
+          "y": 600
+        },
+        "config": {
+          "selectionLead": "product-owner",
+          "teamFeedback": true,
+          "velocityLimit": true
+        }
+      },
+      {
+        "id": "selection-join",
+        "type": "process",
+        "name": "Consolidate Selection",
+        "description": "Merge selection results",
+        "position": {
+          "x": 2500,
+          "y": 400
+        },
+        "config": {
+          "validateVelocity": true,
+          "checkDependencies": true,
+          "confirmWithTeam": true
+        }
+      },
+      {
+        "id": "estimation-process",
+        "type": "hybrid",
+        "name": "Story Estimation",
+        "description": "Estimate selected stories",
+        "position": {
+          "x": 2700,
+          "y": 400
+        },
+        "config": {
+          "method": "{planningPoker ? 'planning-poker' : 'team-estimation'}",
+          "aiAssist": true,
+          "historicalReference": true,
+          "consensusRequired": true
+        }
+      },
+      {
+        "id": "task-breakdown",
+        "type": "process",
+        "name": "Task Breakdown",
+        "description": "Break stories into tasks",
+        "position": {
+          "x": 2900,
+          "y": 400
+        },
+        "config": {
+          "breakdownLevel": "implementation-tasks",
+          "includeTypes": [
+            "development",
+            "testing",
+            "documentation",
+            "deployment"
+          ],
+          "hourEstimates": true,
+          "assignmentDraft": true
+        }
+      },
+      {
+        "id": "capacity-validation",
+        "type": "decision",
+        "name": "Validate Capacity",
+        "description": "Ensure capacity matches commitment",
+        "position": {
+          "x": 3100,
+          "y": 400
+        },
+        "config": {
+          "comparePoints": "velocity",
+          "compareHours": "capacity",
+          "bufferCheck": true,
+          "overcommitThreshold": 110
+        }
+      },
+      {
+        "id": "adjust-scope",
+        "type": "process",
+        "name": "Adjust Scope",
+        "description": "Adjust scope to match capacity",
+        "position": {
+          "x": 3100,
+          "y": 250
+        },
+        "config": {
+          "adjustmentType": "remove-lowest-priority",
+          "maintainGoal": true,
+          "teamConsensus": true
+        }
+      },
+      {
+        "id": "commitment-ceremony",
+        "type": "approval",
+        "name": "Team Commitment",
+        "description": "Team commits to sprint scope",
+        "position": {
+          "x": 3300,
+          "y": 400
+        },
+        "config": {
+          "approvers": [
+            "all-team-members"
+          ],
+          "votingMethod": "fist-of-five",
+          "minimumScore": 3,
+          "recordCommitment": true
+        }
+      },
+      {
+        "id": "sprint-setup",
+        "type": "orchestrationPattern",
+        "name": "Sprint Environment Setup",
+        "description": "Set up tools and environments",
+        "position": {
+          "x": 3500,
+          "y": 400
+        },
+        "config": {
+          "pattern": "parallel-setup",
+          "setupTasks": [
+            "jira-sprint",
+            "github-milestone",
+            "ci-cd-config",
+            "monitoring-alerts"
+          ],
+          "automatedSetup": true
+        }
+      },
+      {
+        "id": "communication-plan",
+        "type": "process",
+        "name": "Create Communication Plan",
+        "description": "Define sprint communication cadence",
+        "position": {
+          "x": 3700,
+          "y": 400
+        },
+        "config": {
+          "meetings": [
+            "daily-standup",
+            "backlog-refinement",
+            "sprint-review",
+            "retrospective"
+          ],
+          "channels": [
+            "slack",
+            "email",
+            "jira"
+          ],
+          "stakeholderUpdates": "weekly"
+        }
+      },
+      {
+        "id": "dependency-coordination",
+        "type": "process",
+        "name": "Coordinate Dependencies",
+        "description": "Set up cross-team coordination",
+        "position": {
+          "x": 3900,
+          "y": 400
+        },
+        "config": {
+          "notifyTeams": true,
+          "scheduleCheckpoints": true,
+          "createSharedChannels": true,
+          "documentAgreements": true
+        }
+      },
+      {
+        "id": "kickoff-preparation",
+        "type": "process",
+        "name": "Prepare Sprint Kickoff",
+        "description": "Prepare materials for sprint start",
+        "position": {
+          "x": 4100,
+          "y": 400
+        },
+        "config": {
+          "generateArtifacts": [
+            "sprint-backlog",
+            "burndown-chart",
+            "dependency-map"
+          ],
+          "updateDashboards": true,
+          "scheduleKickoff": true
+        }
+      },
+      {
+        "id": "planning-metrics",
+        "type": "dataSource",
+        "name": "Capture Planning Metrics",
+        "description": "Record planning session metrics",
+        "position": {
+          "x": 4300,
+          "y": 400
+        },
+        "config": {
+          "metrics": [
+            "planning-duration",
+            "stories-planned",
+            "story-points",
+            "confidence-level"
+          ],
+          "compareToHistory": true,
+          "generateInsights": true
+        }
+      },
+      {
+        "id": "documentation",
+        "type": "process",
+        "name": "Document Sprint Plan",
+        "description": "Create sprint planning artifacts",
+        "position": {
+          "x": 4500,
+          "y": 400
+        },
+        "config": {
+          "artifacts": [
+            "sprint-goal",
+            "sprint-backlog",
+            "capacity-plan",
+            "risk-log"
+          ],
+          "formats": [
+            "wiki",
+            "pdf",
+            "jira"
+          ],
+          "distribute": true
+        }
+      },
+      {
+        "id": "notify-stakeholders",
+        "type": "process",
+        "name": "Notify Stakeholders",
+        "description": "Inform stakeholders of sprint plan",
+        "position": {
+          "x": 4700,
+          "y": 400
+        },
+        "config": {
+          "recipients": [
+            "stakeholders",
+            "dependent-teams",
+            "management"
+          ],
+          "includeHighlights": true,
+          "deliveryDate": true,
+          "riskSummary": true
+        }
+      },
+      {
+        "id": "planning-complete",
+        "type": "end",
+        "name": "Sprint Planning Complete",
+        "description": "Complete sprint planning workflow",
+        "position": {
+          "x": 4900,
+          "y": 400
+        },
+        "config": {
+          "status": "completed",
+          "triggerNext": "sprint-execution",
+          "scheduledFollowUp": "daily-standup"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "e1",
+        "source": "start-sprint-planning",
+        "target": "backlog-prep-check",
+        "label": "Initiate"
+      },
+      {
+        "id": "e2",
+        "source": "backlog-prep-check",
+        "target": "ai-backlog-analysis",
+        "condition": "backlogReady === true",
+        "label": "Ready"
+      },
+      {
+        "id": "e3",
+        "source": "ai-backlog-analysis",
+        "target": "velocity-calculation",
+        "label": "Analyzed"
+      },
+      {
+        "id": "e4",
+        "source": "velocity-calculation",
+        "target": "capacity-planning",
+        "label": "Velocity Known"
+      },
+      {
+        "id": "e5",
+        "source": "capacity-planning",
+        "target": "dependency-detection",
+        "label": "Capacity Set"
+      },
+      {
+        "id": "e6",
+        "source": "dependency-detection",
+        "target": "risk-assessment",
+        "label": "Dependencies Found"
+      },
+      {
+        "id": "e7",
+        "source": "risk-assessment",
+        "target": "send-pre-read",
+        "label": "Risks Assessed"
+      },
+      {
+        "id": "e8",
+        "source": "send-pre-read",
+        "target": "planning-meeting-start",
+        "label": "Materials Sent"
+      },
+      {
+        "id": "e9",
+        "source": "planning-meeting-start",
+        "target": "sprint-goal-definition",
+        "label": "Meeting Started"
+      },
+      {
+        "id": "e10",
+        "source": "sprint-goal-definition",
+        "target": "story-selection-fork",
+        "label": "Goal Set"
+      },
+      {
+        "id": "e11",
+        "source": "story-selection-fork",
+        "target": "collaborative-selection",
+        "condition": "method === 'collaborative'",
+        "label": "Collaborative"
+      },
+      {
+        "id": "e12",
+        "source": "story-selection-fork",
+        "target": "ai-selection",
+        "condition": "method === 'ai-assisted'",
+        "label": "AI-Assisted"
+      },
+      {
+        "id": "e13",
+        "source": "story-selection-fork",
+        "target": "po-selection",
+        "condition": "method === 'product-owner'",
+        "label": "PO-Led"
+      },
+      {
+        "id": "e14",
+        "source": "collaborative-selection",
+        "target": "selection-join",
+        "label": "Selected"
+      },
+      {
+        "id": "e15",
+        "source": "ai-selection",
+        "target": "selection-join",
+        "label": "Selected"
+      },
+      {
+        "id": "e16",
+        "source": "po-selection",
+        "target": "selection-join",
+        "label": "Selected"
+      },
+      {
+        "id": "e17",
+        "source": "selection-join",
+        "target": "estimation-process",
+        "label": "Stories Ready"
+      },
+      {
+        "id": "e18",
+        "source": "estimation-process",
+        "target": "task-breakdown",
+        "label": "Estimated"
+      },
+      {
+        "id": "e19",
+        "source": "task-breakdown",
+        "target": "capacity-validation",
+        "label": "Tasks Created"
+      },
+      {
+        "id": "e20",
+        "source": "capacity-validation",
+        "target": "commitment-ceremony",
+        "condition": "capacityOk === true",
+        "label": "Capacity OK"
+      },
+      {
+        "id": "e21",
+        "source": "capacity-validation",
+        "target": "adjust-scope",
+        "condition": "capacityOk === false",
+        "label": "Over Capacity"
+      },
+      {
+        "id": "e22",
+        "source": "adjust-scope",
+        "target": "capacity-validation",
+        "label": "Adjusted"
+      },
+      {
+        "id": "e23",
+        "source": "commitment-ceremony",
+        "target": "sprint-setup",
+        "label": "Committed"
+      },
+      {
+        "id": "e24",
+        "source": "sprint-setup",
+        "target": "communication-plan",
+        "label": "Setup Complete"
+      },
+      {
+        "id": "e25",
+        "source": "communication-plan",
+        "target": "dependency-coordination",
+        "label": "Plan Created"
+      },
+      {
+        "id": "e26",
+        "source": "dependency-coordination",
+        "target": "kickoff-preparation",
+        "label": "Coordinated"
+      },
+      {
+        "id": "e27",
+        "source": "kickoff-preparation",
+        "target": "planning-metrics",
+        "label": "Prepared"
+      },
+      {
+        "id": "e28",
+        "source": "planning-metrics",
+        "target": "documentation",
+        "label": "Metrics Captured"
+      },
+      {
+        "id": "e29",
+        "source": "documentation",
+        "target": "notify-stakeholders",
+        "label": "Documented"
+      },
+      {
+        "id": "e30",
+        "source": "notify-stakeholders",
+        "target": "planning-complete",
+        "label": "Notified"
+      }
+    ]
+  },
+  "ui": {
+    "thumbnail": "sprint-planning-thumb.png",
+    "icon": "sprint",
+    "color": "#4CAF50",
+    "defaultZoom": 0.7,
+    "defaultPosition": {
+      "x": 0,
+      "y": 0
+    }
+  },
+  "successMetrics": {
+    "kpis": [
+      {
+        "name": "Sprint Commitment Accuracy",
+        "target": "95%+",
+        "measurement": "Completed points / Committed points",
+        "frequency": "Per sprint"
+      },
+      {
+        "name": "Planning Duration",
+        "target": "<2 hours",
+        "measurement": "Meeting end time - start time",
+        "frequency": "Per sprint"
+      },
+      {
+        "name": "Team Velocity Stability",
+        "target": "<10% variance",
+        "measurement": "Standard deviation of last 3 sprints",
+        "frequency": "Per sprint"
+      },
+      {
+        "name": "Dependency Resolution",
+        "target": "100%",
+        "measurement": "Resolved dependencies / Identified dependencies",
+        "frequency": "Per sprint"
+      },
+      {
+        "name": "Sprint Goal Achievement",
+        "target": "90%+",
+        "measurement": "Goals achieved / Goals set",
+        "frequency": "Per sprint"
+      }
+    ],
+    "qualityGates": [
+      "Backlog refined to 2x velocity",
+      "All team members present for planning",
+      "Sprint goal clearly defined and agreed",
+      "No unresolved critical dependencies",
+      "Team confidence score \u22653/5"
+    ],
+    "completionCriteria": [
+      "Sprint backlog created and estimated",
+      "All stories have acceptance criteria",
+      "Sprint goal documented and shared",
+      "Team commitment obtained",
+      "Sprint artifacts published",
+      "Stakeholders notified"
+    ]
+  },
+  "errorHandling": {
+    "retryLogic": {
+      "nodeTypes": [
+        "aiProcess",
+        "enhancedAdapter",
+        "dataSource"
+      ],
+      "maxRetries": 3,
+      "backoffStrategy": "exponential",
+      "backoffIntervals": [
+        30,
+        60,
+        120
+      ]
+    },
+    "failurePoints": {
+      "backlogNotReady": "Escalate to Product Owner for urgent refinement",
+      "insufficientCapacity": "Reduce scope or negotiate sprint length",
+      "criticalDependencies": "Escalate to management for resolution",
+      "lowConfidence": "Extended estimation session or scope reduction",
+      "toolFailures": "Manual fallback processes available"
+    },
+    "escalationPaths": [
+      {
+        "condition": "backlog < velocity",
+        "action": "Notify Product Owner immediately"
+      },
+      {
+        "condition": "capacity < 50%",
+        "action": "Consider sprint cancellation"
+      },
+      {
+        "condition": "confidence < 3",
+        "action": "Schedule follow-up planning session"
+      }
+    ]
+  },
+  "category": "data",
+  "edition": "community"
+}

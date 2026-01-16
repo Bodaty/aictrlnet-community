@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  aictrlnet:
+    build: .
+    image: aictrlnet-community:latest
+    container_name: aictrlnet-community
+    ports:
+      - "8000:8000"
+    environment:
+      - AICTRLNET_EDITION=community
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_DB=aictrlnet
+      - POSTGRES_USER=aictrlnet
+      - POSTGRES_PASSWORD=local_dev_password
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - aictrlnet
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: aictrlnet-postgres
+    environment:
+      - POSTGRES_USER=aictrlnet
+      - POSTGRES_PASSWORD=local_dev_password
+      - POSTGRES_DB=aictrlnet
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - aictrlnet
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aictrlnet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: aictrlnet-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - aictrlnet
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  aictrlnet:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,239 @@
+"""Adapter Registry API endpoints for UI discovery."""
+
+from typing import List, Optional, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+
+from core.dependencies import get_edition
+from core.security import get_current_active_user
+from adapters.registry import adapter_registry
+from adapters.models import AdapterCategory
+
+router = APIRouter()
+
+
+class AdapterInfo(BaseModel):
+    """Information about a registered adapter."""
+    type: str
+    name: str
+    category: str
+    description: str
+    capabilities: List[Dict[str, Any]]
+    is_initialized: bool
+    has_instance: bool
+    discovery_only: bool
+    edition: str
+    
+
+class AdapterRegistryResponse(BaseModel):
+    """Response for adapter registry endpoints."""
+    adapters: List[AdapterInfo]
+    total: int
+    edition: str
+    categories: List[str]
+
+
+@router.get("/registry/list", response_model=AdapterRegistryResponse)
+async def list_registered_adapters(
+    category: Optional[str] = Query(None, description="Filter by category"),
+    search: Optional[str] = Query(None, description="Search in adapter type and capabilities"),
+    initialized_only: bool = Query(False, description="Only show initialized adapters"),
+    current_user: dict = Depends(get_current_active_user),
+    edition: str = Depends(get_edition),
+):
+    """List all adapters registered in the adapter registry.
+    
+    This endpoint shows the actual runtime state of adapters, including:
+    - Which adapters are registered
+    - Which have instances created
+    - Which are in discovery mode
+    - Their capabilities
+    """
+    
+    adapters = []
+    
+    # Get all registered adapter classes
+    for adapter_type, adapter_class in adapter_registry.adapter_classes.items():
+        # Get adapter instance if it exists
+        adapter_instance = adapter_registry._adapters.get(adapter_type)
+        
+        # Determine if it's discovery-only
+        discovery_only = False
+        if adapter_instance and hasattr(adapter_instance, 'config'):
+            config = adapter_instance.config
+            if hasattr(config, 'custom_config') and config.custom_config:
+                discovery_only = config.custom_config.get('discovery_only', False)
+        
+        # Get capabilities if instance exists
+        capabilities = []
+        if adapter_instance and hasattr(adapter_instance, 'get_capabilities'):
+            try:
+                caps = adapter_instance.get_capabilities()
+                capabilities = [
+                    {
+                        "name": cap.name,
+                        "description": cap.description,
+                        "category": cap.category,
+                    }
+                    for cap in caps
+                ]
+            except:
+                pass
+        
+        # Determine category
+        category_str = "unknown"
+        if adapter_instance and hasattr(adapter_instance, 'config') and hasattr(adapter_instance.config, 'category'):
+            category_str = str(adapter_instance.config.category.value if hasattr(adapter_instance.config.category, 'value') else adapter_instance.config.category)
+        
+        # Apply filters
+        if category and category_str != category:
+            continue
+            
+        if search:
+            search_lower = search.lower()
+            if (search_lower not in adapter_type.lower() and 
+                not any(search_lower in str(cap).lower() for cap in capabilities)):
+                continue
+        
+        if initialized_only and not adapter_instance:
+            continue
+        
+        # Determine which edition this adapter belongs to
+        adapter_edition = "community"  # Default
+        if "aictrlnet-fastapi-business" in str(adapter_class.__module__):
+            adapter_edition = "business"
+        elif "aictrlnet-fastapi-enterprise" in str(adapter_class.__module__):
+            adapter_edition = "enterprise"
+        
+        adapter_info = AdapterInfo(
+            type=adapter_type,
+            name=adapter_type.replace("_", " ").replace("-", " ").title(),
+            category=category_str,
+            description=adapter_class.__doc__ or f"{adapter_type} adapter",
+            capabilities=capabilities,
+            is_initialized=adapter_instance is not None,
+            has_instance=adapter_instance is not None,
+            discovery_only=discovery_only,
+            edition=adapter_edition
+        )
+        
+        adapters.append(adapter_info)
+    
+    # Get unique categories
+    categories = list(set(a.category for a in adapters))
+    categories.sort()
+    
+    return AdapterRegistryResponse(
+        adapters=adapters,
+        total=len(adapters),
+        edition=edition,
+        categories=categories
+    )
+
+
+@router.get("/registry/stats")
+async def get_registry_stats(
+    current_user: dict = Depends(get_current_active_user),
+    edition: str = Depends(get_edition),
+):
+    """Get statistics about the adapter registry."""
+    
+    total_registered = len(adapter_registry.adapter_classes)
+    total_instances = len(adapter_registry._adapters)
+    
+    # Count by category
+    categories_count = {}
+    discovery_count = 0
+    initialized_count = 0
+    
+    for adapter_type, adapter_instance in adapter_registry._adapters.items():
+        if adapter_instance:
+            initialized_count += 1
+            
+            # Check if discovery-only
+            if hasattr(adapter_instance, 'config'):
+                config = adapter_instance.config
+                if hasattr(config, 'custom_config') and config.custom_config:
+                    if config.custom_config.get('discovery_only', False):
+                        discovery_count += 1
+            
+            # Count by category
+            if hasattr(adapter_instance, 'config') and hasattr(adapter_instance.config, 'category'):
+                cat = str(adapter_instance.config.category.value if hasattr(adapter_instance.config.category, 'value') else adapter_instance.config.category)
+                categories_count[cat] = categories_count.get(cat, 0) + 1
+    
+    return {
+        "edition": edition,
+        "total_registered_classes": total_registered,
+        "total_adapter_instances": total_instances,
+        "initialized_adapters": initialized_count,
+        "discovery_only_adapters": discovery_count,
+        "operational_adapters": initialized_count - discovery_count,
+        "categories": categories_count,
+        "registry_status": "healthy" if total_registered > 0 else "empty"
+    }
+
+
+@router.get("/registry/{adapter_type}", response_model=AdapterInfo)
+async def get_adapter_info(
+    adapter_type: str,
+    current_user: dict = Depends(get_current_active_user),
+    edition: str = Depends(get_edition),
+):
+    """Get detailed information about a specific adapter from the registry."""
+    
+    # Check if adapter class is registered
+    if adapter_type not in adapter_registry.adapter_classes:
+        raise HTTPException(status_code=404, detail=f"Adapter '{adapter_type}' not found in registry")
+    
+    adapter_class = adapter_registry.adapter_classes[adapter_type]
+    adapter_instance = adapter_registry.adapters.get(adapter_type)
+    
+    # Determine if it's discovery-only
+    discovery_only = False
+    if adapter_instance and hasattr(adapter_instance, 'config'):
+        config = adapter_instance.config
+        if hasattr(config, 'custom_config') and config.custom_config:
+            discovery_only = config.custom_config.get('discovery_only', False)
+    
+    # Get capabilities
+    capabilities = []
+    if adapter_instance and hasattr(adapter_instance, 'get_capabilities'):
+        try:
+            caps = adapter_instance.get_capabilities()
+            capabilities = [
+                {
+                    "name": cap.name,
+                    "description": cap.description,
+                    "category": cap.category,
+                }
+                for cap in caps
+            ]
+        except:
+            pass
+    
+    # Determine category
+    category_str = "unknown"
+    if adapter_instance and hasattr(adapter_instance, 'config') and hasattr(adapter_instance.config, 'category'):
+        category_str = str(adapter_instance.config.category.value if hasattr(adapter_instance.config.category, 'value') else adapter_instance.config.category)
+    
+    # Determine edition
+    adapter_edition = "community"
+    if "aictrlnet-fastapi-business" in str(adapter_class.__module__):
+        adapter_edition = "business"
+    elif "aictrlnet-fastapi-enterprise" in str(adapter_class.__module__):
+        adapter_edition = "enterprise"
+    
+    return AdapterInfo(
+        type=adapter_type,
+        name=adapter_type.replace("_", " ").replace("-", " ").title(),
+        category=category_str,
+        description=adapter_class.__doc__ or f"{adapter_type} adapter",
+        capabilities=capabilities,
+        is_initialized=adapter_instance is not None,
+        has_instance=adapter_instance is not None,
+        discovery_only=discovery_only,
+        edition=adapter_edition
+    )
+
+

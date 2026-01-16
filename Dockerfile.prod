@@ -1,0 +1,77 @@
+# Production Dockerfile for AICtrlNet Community Edition
+# Strips all development code for security and licensing
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Build arguments
+ARG BUILD_TYPE=production
+ENV BUILD_TYPE=${BUILD_TYPE}
+ENV ENVIRONMENT=production
+
+# Install only runtime dependencies (no build tools)
+RUN apt-get update && apt-get install -y \
+    curl \
+    netcat-traditional \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the entire directory contents
+COPY . /app
+
+# CRITICAL: Strip all development-only code
+RUN echo "Stripping development code..." && \
+    find /app -type f -name "*.py" -exec sed -i '/# DEV_ONLY_START/,/# DEV_ONLY_END/d' {} \; && \
+    echo "✅ Development code stripped"
+
+# Remove any dev-specific files
+RUN rm -rf /app/dev_utils /app/test_data /app/debug_* /app/*_debug.py /app/tests 2>/dev/null || true
+
+# Validate JSON syntax of workflow templates
+RUN echo '#!/usr/bin/env python3\nimport json, sys\nfrom pathlib import Path\n\ndef validate_json(p):\n    try:\n        json.load(open(p));return True,""\n    except json.JSONDecodeError as e:\n        return False,f"{p}: Line {e.lineno}, Col {e.colno}: {e.msg}"\n\nerrors=[]\nfor f in Path("/app").rglob("workflow-templates/**/*.json"):\n    valid,err=validate_json(f)\n    if not valid: errors.append(err)\n\nif errors:\n    print(f"❌ JSON syntax errors:\\n" + "\\n".join(errors))\n    sys.exit(1)\nelse:\n    print(f"✅ All workflow JSON files valid")\n' > /tmp/validate.py && python /tmp/validate.py
+
+# Install requirements (production only)
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+
+# Install the package in production mode (NOT editable)
+RUN pip install .
+
+# Verify no dev tokens remain (MUST FAIL if found)
+RUN ! grep -r "dev-token-for-testing" /app --include="*.py" || \
+    (echo "❌ CRITICAL: Dev tokens found in production build!" && exit 1)
+
+# Verify stripping worked - check a known location
+RUN python -c "exec('''
+import sys
+sys.path.insert(0, '/app/src')
+from core.security import get_current_user
+import inspect
+source = inspect.getsource(get_current_user)
+if 'dev-token-for-testing' in source:
+    print('❌ CRITICAL: Dev code still present after stripping!')
+    sys.exit(1)
+else:
+    print('✅ Dev code successfully removed')
+''')"
+
+# Make startup script executable
+RUN chmod +x /app/startup.sh
+
+# Production environment variables
+ENV DEBUG=false
+ENV LOG_LEVEL=INFO
+ENV ALLOW_DEV_TOKENS=false
+ENV PYTHONUNBUFFERED=1
+
+# Create non-root user for security
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Use startup script for production
+CMD ["/app/startup.sh"]

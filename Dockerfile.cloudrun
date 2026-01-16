@@ -1,0 +1,50 @@
+# Cloud Run Dockerfile for AICtrlNet Community Edition
+# Based on production build with Cloud Run specific configurations
+
+FROM aictrlnet-community:prod-latest AS base
+
+# Cloud Run specific environment variables
+ENV PORT=8080
+ENV HOST=0.0.0.0
+ENV PYTHONUNBUFFERED=1
+
+# Cloud Run health check endpoint requirement
+ENV HEALTH_CHECK_PATH=/health
+
+# Create non-root user (Cloud Run best practice)
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+
+USER appuser
+
+WORKDIR /app
+
+# Cloud Run expects the service to listen on PORT environment variable
+# Update startup script to use PORT
+RUN echo '#!/bin/bash\n\
+echo "🚀 Starting AICtrlNet Community Edition on Cloud Run"\n\
+echo "Port: ${PORT:-8080}"\n\
+echo "Environment: ${ENVIRONMENT:-production}"\n\
+\n\
+# Run migrations if needed\n\
+if [ "${RUN_MIGRATIONS}" = "true" ]; then\n\
+    echo "Running database migrations..."\n\
+    alembic upgrade head\n\
+fi\n\
+\n\
+# Start the application on the PORT specified by Cloud Run\n\
+exec uvicorn main:app \\\n\
+    --host ${HOST:-0.0.0.0} \\\n\
+    --port ${PORT:-8080} \\\n\
+    --workers ${WORKERS:-1} \\\n\
+    --log-level ${LOG_LEVEL:-info}\n\
+' > /app/startup-cloudrun.sh && chmod +x /app/startup-cloudrun.sh
+
+# Expose the port (documentation only, Cloud Run ignores this)
+EXPOSE 8080
+
+# Health check for Cloud Run (optional but recommended)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
+
+# Use the Cloud Run optimized startup script
+CMD ["/app/startup-cloudrun.sh"]
