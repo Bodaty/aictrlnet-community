@@ -47,18 +47,20 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     "create_workflow": ToolDefinition(
         name="create_workflow",
         description=(
-            "Create a workflow to automate a specific business process or multi-step task. "
-            "Use ONLY when the request describes a PROCESS or ACTIVITY (multi-word phrase), NOT a business type. "
-            "Examples that should use this tool: 'automate my cash reconciliation process', 'automate order processing', "
-            "'automate email campaigns', 'automate invoice approval'. "
-            "Do NOT use for single-word business/establishment types like cafe, restaurant, bakery, clinic, salon - "
-            "those should use automate_company instead."
+            "Create a workflow to AUTOMATE a business process. USE THIS TOOL when user describes: "
+            "(1) A process to automate: 'route emails', 'process orders', 'send notifications', 'approve requests' "
+            "(2) An action with multiple steps: 'categorize and route tickets', 'fetch data and generate reports' "
+            "(3) Something that should happen automatically: 'notify when inventory low', 'send weekly reports' "
+            "(4) Any request with ACTION VERBS like: route, send, process, notify, approve, schedule, categorize, sync, monitor, track. "
+            "EXAMPLES: 'Route support emails by urgency to the right team' -> create_workflow, "
+            "'Send weekly reports to sales' -> create_workflow, 'Process refunds automatically' -> create_workflow. "
+            "Do NOT use create_task for these - create_task is ONLY for simple reminders/to-do items."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "The exact name for the workflow as specified by the user"},
-                "description": {"type": "string", "description": "What the workflow should do (optional)"},
+                "name": {"type": "string", "description": "Workflow name derived from the user's request"},
+                "description": {"type": "string", "description": "What the workflow should do"},
                 "industry": {"type": "string", "description": "Industry context (optional)"}
             },
             "required": ["name"]
@@ -162,27 +164,16 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     ),
 
     # -------------------------------------------------------------------------
-    # Task Management Tools (4)
+    # Task Management Tools (Internal - NOT exposed to conversational UI)
     # -------------------------------------------------------------------------
-    "create_task": ToolDefinition(
-        name="create_task",
-        description="Create a new task for tracking work items",
-        parameters={
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Task title"},
-                "description": {"type": "string", "description": "Task description"},
-                "priority": {"type": "string", "enum": ["low", "medium", "high", "urgent"]},
-                "due_date": {"type": "string", "description": "Due date (ISO format)"}
-            },
-            "required": ["title"]
-        },
-        editions=["community", "business", "enterprise"],
-        handler="task_service.create_task"
-    ),
+    # NOTE: create_task, list_tasks, update_task, get_task_status are INTERNAL tools
+    # used for MCP and agent orchestration, NOT for user-facing conversational workflow creation.
+    # For user requests to automate processes, use create_workflow instead.
+    # These tools are kept for API compatibility but hidden from LLM tool selection.
+    # -------------------------------------------------------------------------
     "list_tasks": ToolDefinition(
         name="list_tasks",
-        description="List tasks with optional filtering",
+        description="[INTERNAL] List tasks - for API use only, not conversational UI",
         parameters={
             "type": "object",
             "properties": {
@@ -197,7 +188,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     ),
     "update_task": ToolDefinition(
         name="update_task",
-        description="Update an existing task",
+        description="[INTERNAL] Update an existing task - for API use only",
         parameters={
             "type": "object",
             "properties": {
@@ -214,7 +205,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     ),
     "get_task_status": ToolDefinition(
         name="get_task_status",
-        description="Get detailed status of a specific task",
+        description="[INTERNAL] Get task status - for API use only",
         parameters={
             "type": "object",
             "properties": {
@@ -580,17 +571,28 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
 }
 
 
-def get_tools_for_edition(edition: Edition) -> List[ToolDefinition]:
+def get_tools_for_edition(edition: Edition, include_internal: bool = False) -> List[ToolDefinition]:
     """Get all tools available for the given edition.
 
     This returns only CORE_TOOLS for Community edition.
     Business and Enterprise editions extend this with additional tools.
+
+    Args:
+        edition: The edition to get tools for
+        include_internal: If False (default), excludes tools marked as [INTERNAL]
+                         These are API-only tools not meant for conversational UI.
     """
     edition_value = edition.value if isinstance(edition, Edition) else edition
-    return [
+    tools = [
         tool for tool in CORE_TOOLS.values()
         if edition_value in tool.editions
     ]
+
+    # Filter out internal tools unless explicitly requested
+    if not include_internal:
+        tools = [t for t in tools if "[INTERNAL]" not in t.description]
+
+    return tools
 
 
 def get_tool_counts() -> Dict[str, int]:
@@ -1265,19 +1267,29 @@ class ToolDispatcher:
             return ToolResult(success=False, error="Task service not available")
 
         try:
+            # Map tool parameters to service parameters
+            # Tool uses 'title', service expects 'name'
+            task_name = args.get('title') or args.get('name', 'Untitled Task')
+
+            # Store priority and user_id in metadata
+            task_metadata = {
+                "priority": args.get('priority', 'medium'),
+                "user_id": user_id,
+                "due_date": args.get('due_date')
+            }
+
             task = await task_service.create_task(
-                title=args['title'],
+                name=task_name,
                 description=args.get('description', ''),
-                priority=args.get('priority', 'medium'),
-                user_id=user_id
+                metadata=task_metadata
             )
 
             return ToolResult(
                 success=True,
                 data={
                     "task_id": str(task.id),
-                    "title": task.title,
-                    "message": f"Task '{task.title}' created"
+                    "title": task.name,
+                    "message": f"Task '{task.name}' created"
                 }
             )
         except Exception as e:
@@ -1290,16 +1302,24 @@ class ToolDispatcher:
             return ToolResult(success=False, error="Task service not available")
 
         try:
+            # Build filters from args - TaskService.list_tasks expects filters dict
+            filters = {}
+            if args.get('status'):
+                filters['status'] = args.get('status')
+            # Store user_id filter if needed
+            filters['metadata.user_id'] = user_id
+
             tasks = await task_service.list_tasks(
-                user_id=user_id,
-                status=args.get('status'),
-                limit=args.get('limit', 20)
+                filters=filters,
+                limit=args.get('limit', 20),
+                offset=0
             )
 
             return ToolResult(
                 success=True,
                 data={
-                    "tasks": [{"id": str(t.id), "title": t.title, "status": t.status} for t in tasks],
+                    # Task model uses 'name' not 'title'
+                    "tasks": [{"id": str(t.id), "title": t.name, "status": t.status} for t in tasks],
                     "count": len(tasks)
                 }
             )
@@ -1313,16 +1333,30 @@ class ToolDispatcher:
             return ToolResult(success=False, error="Task service not available")
 
         try:
-            task = await task_service.update_task(
-                task_id=args['task_id'],
-                **{k: v for k, v in args.items() if k != 'task_id' and v is not None}
-            )
+            # Map tool parameters to service parameters
+            # Tool uses 'title', service expects 'name'
+            update_args = {
+                "task_id": args['task_id']
+            }
+
+            if args.get('title'):
+                update_args['name'] = args['title']
+            if args.get('description'):
+                update_args['description'] = args['description']
+            if args.get('status'):
+                update_args['status'] = args['status']
+
+            # Store priority in metadata
+            if args.get('priority'):
+                update_args['metadata'] = {'priority': args['priority']}
+
+            task = await task_service.update_task(**update_args)
 
             return ToolResult(
                 success=True,
                 data={
                     "task_id": str(task.id),
-                    "message": f"Task '{task.title}' updated"
+                    "message": f"Task '{task.name}' updated"
                 }
             )
         except Exception as e:
@@ -1339,13 +1373,16 @@ class ToolDispatcher:
             if not task:
                 return ToolResult(success=False, error="Task not found")
 
+            # Task model uses 'name' not 'title', and 'priority' is in task_metadata
+            task_metadata = task.task_metadata or {}
+            status_value = task.status.value if hasattr(task.status, 'value') else str(task.status)
             return ToolResult(
                 success=True,
                 data={
                     "task_id": str(task.id),
-                    "title": task.title,
-                    "status": task.status,
-                    "priority": task.priority
+                    "title": task.name,
+                    "status": status_value,
+                    "priority": task_metadata.get('priority', 'medium')
                 }
             )
         except Exception as e:
