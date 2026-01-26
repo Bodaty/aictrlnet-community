@@ -49,4 +49,5 @@ echo "✅ Initialization complete! Starting application..."
 echo ""
 
 # Start the FastAPI application
-exec uvicorn src.main:app --host 0.0.0.0 --port 8000
+# Note: PYTHONPATH should include /app/src for production builds
+exec uvicorn main:app --host 0.0.0.0 --port 8000

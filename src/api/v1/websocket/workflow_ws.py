@@ -137,16 +137,19 @@ async def workflow_execution_websocket(
     
     try:
         settings = get_settings()
+        user = None
+
         # DEV_ONLY_START
         # Development token for testing - removed in production builds
-        if token == "dev-token-for-testing":
+        if settings.ENVIRONMENT == "development" and token == "dev-token-for-testing":
             user = {
                 "email": "dev@aictrlnet.com",
                 "user_id": "dev-user-123",
                 "tenant_id": get_current_tenant_id()
             }
         # DEV_ONLY_END
-        else:
+
+        if user is None:
             payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
             user = {
                 "email": payload.get("sub"),
@@ -213,16 +216,19 @@ async def workflow_catalog_websocket(
     
     try:
         settings = get_settings()
+        user = None
+
         # DEV_ONLY_START
         # Development token for testing - removed in production builds
-        if token == "dev-token-for-testing":
+        if settings.ENVIRONMENT == "development" and token == "dev-token-for-testing":
             user = {
                 "email": "dev@aictrlnet.com",
                 "user_id": "dev-user-123",
                 "tenant_id": get_current_tenant_id()
             }
         # DEV_ONLY_END
-        else:
+
+        if user is None:
             payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
             user = {
                 "email": payload.get("sub"),

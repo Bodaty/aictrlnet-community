@@ -1,0 +1,117 @@
+# AICtrlNet Community Edition - Docker Compose Example
+#
+# Quick Start:
+#   1. Copy this file: cp docker-compose.example.yml docker-compose.yml
+#   2. (Optional) Customize environment variables below
+#   3. Start: docker-compose up -d
+#   4. Access API at http://localhost:8000
+#   5. Health check: curl http://localhost:8000/health
+#
+# For production, update:
+#   - POSTGRES_PASSWORD and DATABASE_URL with secure passwords
+#   - SECRET_KEY with a random 32+ character string
+#   - Set ENVIRONMENT=production
+
+services:
+  # AICtrlNet Community Edition API
+  aictrlnet:
+    image: bodaty/aictrlnet-community:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # Database connection
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/aictrlnet
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=aictrlnet
+
+      # Redis connection
+      - REDIS_URL=redis://redis:6379/0
+
+      # Application settings
+      - ENVIRONMENT=development
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+
+      # Security (change in production!)
+      - SECRET_KEY=change-this-to-a-secure-random-string-in-production
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+      # Optional: ML Service (for AI governance features)
+      # - ML_SERVICE_URL=http://ml-service:8003
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=aictrlnet
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+# Optional: Add these services for additional features
+#
+# # ML Service (for AI governance, risk assessment)
+# ml-service:
+#   image: bodaty/aictrlnet-ml:latest
+#   ports:
+#     - "8003:8003"
+#   environment:
+#     - PYTHONUNBUFFERED=1
+#   healthcheck:
+#     test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+#     interval: 30s
+#     timeout: 10s
+#     retries: 3
+#
+# # HitLai Frontend (visual workflow editor)
+# frontend:
+#   image: bodaty/hitlai-frontend:latest
+#   ports:
+#     - "3000:80"
+#   environment:
+#     - REACT_APP_AICTRLNET_URL=http://localhost:8000
+#   depends_on:
+#     - aictrlnet
