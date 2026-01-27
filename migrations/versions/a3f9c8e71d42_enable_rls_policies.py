@@ -127,8 +127,8 @@ def upgrade() -> None:
             op.execute(text(f"""
                 CREATE POLICY {policy_name} ON {table}
                 FOR ALL
-                USING (tenant_id = current_setting('app.current_tenant_id', true))
-                WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true))
+                USING (tenant_id::text = current_setting('app.current_tenant_id', true))
+                WITH CHECK (tenant_id::text = current_setting('app.current_tenant_id', true))
             """))
 
         # Create admin bypass policy (if not exists)
@@ -161,11 +161,11 @@ def upgrade() -> None:
                 FOR ALL
                 USING (
                     tenant_id IS NULL
-                    OR tenant_id = current_setting('app.current_tenant_id', true)
+                    OR tenant_id::text = current_setting('app.current_tenant_id', true)
                 )
                 WITH CHECK (
                     tenant_id IS NULL
-                    OR tenant_id = current_setting('app.current_tenant_id', true)
+                    OR tenant_id::text = current_setting('app.current_tenant_id', true)
                 )
             """))
 

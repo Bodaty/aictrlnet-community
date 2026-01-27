@@ -242,7 +242,7 @@ class TestEnforcementIntegration:
         path = enforcer._get_upgrade_path("community")
         assert len(path["upgrade_options"]) == 2
         assert path["upgrade_options"][0]["edition"] == "business_starter"
-        assert "$500/month" in path["upgrade_options"][0]["price"]
+        assert "$599/month" in path["upgrade_options"][0]["price"]
         
         # Business upgrade path
         path = enforcer._get_upgrade_path("business_starter")
