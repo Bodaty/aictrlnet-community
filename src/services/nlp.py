@@ -119,7 +119,31 @@ class NLPService:
                     "security_level": security_validation.level
                 } if return_transparency else None
             }
-        
+
+        # Check for edit mode
+        is_edit_mode = context.get('mode') == 'edit' if context else False
+        current_workflow = context.get('current_workflow') if context else None
+        edit_intent = None
+
+        if is_edit_mode and current_workflow:
+            # Analyze edit intent
+            try:
+                from .workflow_edit_analyzer import workflow_edit_analyzer
+                edit_intent = workflow_edit_analyzer.analyze(prompt, current_workflow)
+                processing_steps.append({
+                    "step": "edit_intent_analysis",
+                    "result": {
+                        "intent": edit_intent.get('intent'),
+                        "confidence": edit_intent.get('confidence'),
+                        "target_node": edit_intent.get('target_node')
+                    },
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                logger.info(f"Edit intent detected: {edit_intent.get('intent')} with confidence {edit_intent.get('confidence')}")
+            except Exception as e:
+                logger.warning(f"Edit intent analysis failed: {e}")
+                edit_intent = {"intent": "unknown", "confidence": 0.5}
+
         try:
             # Track intent analysis
             intent_analysis = await self._analyze_intent(prompt)
@@ -255,7 +279,7 @@ class NLPService:
                         return await self._build_transparency_response(
                             workflow, generation_method, templates_used,
                             extracted_parameters, intent_analysis, confidence_score,
-                            processing_steps, ai_model_used, prompt
+                            processing_steps, ai_model_used, prompt, edit_intent
                         )
                     return workflow
                 
@@ -301,7 +325,7 @@ class NLPService:
                             return await self._build_transparency_response(
                                 workflow, generation_method, templates_used,
                                 extracted_parameters, intent_analysis, confidence_score,
-                                processing_steps, ai_model_used, prompt
+                                processing_steps, ai_model_used, prompt, edit_intent
                             )
                         return workflow
             
@@ -324,21 +348,21 @@ class NLPService:
                     return await self._build_transparency_response(
                         workflow, generation_method, templates_used,
                         extracted_parameters, intent_analysis, confidence_score,
-                        processing_steps, ai_model_used, prompt
+                        processing_steps, ai_model_used, prompt, edit_intent
                     )
                 return workflow
-            
+
             # Step 4: Fallback to basic workflow
             generation_method = "intelligent_fallback"
             confidence_score = 0.5
             workflow = await self._create_fallback_workflow(prompt, context)
-            
+
             if return_transparency:
                 logger.info(f"Building transparency response for fallback workflow, return_transparency={return_transparency}")
                 transparency_response = await self._build_transparency_response(
                     workflow, generation_method, templates_used,
                     extracted_parameters, intent_analysis, confidence_score,
-                    processing_steps, ai_model_used, prompt
+                    processing_steps, ai_model_used, prompt, edit_intent
                 )
                 logger.info(f"Transparency response type: {type(transparency_response)}, is_dict: {isinstance(transparency_response, dict)}")
                 if isinstance(transparency_response, dict):
@@ -353,7 +377,7 @@ class NLPService:
             if return_transparency:
                 return await self._build_transparency_response(
                     workflow, "error_fallback", [], [], {},
-                    0.3, processing_steps, None, prompt
+                    0.3, processing_steps, None, prompt, edit_intent
                 )
             return workflow
     
@@ -2073,7 +2097,8 @@ Return ONLY a single number (the index). Example: 5
         confidence_score: float,
         processing_steps: List[Dict[str, Any]],
         ai_model_used: Optional[str],
-        original_prompt: str
+        original_prompt: str,
+        edit_intent: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Build the complete transparency response."""
         # Analyze edition requirements
@@ -2102,7 +2127,7 @@ Return ONLY a single number (the index). Example: 5
         # Build response
         workflow_response = WorkflowResponse.model_validate(workflow)
         
-        return NLPWorkflowResponse(
+        response = NLPWorkflowResponse(
             workflow=workflow_response,
             generation_method=generation_method,
             templates_used=templates_used,
@@ -2117,6 +2142,12 @@ Return ONLY a single number (the index). Example: 5
             processing_steps=processing_steps,
             ai_model_used=ai_model_used
         ).model_dump()
+
+        # Add edit_intent if provided (for edit mode)
+        if edit_intent:
+            response['edit_intent'] = edit_intent
+
+        return response
     
     async def _analyze_edition_requirements(
         self, 
