@@ -329,24 +329,26 @@ class LicenseEnforcer:
             upgrade_options = [
                 {
                     "edition": "business_starter",
-                    "price": "$500/month",
+                    "price": "$599/month",
                     "highlights": [
                         "100 workflows",
                         "20 adapters",
                         "5 users",
                         "Email support",
-                        "99.9% uptime SLA"
+                        "99.9% uptime SLA",
+                        "2 hrs/mo expert services"
                     ]
                 },
                 {
                     "edition": "business_growth",
-                    "price": "$1,000/month",
+                    "price": "$1,199/month",
                     "highlights": [
                         "500 workflows",
                         "50 adapters",
                         "20 users",
                         "Priority support",
-                        "Advanced analytics"
+                        "Advanced analytics",
+                        "4 hrs/mo expert services"
                     ]
                 }
             ]
@@ -354,13 +356,14 @@ class LicenseEnforcer:
             upgrade_options = [
                 {
                     "edition": "business_scale",
-                    "price": "$2,000/month",
+                    "price": "$2,499/month",
                     "highlights": [
                         "1,000 workflows",
                         "Unlimited adapters",
                         "50 users",
                         "Dedicated support",
-                        "API access"
+                        "API access",
+                        "8 hrs/mo expert services"
                     ]
                 },
                 {

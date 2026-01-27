@@ -484,26 +484,26 @@ class LicenseEnforcer:
             options = [
                 {
                     "edition": Edition.BUSINESS_STARTER.value,
-                    "price": "$500/month",
-                    "highlights": ["100 workflows", "20 adapters", "5 users", "Email support"]
+                    "price": "$599/month",
+                    "highlights": ["100 workflows", "20 adapters", "5 users", "Email support", "2 hrs/mo expert services"]
                 },
                 {
                     "edition": Edition.BUSINESS_GROWTH.value,
-                    "price": "$1,000/month", 
-                    "highlights": ["500 workflows", "50 adapters", "20 users", "Priority support"]
+                    "price": "$1,199/month",
+                    "highlights": ["500 workflows", "50 adapters", "20 users", "Priority support", "4 hrs/mo expert services"]
                 }
             ]
         elif current == Edition.BUSINESS_STARTER:
             options = [
                 {
                     "edition": Edition.BUSINESS_GROWTH.value,
-                    "price": "$1,000/month",
-                    "highlights": ["5x more workflows", "2.5x more adapters", "4x more users"]
+                    "price": "$1,199/month",
+                    "highlights": ["5x more workflows", "2.5x more adapters", "4x more users", "4 hrs/mo expert services"]
                 },
                 {
                     "edition": Edition.BUSINESS_SCALE.value,
-                    "price": "$2,000/month",
-                    "highlights": ["10x more workflows", "Unlimited adapters", "Phone support"]
+                    "price": "$2,499/month",
+                    "highlights": ["10x more workflows", "Unlimited adapters", "Phone support", "8 hrs/mo expert services"]
                 }
             ]
         elif current in [Edition.BUSINESS_GROWTH, Edition.BUSINESS_SCALE]:
