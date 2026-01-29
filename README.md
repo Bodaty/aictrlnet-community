@@ -291,10 +291,10 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 
 ## Roadmap
 
-- [ ] Visual workflow designer (Community Edition)
 - [ ] Additional AI framework support
 - [ ] More adapters (submit requests via Issues!)
 - [ ] Expanded MCP capabilities
+- [ ] Webhook and event-driven workflow triggers
 
 Have an idea? [Open a feature request](https://github.com/Bodaty/aictrlnet-community/issues/new?template=feature_request.md).
 
