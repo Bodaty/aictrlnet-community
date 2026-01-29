@@ -278,7 +278,6 @@ curl -X POST http://localhost:8000/api/v1/workflows \
 ## Community
 
 - **GitHub Discussions**: [Ask questions, share ideas](https://github.com/Bodaty/aictrlnet-community/discussions)
-- **Twitter/X**: [@aictrlnet](https://twitter.com/aictrlnet)
 
 ## Contributing
 
@@ -297,7 +296,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 - [ ] More adapters (submit requests via Issues!)
 - [ ] Expanded MCP capabilities
 
-See our [public roadmap](https://github.com/Bodaty/aictrlnet-community/projects) for what's coming next.
+Have an idea? [Open a feature request](https://github.com/Bodaty/aictrlnet-community/issues/new?template=feature_request.md).
 
 ## License
 
