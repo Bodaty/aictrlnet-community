@@ -1033,6 +1033,6 @@ Authorization: Bearer dev-token-for-testing
 ## Next Steps
 
 - Explore the full API by visiting `http://localhost:8000/docs` (interactive Swagger UI).
-- Check the [Adapter Guide](adapters.md) for details on configuring all 27+ supported adapters.
-- Read the [Architecture Overview](architecture.md) to understand how the control plane, adapters, and execution engine interact.
+- Check the [Guides](guides.md) for details on configuring adapters, HITL workflows, MCP, and governance.
+- Read the [API Reference](api.md) to understand all available endpoints.
 - For ML-enhanced features (AI governance, risk assessment, bias detection), see the [Business Edition](https://aictrlnet.com).

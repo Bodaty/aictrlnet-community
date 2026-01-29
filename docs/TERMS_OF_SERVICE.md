@@ -1,8 +1,8 @@
 # AICtrlNet / HitLai Terms of Service
 
-**Effective Date:** [EFFECTIVE_DATE]
+**Effective Date:** January 29, 2026
 
-**Last Updated:** [LAST_UPDATED_DATE]
+**Last Updated:** January 29, 2026
 
 ---
 
@@ -424,7 +424,7 @@ The Service may include open source software components. Open source components 
 
 ### 8.1 Privacy Policy
 
-Our collection, use, and disclosure of Personal Data is governed by our Privacy Policy, available at [PRIVACY_POLICY_URL]. The Privacy Policy is incorporated into these Terms by reference.
+Our collection, use, and disclosure of Personal Data is governed by our Privacy Policy, available at [https://github.com/Bodaty/aictrlnet-community/blob/main/docs/PRIVACY_POLICY.md](https://github.com/Bodaty/aictrlnet-community/blob/main/docs/PRIVACY_POLICY.md). The Privacy Policy is incorporated into these Terms by reference.
 
 ### 8.2 Data Processing
 
@@ -966,7 +966,7 @@ Email: privacy@aictrlnet.com
 
 | Version | Date | Description |
 |---------|------|-------------|
-| 1.0 | [EFFECTIVE_DATE] | Initial release |
+| 1.0 | January 29, 2026 | Initial release |
 
 ---
 

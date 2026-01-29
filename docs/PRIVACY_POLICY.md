@@ -1,7 +1,7 @@
 # AICtrlNet / HitLai Privacy Policy
 
-**Effective Date:** [INSERT DATE]
-**Last Updated:** [INSERT DATE]
+**Effective Date:** January 29, 2026
+**Last Updated:** January 29, 2026
 
 ---
 
@@ -347,7 +347,6 @@ If you have concerns about our data practices, you may contact:
 
 **Data Controller:**
 Bodaty Inc.
-[INSERT ADDRESS]
 Email: privacy@aictrlnet.com
 
 **Data Protection Officer:**
@@ -507,7 +506,7 @@ When transferring data outside your region, we use appropriate safeguards:
 
 ### 9.3 EU-U.S. Data Privacy Framework
 
-We [participate in / are working toward participation in] the EU-U.S. Data Privacy Framework. This provides adequate protection for personal data transferred from the EU to the U.S.
+We are working toward participation in the EU-U.S. Data Privacy Framework. This provides adequate protection for personal data transferred from the EU to the U.S.
 
 ### 9.4 Your Choices
 
@@ -648,7 +647,9 @@ We may use the following AI providers for various features:
 
 | Provider | Purpose | Training Opt-Out |
 |----------|---------|------------------|
-| [INSERT PROVIDERS] | [INSERT PURPOSE] | Enforced via API settings |
+| OpenAI | AI model execution (GPT-4, etc.) | Enforced via API settings |
+| Anthropic | AI model execution (Claude) | Enforced via API settings |
+| Ollama | Local AI model execution | N/A (self-hosted) |
 
 Enterprise customers can request documentation of our AI provider agreements.
 
@@ -724,7 +725,7 @@ For questions, concerns, or requests related to this Privacy Policy:
 **Mailing Address:**
 Bodaty Inc.
 Attn: Privacy Team
-[INSERT ADDRESS]
+Email: privacy@aictrlnet.com
 
 ### 14.2 Data Protection Officer
 
@@ -837,6 +838,6 @@ If you self-host AICtrlNet Community Edition:
 
 ---
 
-*This Privacy Policy is effective as of [INSERT DATE].*
+*This Privacy Policy is effective as of January 29, 2026.*
 
 *Bodaty Inc. | privacy@aictrlnet.com*
