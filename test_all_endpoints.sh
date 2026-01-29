@@ -156,9 +156,9 @@ test_endpoint "GET" "http://localhost:8001/health" "Health check"
 # Business-specific features
 
 # Approval Workflows
-test_endpoint "GET" "http://localhost:8001/api/v1/approval/workflows" "List approval workflows"
-test_endpoint "POST" "http://localhost:8001/api/v1/approval/workflows" "Create approval workflow" '{"name":"Test Approval","description":"Test","resource_type":"task"}'
-test_endpoint "GET" "http://localhost:8001/api/v1/approval/requests" "List approval requests"
+test_endpoint "GET" "http://localhost:8001/api/v1/approvals/workflows" "List approval workflows"
+test_endpoint "POST" "http://localhost:8001/api/v1/approvals/workflows" "Create approval workflow" '{"name":"Test Approval","description":"Test","resource_type":"task"}'
+test_endpoint "GET" "http://localhost:8001/api/v1/approvals/requests" "List approval requests"
 
 # RBAC
 test_endpoint "GET" "http://localhost:8001/api/v1/rbac/users" "List users"

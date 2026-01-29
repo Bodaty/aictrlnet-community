@@ -98,7 +98,7 @@ compare_endpoint "GET" "/api/mcp/info" "MCP info" "" $FLASK_COMMUNITY $FASTAPI_C
 echo ""
 echo "BUSINESS EDITION COMPARISON"
 echo "==========================="
-compare_endpoint "GET" "/api/approval/workflows" "Approval workflows" "" $FLASK_BUSINESS $FASTAPI_BUSINESS
+compare_endpoint "GET" "/api/approvals/workflows" "Approval workflows" "" $FLASK_BUSINESS $FASTAPI_BUSINESS
 compare_endpoint "GET" "/api/rbac/roles" "RBAC roles" "" $FLASK_BUSINESS $FASTAPI_BUSINESS
 compare_endpoint "GET" "/api/rbac/groups" "RBAC groups" "" $FLASK_BUSINESS $FASTAPI_BUSINESS
 compare_endpoint "GET" "/api/governance/policies" "Governance policies" "" $FLASK_BUSINESS $FASTAPI_BUSINESS

@@ -19,6 +19,7 @@ ConversationStateType = Literal[
     "confirming_action",  # User confirmation before execution
     "executing_tools",    # v4: LLM is calling tools (intermediate state)
     "executing_action",   # Running the action plan
+    "workflow_created",   # Workflow was created from conversation
     "completed",          # Successfully finished
     "abandoned",          # User gave up
     "ended"               # Session ended
