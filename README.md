@@ -119,7 +119,7 @@ Lindy is a no-code platform for creating AI "employees" with 4,000+ integrations
 - **AI Agent Orchestration**: Route tasks to AI models, human workers, or software components
 - **Human-in-the-Loop**: Workflow nodes for human tasks; approval workflows in Business/Enterprise
 - **Model Context Protocol (MCP)**: Standardized context handling for AI interactions
-- **5 AI Frameworks**: LangChain, AutoGPT, AutoGen, CrewAI, Semantic Kernel
+- **5 AI Framework Adapters**: LangChain, AutoGPT, AutoGen, CrewAI, Semantic Kernel
 - **Quality Framework**: Multi-dimensional assessment and validation
 - **Governance Controls**: Audit logging (Community); bias detection and compliance (Business/Enterprise)
 - **17+ Adapters**: OpenAI, Claude, Slack, Teams, and more (47+ across all editions)
