@@ -2,7 +2,7 @@
 
 **Build AI workflows where humans and AI work together** — with governance, audit trails, and visual orchestration.
 
-The only MIT-licensed AI orchestration platform with native MCP support and true human-in-the-loop capabilities.
+An MIT-licensed AI orchestration platform with native MCP support and human-in-the-loop workflow design.
 
 <!-- Badges - Update URLs after launch -->
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -18,21 +18,10 @@ The AI orchestration market is exploding — $7.63B in 2025, projected $50.31B b
 
 | Category | Tools | The Problem |
 |----------|-------|-------------|
-| **Code-first frameworks** | LangChain, CrewAI, AutoGen, OpenAI Agents SDK | Great for developers, but no visual orchestration, no governance, steep learning curve |
-| **Visual automation** | n8n, Zapier, Make, Dify, Flowise | Easy to use, but AI is bolted-on, limited governance, restrictive licenses |
+| **Code-first frameworks** | LangChain, CrewAI, AutoGen, OpenAI Agents SDK | Powerful for developers, but governance and audit trails require custom implementation |
+| **Visual automation** | n8n, Zapier, Make, Dify, Flowise | Easy to connect services, but limited AI governance and compliance controls |
 
-**AICtrlNet bridges this gap:**
-
-| | LangChain | CrewAI | n8n | Dify | **AICtrlNet** |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Visual workflow editor | - | - | Yes | Yes | **Yes** |
-| Native HITL (Human-in-the-Loop) | - | - | - | - | **Yes** |
-| AI governance & compliance | - | - | - | - | **Yes** |
-| MCP protocol support | - | - | - | Yes | **Yes** |
-| Multi-agent orchestration | Yes | Yes | - | Yes | **Yes** |
-| Enterprise multi-tenancy | - | - | - | - | **Yes** |
-| True open source (MIT) | Yes | Yes | Fair-code | Apache | **MIT** |
-| Human + AI unified platform | - | - | - | - | **Yes** |
+**AICtrlNet bridges this gap** — combining visual workflow design, native human-in-the-loop, and AI governance in a single MIT-licensed platform.
 
 ### What Makes AICtrlNet Different
 
@@ -42,11 +31,11 @@ Unlike tools that treat humans as fallback for AI failures, AICtrlNet orchestrat
 
 **2. AI Governance Built-In**
 
-While others add governance as an enterprise upsell, AICtrlNet includes:
-- 5-layer AI Workflow Security Gateway
-- Bias detection and monitoring
-- Complete audit trails
-- Compliance frameworks (HIPAA, GDPR, SOC2)
+AICtrlNet includes governance at every tier:
+- Audit logging and decision tracking (Community)
+- Bias detection and monitoring (Business)
+- 5-layer AI Workflow Security Gateway (Business/Enterprise)
+- Compliance frameworks — HIPAA, GDPR, SOC2 (Business/Enterprise)
 
 **3. Model Context Protocol (MCP) Support**
 
@@ -65,33 +54,33 @@ Visual workflow designer for rapid prototyping, with full API access for program
 <details>
 <summary><strong>vs. LangChain / LangGraph</strong></summary>
 
-LangChain is the dominant framework (80K+ GitHub stars) and excellent for developers building custom AI applications.
+LangChain is the dominant AI framework and excellent for developers building custom AI applications. LangGraph adds agent orchestration with HITL support.
 
-**Choose LangChain when:** You want maximum control, are comfortable with code, and don't need visual orchestration.
+**Choose LangChain when:** You want maximum control and are comfortable with code-first development.
 
-**Choose AICtrlNet when:** You need visual workflows, human-in-the-loop, governance, or want non-developers to participate in workflow design.
+**Choose AICtrlNet when:** You need built-in governance, audit trails, or want non-developers to participate in workflow design.
 
-*AICtrlNet actually uses LangChain under the hood for AI execution — we're complementary, not competing.*
+*AICtrlNet uses LangChain under the hood for AI execution — we're complementary, not competing.*
 </details>
 
 <details>
 <summary><strong>vs. CrewAI</strong></summary>
 
-CrewAI excels at role-based AI teams that collaborate autonomously.
+CrewAI excels at role-based AI teams with multi-agent collaboration and has recently added HITL support.
 
-**Choose CrewAI when:** Your use case is purely AI-to-AI collaboration with defined roles.
+**Choose CrewAI when:** Your primary use case is AI agent teams with defined roles.
 
-**Choose AICtrlNet when:** You need humans in the loop, enterprise governance, or visual workflow design. AICtrlNet supports CrewAI as one of 5 AI frameworks.
+**Choose AICtrlNet when:** You need enterprise governance, audit trails, or unified human + AI orchestration across multiple frameworks.
 </details>
 
 <details>
 <summary><strong>vs. n8n</strong></summary>
 
-n8n is a mature automation platform with 400+ integrations.
+n8n is a mature automation platform with 400+ integrations, MCP support, and multi-agent capabilities.
 
-**Choose n8n when:** You need traditional automation with occasional AI, and fair-code licensing works for you.
+**Choose n8n when:** You need broad automation integrations with AI capabilities, and fair-code licensing works for you.
 
-**Choose AICtrlNet when:** AI is central (not peripheral), you need governance, or you want true MIT open source. *We actually integrate with n8n — use both together.*
+**Choose AICtrlNet when:** AI governance and audit trails are requirements, or you need true MIT open source. *We integrate with n8n — use both together.*
 </details>
 
 <details>
@@ -128,12 +117,12 @@ Lindy is a no-code platform for creating AI "employees" with 4,000+ integrations
 
 - **Hybrid Architecture**: Centralized control plane with distributed execution
 - **AI Agent Orchestration**: Route tasks to AI models, human workers, or software components
-- **Human-in-the-Loop**: Built-in approval workflows and escalation paths
+- **Human-in-the-Loop**: Workflow nodes for human tasks; approval workflows in Business/Enterprise
 - **Model Context Protocol (MCP)**: Standardized context handling for AI interactions
 - **5 AI Frameworks**: LangChain, AutoGPT, AutoGen, CrewAI, Semantic Kernel
 - **Quality Framework**: Multi-dimensional assessment and validation
-- **Governance Controls**: Comprehensive audit logging and compliance
-- **27+ Adapters**: OpenAI, Claude, Slack, Teams, Stripe, and more
+- **Governance Controls**: Audit logging (Community); bias detection and compliance (Business/Enterprise)
+- **17+ Adapters**: OpenAI, Claude, Slack, Teams, and more (47+ across all editions)
 
 ## Editions
 
@@ -228,51 +217,60 @@ aictrlnet-community/
 
 ## Basic Usage
 
-### Register a Component
-
-```bash
-curl -X POST http://localhost:8000/api/v1/control/register \
-  -H "Content-Type: application/json" \
-  -d '{"name": "My AI Agent", "type": "ai"}'
-```
-
 ### Create a Task
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/nodes/tasks \
+curl -X POST http://localhost:8000/api/v1/tasks/ \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "destination": "ai",
-    "payload": {
-      "model": "gpt-4",
-      "messages": [{"role": "user", "content": "Hello!"}]
-    }
+    "name": "Review data pipeline",
+    "description": "Audit the ETL pipeline for data quality issues"
   }'
 ```
 
-### Create a Workflow with Human Approval
+### Create a Workflow
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/workflows \
+curl -X POST http://localhost:8000/api/v1/workflows/ \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Content Review Workflow",
-    "nodes": [
-      {"type": "ai", "model": "gpt-4", "task": "generate_content"},
-      {"type": "human", "role": "reviewer", "action": "approve"},
-      {"type": "ai", "model": "gpt-4", "task": "publish"}
-    ]
+    "definition": {
+      "nodes": [
+        {"id": "generate", "type": "ai_process", "name": "Generate Content"},
+        {"id": "review", "type": "human_task", "name": "Human Review"},
+        {"id": "publish", "type": "ai_process", "name": "Publish"}
+      ],
+      "edges": [
+        {"from": "generate", "to": "review"},
+        {"from": "review", "to": "publish"}
+      ]
+    }
+  }'
+```
+
+### Register an MCP Server
+
+```bash
+curl -X POST http://localhost:8000/api/v1/mcp/servers \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "filesystem-server",
+    "transport_type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
   }'
 ```
 
 ## Documentation
 
+- [Getting Started](docs/getting-started.md)
 - [API Reference](docs/api.md)
-- [Architecture Overview](docs/architecture.md)
-- [Adapter Guide](docs/adapters.md)
-- [MCP Integration](docs/mcp.md)
+- [Guides](docs/guides.md)
+- [Examples](docs/examples.md)
 - [Contributing Guide](CONTRIBUTING.md)
 
 ## Community
