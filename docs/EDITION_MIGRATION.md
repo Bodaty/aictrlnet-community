@@ -817,7 +817,7 @@ curl http://localhost:8001/api/v1/system/license
 
 - **Sales Inquiries:** sales@bodaty.com
 - **Technical Support:** support@bodaty.com
-- **General Questions:** bobby@bodaty.com
+- **General Questions:** team@aictrlnet.com
 
 ---
 

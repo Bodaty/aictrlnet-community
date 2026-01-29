@@ -142,7 +142,7 @@ Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 ## Questions?
 
 - Open a [GitHub Discussion](https://github.com/Bodaty/aictrlnet-community/discussions)
-- Email: bobby@bodaty.com
+- Email: team@aictrlnet.com
 
 ## License
 

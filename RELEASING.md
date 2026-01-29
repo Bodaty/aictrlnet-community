@@ -193,4 +193,4 @@ The release process is automated via GitHub Actions:
 
 ## Contact
 
-Release questions: bobby@bodaty.com
+Release questions: team@aictrlnet.com

@@ -150,16 +150,38 @@ For Business or Enterprise editions, contact sales@bodaty.com.
 
 ### Using Docker (Recommended)
 
+**Option 1: Docker Hub (Fastest)**
 ```bash
-# Clone the repository
-git clone https://github.com/Bodaty/aictrlnet-community.git
-cd aictrlnet-community
+# Pull and run (requires external PostgreSQL and Redis)
+docker pull bodaty/aictrlnet-community:latest
+docker run -d -p 8000:8000 \
+  -e DATABASE_URL=postgresql://user:pass@host:5432/aictrlnet \
+  -e REDIS_URL=redis://host:6379/0 \
+  bodaty/aictrlnet-community:latest
 
-# Start with Docker Compose
+# API available at http://localhost:8000
+# Health check: curl http://localhost:8000/health
+```
+
+**Option 2: Docker Compose (Full Stack)**
+```bash
+# Download the example compose file
+curl -O https://raw.githubusercontent.com/Bodaty/aictrlnet-community/main/docker-compose.example.yml
+
+# Copy and customize (optional)
+cp docker-compose.example.yml docker-compose.yml
+
+# Start all services (API + PostgreSQL + Redis)
 docker-compose up -d
 
 # API available at http://localhost:8000
-# Swagger docs at http://localhost:8000/docs
+```
+
+Or clone the full repository:
+```bash
+git clone https://github.com/Bodaty/aictrlnet-community.git
+cd aictrlnet-community
+docker-compose up -d
 ```
 
 ### Using pip
@@ -292,7 +314,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Contact
 
-- Email: bobby@bodaty.com
+- Email: team@aictrlnet.com
 - GitHub: [@bobbykoritala](https://github.com/bobbykoritala)
 - Organization: [Bodaty](https://github.com/Bodaty)
 
