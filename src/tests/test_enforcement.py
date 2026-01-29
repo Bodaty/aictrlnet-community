@@ -18,6 +18,10 @@ from core.usage_tracker import UsageTracker
 async def mock_db():
     """Mock database session."""
     db = AsyncMock()
+    # Mock db.execute so _get_limit_for_tenant's query returns no override
+    mock_result = Mock()
+    mock_result.scalar_one_or_none = Mock(return_value=None)
+    db.execute = AsyncMock(return_value=mock_result)
     return db
 
 
@@ -48,17 +52,17 @@ class TestLicenseEnforcer:
         enforcer = LicenseEnforcer(mock_db, mode=EnforcementMode.SOFT)
         with patch.object(enforcer, '_get_tenant_info', return_value={"edition": "community"}):
             with patch.object(enforcer, '_get_current_usage', return_value=15):
-                result = await enforcer.check_limit("tenant1", LimitType.WORKFLOWS, 1)
+                result = await enforcer.check_limit("tenant1", LimitType.WORKFLOWS, increment=1)
                 assert result["allowed"] is True
                 assert result["warning"] is not None
                 assert "exceeded" in result["warning"]
-        
+
         # STRICT mode - should raise exception
         enforcer = LicenseEnforcer(mock_db, mode=EnforcementMode.STRICT)
         with patch.object(enforcer, '_get_tenant_info', return_value={"edition": "community"}):
             with patch.object(enforcer, '_get_current_usage', return_value=10):
                 with pytest.raises(LimitExceededException) as exc:
-                    await enforcer.check_limit("tenant1", LimitType.WORKFLOWS, 1)
+                    await enforcer.check_limit("tenant1", LimitType.WORKFLOWS, increment=1)
                 assert exc.value.limit_type == LimitType.WORKFLOWS
                 assert exc.value.limit == 10
     
@@ -83,25 +87,28 @@ class TestLicenseEnforcer:
     @pytest.mark.asyncio
     async def test_feature_checking(self, mock_db):
         """Test feature availability checking."""
-        enforcer = LicenseEnforcer(mock_db)
-        
+        enforcer = LicenseEnforcer(mock_db, mode=EnforcementMode.SOFT)
+
         # Community features
         with patch.object(enforcer, '_get_tenant_info', return_value={"edition": "community"}):
-            assert await enforcer.check_feature("tenant1", "basic_workflows") is True
-            assert await enforcer.check_feature("tenant1", "approval_workflows") is False
-            assert await enforcer.check_feature("tenant1", "multi_tenant") is False
-        
+            with patch.object(enforcer, '_get_trial_features', return_value=[]):
+                assert await enforcer.check_feature("tenant1", "basic_workflows") is True
+                assert await enforcer.check_feature("tenant1", "approval_workflows") is False
+                assert await enforcer.check_feature("tenant1", "multi_tenant") is False
+
         # Business features
         with patch.object(enforcer, '_get_tenant_info', return_value={"edition": "business_starter"}):
-            assert await enforcer.check_feature("tenant1", "basic_workflows") is True
-            assert await enforcer.check_feature("tenant1", "approval_workflows") is True
-            assert await enforcer.check_feature("tenant1", "multi_tenant") is False
-        
+            with patch.object(enforcer, '_get_trial_features', return_value=[]):
+                assert await enforcer.check_feature("tenant1", "basic_workflows") is True
+                assert await enforcer.check_feature("tenant1", "approval_workflows") is True
+                assert await enforcer.check_feature("tenant1", "multi_tenant") is False
+
         # Enterprise features
         with patch.object(enforcer, '_get_tenant_info', return_value={"edition": "enterprise"}):
-            assert await enforcer.check_feature("tenant1", "basic_workflows") is True
-            assert await enforcer.check_feature("tenant1", "approval_workflows") is True
-            assert await enforcer.check_feature("tenant1", "multi_tenant") is True
+            with patch.object(enforcer, '_get_trial_features', return_value=[]):
+                assert await enforcer.check_feature("tenant1", "basic_workflows") is True
+                assert await enforcer.check_feature("tenant1", "approval_workflows") is True
+                assert await enforcer.check_feature("tenant1", "multi_tenant") is True
     
     @pytest.mark.asyncio
     async def test_limit_warnings(self, mock_db):
@@ -111,14 +118,14 @@ class TestLicenseEnforcer:
         with patch.object(enforcer, '_get_tenant_info', return_value={"edition": "community"}):
             # At 80% - should warn
             with patch.object(enforcer, '_get_current_usage', return_value=8):
-                result = await enforcer.check_limit("tenant1", LimitType.WORKFLOWS, 0)
+                result = await enforcer.check_limit("tenant1", LimitType.WORKFLOWS, increment=0)
                 assert result["warning"] is not None
                 assert "Approaching limit" in result["warning"]
                 assert result["percentage"] == 80.0
-            
+
             # Below 80% - no warning
             with patch.object(enforcer, '_get_current_usage', return_value=5):
-                result = await enforcer.check_limit("tenant1", LimitType.WORKFLOWS, 0)
+                result = await enforcer.check_limit("tenant1", LimitType.WORKFLOWS, increment=0)
                 assert result["warning"] is None
                 assert result["percentage"] == 50.0
     
@@ -160,29 +167,30 @@ class TestUsageTracker:
         assert tracker._buffer["tenant1:api_calls"]["value"] == 5.0
         assert tracker._buffer["tenant1:api_calls"]["count"] == 1
     
-    @pytest.mark.asyncio 
+    @pytest.mark.asyncio
     async def test_buffer_flushing(self, mock_db):
         """Test buffer flushing to database."""
         tracker = UsageTracker(mock_db)
-        
+        valid_tenant = "550e8400-e29b-41d4-a716-446655440000"
+
         # Add to buffer
-        await tracker.track_usage("tenant1", "api_calls", 10)
-        await tracker.track_usage("tenant1", "api_calls", 5)
-        
+        await tracker.track_usage(valid_tenant, "api_calls", 10)
+        await tracker.track_usage(valid_tenant, "api_calls", 5)
+
         # Buffer should combine
-        assert tracker._buffer["tenant1:api_calls"]["value"] == 15.0
-        assert tracker._buffer["tenant1:api_calls"]["count"] == 2
-        
+        assert tracker._buffer[f"{valid_tenant}:api_calls"]["value"] == 15.0
+        assert tracker._buffer[f"{valid_tenant}:api_calls"]["count"] == 2
+
         # Mock db operations
         mock_db.add = Mock()
         mock_db.commit = AsyncMock()
-        
+
         # Flush buffer
         await tracker.flush_buffer()
-        
+
         # Buffer should be empty
         assert len(tracker._buffer) == 0
-        
+
         # Should have added to db
         assert mock_db.add.called
     
