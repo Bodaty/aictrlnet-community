@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial open source release
 
-## [1.0.0] - 2025-XX-XX
+## [1.0.0] - 2026-01-29
 
 ### Added
 - Core orchestration framework

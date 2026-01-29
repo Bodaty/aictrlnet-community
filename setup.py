@@ -8,7 +8,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="aictrlnet",
-    version="2.0.0",
+    version="1.0.0",
     author="AICtrlNet Team",
     author_email="team@aictrlnet.com",
     description="AICtrlNet Community Edition - Open source AI workflow orchestration",

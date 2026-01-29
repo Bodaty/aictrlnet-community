@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # API Settings
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "AICtrlNet"
-    VERSION: str = "2.0.0"
+    VERSION: str = "1.0.0"
     EDITION: str = Field(default="community", env="AICTRLNET_EDITION")
     
     # Security
