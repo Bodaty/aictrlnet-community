@@ -7,7 +7,6 @@ The only MIT-licensed AI orchestration platform with native MCP support and true
 <!-- Badges - Update URLs after launch -->
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/Bodaty/aictrlnet-community?style=social)](https://github.com/Bodaty/aictrlnet-community)
-[![Discord](https://img.shields.io/badge/Discord-Join%20Community-7289da)](https://discord.gg/aictrlnet)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 <!-- TODO: Add screenshot or GIF of HitLai workflow editor here -->
@@ -278,9 +277,8 @@ curl -X POST http://localhost:8000/api/v1/workflows \
 
 ## Community
 
-- **Discord**: [Join our community](https://discord.gg/aictrlnet) <!-- Update link -->
 - **GitHub Discussions**: [Ask questions, share ideas](https://github.com/Bodaty/aictrlnet-community/discussions)
-- **Twitter/X**: [@aictrlnet](https://twitter.com/aictrlnet) <!-- Update handle -->
+- **Twitter/X**: [@aictrlnet](https://twitter.com/aictrlnet)
 
 ## Contributing
 
@@ -329,6 +327,6 @@ MIT License - see [LICENSE](LICENSE) for details.
 <p align="center">
   <strong>Ready to orchestrate AI and humans together?</strong><br>
   <a href="#quick-start">Get Started</a> ·
-  <a href="https://discord.gg/aictrlnet">Join Discord</a> ·
+  <a href="https://github.com/Bodaty/aictrlnet-community/discussions">Discussions</a> ·
   <a href="https://github.com/Bodaty/aictrlnet-community/issues">Report Bug</a>
 </p>

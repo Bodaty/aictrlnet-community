@@ -808,7 +808,7 @@ curl http://localhost:8001/api/v1/system/license
 | Channel | Community | Business | Enterprise |
 |---------|-----------|----------|------------|
 | GitHub Issues | Yes | Yes | Yes |
-| Community Discord | Yes | Yes | Yes |
+| GitHub Discussions | Yes | Yes | Yes |
 | Email Support | - | Yes | Yes |
 | Phone Support | - | - | Yes |
 | Dedicated Slack | - | - | Yes |
