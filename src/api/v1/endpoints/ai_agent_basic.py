@@ -2,12 +2,13 @@
 
 from typing import Dict, Any
 from datetime import datetime, date, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_active_user
 from core.cache import get_cache
+from core.upgrade_hints import attach_upgrade_hints
 
 router = APIRouter()
 
@@ -31,14 +32,16 @@ def check_rate_limit(user_id: str, endpoint: str, daily_limit: int) -> bool:
 
 @router.get("/status", response_model=Dict[str, Any])
 async def get_ai_agent_status_basic(
+    response: Response,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_active_user),
 ):
     """
     Get basic AI agent system status (Community Edition).
-    
+
     Returns limited information about NLP and Workflow agents only.
     """
+    attach_upgrade_hints(response, "agents")
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),

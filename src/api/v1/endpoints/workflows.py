@@ -2,7 +2,7 @@
 
 import logging
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -15,6 +15,7 @@ from core.enforcement import LicenseEnforcer, LimitType
 from core.usage_tracker import get_usage_tracker
 from core.tenant_context import get_current_tenant_id
 from middleware.enforcement import require_feature
+from core.upgrade_hints import attach_upgrade_hints
 from models.community import WorkflowDefinition, WorkflowInstance
 from models.community_complete import Adapter, MCPTool
 from models.iam import IAMAgent
@@ -103,6 +104,7 @@ async def get_workflow_catalog(
 
 @router.get("/", response_model=List[WorkflowResponse])
 async def list_workflows(
+    response: Response,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     category: Optional[str] = None,
@@ -112,6 +114,7 @@ async def list_workflows(
     current_user: dict = Depends(get_current_active_user),
 ):
     """List all workflows."""
+    attach_upgrade_hints(response, "workflows")
     query = select(WorkflowDefinition)
     
     # Apply filters

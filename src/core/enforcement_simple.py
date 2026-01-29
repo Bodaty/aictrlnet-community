@@ -43,8 +43,9 @@ class Edition(str, Enum):
 
 class LimitExceededException(Exception):
     """Raised when a limit is exceeded in strict mode."""
-    
-    def __init__(self, limit_type: LimitType, current: int, limit: int):
+
+    def __init__(self, limit_type: LimitType, current: int, limit: int,
+                 edition: str = "community"):
         self.limit_type = limit_type
         self.current = current
         self.limit = limit
@@ -54,15 +55,124 @@ class LimitExceededException(Exception):
             "limit_type": limit_type.value,
             "current": current,
             "limit": limit,
+            "edition": edition,
             "message": f"You have reached the limit of {limit} {limit_type.value}",
-            "upgrade_url": "/api/v1/upgrade/options"
+            "upgrade_url": UPGRADE_URL,
         }
         super().__init__(self.detail["message"])
 
 
+# Mapping of features to their minimum required edition
+FEATURE_REQUIRED_EDITION = {
+    # Business Starter features
+    "business_adapters": Edition.BUSINESS_STARTER,
+    "approval_workflows": Edition.BUSINESS_STARTER,
+    "rbac": Edition.BUSINESS_STARTER,
+    "email_support": Edition.BUSINESS_STARTER,
+    "sla_99_9": Edition.BUSINESS_STARTER,
+    "ai_governance": Edition.BUSINESS_STARTER,
+    "a2a_protocol": Edition.BUSINESS_STARTER,
+    "sla_monitoring": Edition.BUSINESS_STARTER,
+    "organization_management": Edition.BUSINESS_STARTER,
+    "team_management": Edition.BUSINESS_STARTER,
+    "template_discovery": Edition.BUSINESS_STARTER,
+    "subscription_licensing": Edition.BUSINESS_STARTER,
+    # Business Growth features
+    "custom_branding": Edition.BUSINESS_GROWTH,
+    "advanced_analytics": Edition.BUSINESS_GROWTH,
+    "priority_support": Edition.BUSINESS_GROWTH,
+    "ml_enhanced_features": Edition.BUSINESS_GROWTH,
+    "learning_loops": Edition.BUSINESS_GROWTH,
+    "agent_performance_analytics": Edition.BUSINESS_GROWTH,
+    "oauth2_oidc": Edition.BUSINESS_GROWTH,
+    "phone_support": Edition.BUSINESS_GROWTH,
+    # Business Scale features
+    "api_access": Edition.BUSINESS_SCALE,
+    "dedicated_support": Edition.BUSINESS_SCALE,
+    "sla_99_95": Edition.BUSINESS_SCALE,
+    "dedicated_account_manager": Edition.BUSINESS_SCALE,
+    # Enterprise features
+    "enterprise_adapters": Edition.ENTERPRISE,
+    "multi_tenant": Edition.ENTERPRISE,
+    "federation": Edition.ENTERPRISE,
+    "compliance": Edition.ENTERPRISE,
+    "custom_contracts": Edition.ENTERPRISE,
+    "24_7_support": Edition.ENTERPRISE,
+    "sla_99_99": Edition.ENTERPRISE,
+    "audit_logging": Edition.ENTERPRISE,
+    "saml_sso": Edition.ENTERPRISE,
+    "geographic_routing": Edition.ENTERPRISE,
+    "cross_tenant_workflows": Edition.ENTERPRISE,
+    "dedicated_infrastructure": Edition.ENTERPRISE,
+}
+
+# Human-readable names for features
+FEATURE_DISPLAY_NAMES = {
+    # Business Starter
+    "approval_workflows": "Approval Workflows",
+    "business_adapters": "Business Adapters",
+    "rbac": "Role-Based Access Control",
+    "ai_governance": "AI Governance & Risk Assessment",
+    "a2a_protocol": "Google A2A Protocol",
+    "sla_monitoring": "SLA Monitoring & Enforcement",
+    "organization_management": "Organization Management",
+    "team_management": "Team Management",
+    "template_discovery": "ML Template Discovery",
+    "subscription_licensing": "Subscription & Licensing",
+    # Business Growth
+    "advanced_analytics": "Advanced Analytics",
+    "custom_branding": "Custom Branding",
+    "ml_enhanced_features": "ML-Enhanced Features",
+    "learning_loops": "Learning Loops",
+    "agent_performance_analytics": "Agent Performance Analytics",
+    "oauth2_oidc": "OAuth2/OIDC Integration",
+    "phone_support": "Phone Support",
+    # Business Scale
+    "api_access": "API Access",
+    "dedicated_account_manager": "Dedicated Account Manager",
+    # Enterprise
+    "multi_tenant": "Multi-Tenant Support",
+    "federation": "Federation",
+    "compliance": "Compliance Suite",
+    "enterprise_adapters": "Enterprise Adapters",
+    "audit_logging": "Audit Logging",
+    "saml_sso": "SAML 2.0 SSO",
+    "geographic_routing": "Geographic Routing",
+    "cross_tenant_workflows": "Cross-Tenant Workflows",
+    "dedicated_infrastructure": "Dedicated Infrastructure",
+}
+
+# Human-readable names for editions
+EDITION_DISPLAY_NAMES = {
+    Edition.COMMUNITY: "Community",
+    Edition.BUSINESS_STARTER: "Business Starter",
+    Edition.BUSINESS_GROWTH: "Business Growth",
+    Edition.BUSINESS_SCALE: "Business Scale",
+    Edition.ENTERPRISE: "Enterprise",
+}
+
+UPGRADE_URL = "https://aictrlnet.com/pricing"
+
+
+def get_feature_upgrade_info(feature: str, current_edition: Edition) -> Dict[str, Any]:
+    """Build an enhanced 403 response body for a feature gate."""
+    required_edition = FEATURE_REQUIRED_EDITION.get(feature, Edition.BUSINESS_STARTER)
+    display_name = FEATURE_DISPLAY_NAMES.get(feature, feature.replace("_", " ").title())
+    required_display = EDITION_DISPLAY_NAMES.get(required_edition, required_edition.value)
+
+    return {
+        "error": "feature_not_available",
+        "feature": feature,
+        "message": f"{display_name} is available in {required_display} Edition",
+        "edition": current_edition.value,
+        "required_edition": required_edition.value,
+        "upgrade_url": UPGRADE_URL,
+    }
+
+
 class LicenseEnforcer:
     """Simplified license enforcement for Community Edition."""
-    
+
     # Edition limits
     EDITION_LIMITS = {
         Edition.COMMUNITY: {
@@ -117,13 +227,13 @@ class LicenseEnforcer:
         }
     }
     
-    # Edition features
+    # Edition features (accretive — each tier includes all features from lower tiers)
     EDITION_FEATURES = {
         Edition.COMMUNITY: [
             "basic_workflows",
             "core_adapters",
             "single_user",
-            "community_support"
+            "community_support",
         ],
         Edition.BUSINESS_STARTER: [
             "basic_workflows",
@@ -132,7 +242,14 @@ class LicenseEnforcer:
             "approval_workflows",
             "rbac",
             "email_support",
-            "sla_99_9"
+            "sla_99_9",
+            "ai_governance",
+            "a2a_protocol",
+            "sla_monitoring",
+            "organization_management",
+            "team_management",
+            "template_discovery",
+            "subscription_licensing",
         ],
         Edition.BUSINESS_GROWTH: [
             "basic_workflows",
@@ -140,10 +257,23 @@ class LicenseEnforcer:
             "business_adapters",
             "approval_workflows",
             "rbac",
+            "email_support",
+            "sla_99_9",
+            "ai_governance",
+            "a2a_protocol",
+            "sla_monitoring",
+            "organization_management",
+            "team_management",
+            "template_discovery",
+            "subscription_licensing",
             "custom_branding",
             "advanced_analytics",
             "priority_support",
-            "sla_99_9"
+            "ml_enhanced_features",
+            "learning_loops",
+            "agent_performance_analytics",
+            "oauth2_oidc",
+            "phone_support",
         ],
         Edition.BUSINESS_SCALE: [
             "basic_workflows",
@@ -151,11 +281,27 @@ class LicenseEnforcer:
             "business_adapters",
             "approval_workflows",
             "rbac",
+            "email_support",
+            "sla_99_9",
+            "ai_governance",
+            "a2a_protocol",
+            "sla_monitoring",
+            "organization_management",
+            "team_management",
+            "template_discovery",
+            "subscription_licensing",
             "custom_branding",
             "advanced_analytics",
+            "priority_support",
+            "ml_enhanced_features",
+            "learning_loops",
+            "agent_performance_analytics",
+            "oauth2_oidc",
+            "phone_support",
             "api_access",
             "dedicated_support",
-            "sla_99_95"
+            "sla_99_95",
+            "dedicated_account_manager",
         ],
         Edition.ENTERPRISE: [
             "basic_workflows",
@@ -164,16 +310,39 @@ class LicenseEnforcer:
             "enterprise_adapters",
             "approval_workflows",
             "rbac",
+            "email_support",
+            "sla_99_9",
+            "ai_governance",
+            "a2a_protocol",
+            "sla_monitoring",
+            "organization_management",
+            "team_management",
+            "template_discovery",
+            "subscription_licensing",
             "custom_branding",
             "advanced_analytics",
+            "priority_support",
+            "ml_enhanced_features",
+            "learning_loops",
+            "agent_performance_analytics",
+            "oauth2_oidc",
+            "phone_support",
             "api_access",
+            "dedicated_support",
+            "sla_99_95",
+            "dedicated_account_manager",
             "multi_tenant",
             "federation",
             "compliance",
             "custom_contracts",
             "24_7_support",
-            "sla_99_99"
-        ]
+            "sla_99_99",
+            "audit_logging",
+            "saml_sso",
+            "geographic_routing",
+            "cross_tenant_workflows",
+            "dedicated_infrastructure",
+        ],
     }
     
     def __init__(

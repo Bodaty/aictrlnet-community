@@ -8,7 +8,7 @@ to provide multi-turn conversation capabilities with backward compatibility.
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime as dt
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -32,6 +32,7 @@ from schemas.conversation import (
     ConversationIntentResponse,
     ConversationPatternResponse
 )
+from core.upgrade_hints import attach_upgrade_hints
 from services.enhanced_conversation_manager import EnhancedConversationService
 from services.action_orchestrator import ActionOrchestrator
 from services.tool_aware_conversation import ToolAwareConversationService
@@ -95,6 +96,7 @@ async def create_conversation_session(
 
 @router.get("/sessions", response_model=ConversationListResponse)
 async def list_conversation_sessions(
+    response: Response,
     active_only: bool = Query(True, description="Only return active sessions"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
@@ -103,9 +105,10 @@ async def list_conversation_sessions(
 ):
     """
     List conversation sessions for the current user.
-    
+
     Returns active sessions by default, ordered by last activity.
     """
+    attach_upgrade_hints(response, "conversations")
     service = EnhancedConversationService(db)
 
     if active_only:

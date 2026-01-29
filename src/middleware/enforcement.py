@@ -8,7 +8,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from core.database import get_db
-from core.enforcement_simple import LicenseEnforcer, LimitType, LimitExceededException
+from core.enforcement_simple import (
+    LicenseEnforcer, LimitType, LimitExceededException,
+    Edition, get_feature_upgrade_info,
+)
 from core.usage_tracker import get_usage_tracker
 from core.security import get_current_active_user
 from core.config import get_settings
@@ -47,10 +50,22 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
     ENDPOINT_FEATURES = {
         "/api/business/": ["business_adapters", "approval_workflows"],
         "/api/enterprise/": ["enterprise_adapters", "multi_tenant"],
-        "/api/approval/": ["approval_workflows"],
+        "/api/approvals/": ["approval_workflows"],
         "/api/compliance/": ["compliance"],
         "/api/federation/": ["federation"],
         "/api/analytics/advanced": ["advanced_analytics"],
+        "/api/ai-governance/": ["ai_governance"],
+        "/api/a2a/": ["a2a_protocol"],
+        "/api/sla/": ["sla_monitoring"],
+        "/api/organizations/": ["organization_management"],
+        "/api/teams/": ["team_management"],
+        "/api/oauth/": ["oauth2_oidc"],
+        "/api/saml/": ["saml_sso"],
+        "/api/tenants/": ["multi_tenant"],
+        "/api/geo-routing/": ["geographic_routing"],
+        "/api/audit/": ["audit_logging"],
+        "/api/subscriptions/": ["subscription_licensing"],
+        "/api/learning-loops/": ["learning_loops"],
     }
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
@@ -188,14 +203,13 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
                     
                     for feature in required_features:
                         if not await enforcer.check_feature(tenant_id, feature):
-                            return {
-                                "error": "feature_not_available",
-                                "feature": feature,
-                                "message": f"The feature '{feature}' is not available in your current plan.",
-                                "upgrade_options": enforcer._get_upgrade_path(
-                                    (await enforcer._get_tenant_info(tenant_id))["edition"]
-                                )
-                            }
+                            tenant_info = await enforcer._get_tenant_info(tenant_id)
+                            current_edition = Edition(tenant_info["edition"])
+                            response = get_feature_upgrade_info(feature, current_edition)
+                            response["upgrade_options"] = enforcer._get_upgrade_path(
+                                tenant_info["edition"]
+                            )
+                            return response
                     break
         
         return None
@@ -373,19 +387,16 @@ def require_feature(feature: str):
             
             async for db in get_db():
                 enforcer = LicenseEnforcer(db)
-                
+
                 if not await enforcer.check_feature(tenant_id, feature):
                     tenant_info = await enforcer._get_tenant_info(tenant_id)
-                    raise HTTPException(
-                        status_code=403,
-                        detail={
-                            "error": "feature_not_available",
-                            "feature": feature,
-                            "message": f"The feature '{feature}' is not available in your current plan.",
-                            "upgrade_options": enforcer._get_upgrade_path(tenant_info["edition"])
-                        }
+                    current_edition = Edition(tenant_info["edition"])
+                    detail = get_feature_upgrade_info(feature, current_edition)
+                    detail["upgrade_options"] = enforcer._get_upgrade_path(
+                        tenant_info["edition"]
                     )
-                
+                    raise HTTPException(status_code=403, detail=detail)
+
                 break
             
             return await func(request, *args, **kwargs)
