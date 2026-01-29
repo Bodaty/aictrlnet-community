@@ -262,19 +262,19 @@ You can request a copy of your personal data, including:
 - Workflow data you have created
 - Data we have collected about you
 
-**How to exercise:** Email privacy@bodaty.com or use the "Download My Data" feature in account settings.
+**How to exercise:** Email privacy@aictrlnet.com or use the "Download My Data" feature in account settings.
 
 ### 5.2 Right to Correction
 
 You can update or correct inaccurate personal information:
 - Profile information can be updated directly in your account settings
-- For other corrections, contact privacy@bodaty.com
+- For other corrections, contact privacy@aictrlnet.com
 
 ### 5.3 Right to Deletion
 
 You can request deletion of your personal data:
 - Delete your account through account settings
-- Request deletion of specific data via privacy@bodaty.com
+- Request deletion of specific data via privacy@aictrlnet.com
 - Note: Some data may be retained for legal or security purposes
 
 **Processing time:** Deletion requests are processed within 30 days.
@@ -286,7 +286,7 @@ You can export your data in a structured, commonly used format:
 - Account information (JSON)
 - Execution history (CSV)
 
-**How to exercise:** Use the "Export Data" feature or contact privacy@bodaty.com.
+**How to exercise:** Use the "Export Data" feature or contact privacy@aictrlnet.com.
 
 ### 5.5 Right to Opt-Out
 
@@ -348,10 +348,10 @@ If you have concerns about our data practices, you may contact:
 **Data Controller:**
 Bodaty Inc.
 [INSERT ADDRESS]
-Email: privacy@bodaty.com
+Email: privacy@aictrlnet.com
 
 **Data Protection Officer:**
-Email: dpo@bodaty.com
+Email: dpo@aictrlnet.com
 
 ### 6.5 Legitimate Interests Assessment
 
@@ -403,7 +403,7 @@ We have collected the following categories of personal information in the past 1
 ### 7.3 Exercising Your Rights
 
 To exercise your rights:
-- Email: privacy@bodaty.com
+- Email: privacy@aictrlnet.com
 - Use the "Privacy Settings" in your account
 - Submit a request through our website
 
@@ -416,7 +416,7 @@ We will respond to verifiable consumer requests within 45 days, with a possible 
 ### 7.5 Do Not Sell or Share My Personal Information
 
 We do not sell personal information. We do not share personal information for cross-context behavioral advertising. However, if you wish to record your preference, you may:
-- Email: privacy@bodaty.com with subject "Do Not Sell or Share"
+- Email: privacy@aictrlnet.com with subject "Do Not Sell or Share"
 - Enable "Limit the Use of My Sensitive Personal Information" in account settings
 
 ### 7.6 California "Shine the Light"
@@ -526,7 +526,7 @@ Enterprise customers may have options to:
 
 - We do not knowingly collect personal information from children under 13.
 - If we learn that we have collected information from a child under 13, we will delete it promptly.
-- If you believe we have collected information from a child under 13, please contact us immediately at privacy@bodaty.com.
+- If you believe we have collected information from a child under 13, please contact us immediately at privacy@aictrlnet.com.
 
 ### 10.2 Users Between 13 and 18
 
@@ -598,7 +598,7 @@ In the event of a security incident affecting your data:
 ### 11.6 Reporting Security Issues
 
 If you discover a security vulnerability:
-- Email: security@bodaty.com
+- Email: security@aictrlnet.com
 - We operate a responsible disclosure program
 - Do not publicly disclose vulnerabilities before we address them
 
@@ -718,7 +718,7 @@ When connecting via OAuth, we request only necessary permissions:
 
 For questions, concerns, or requests related to this Privacy Policy:
 
-**Email:** privacy@bodaty.com
+**Email:** privacy@aictrlnet.com
 **Subject Line:** Include "Privacy Inquiry" for faster routing
 
 **Mailing Address:**
@@ -730,7 +730,7 @@ Attn: Privacy Team
 
 For GDPR-related matters or to contact our Data Protection Officer:
 
-**Email:** dpo@bodaty.com
+**Email:** dpo@aictrlnet.com
 
 ### 14.3 Response Time
 
@@ -772,7 +772,7 @@ After receiving notice of material changes:
 
 ### 15.3 Version History
 
-We maintain a version history of this Privacy Policy. Previous versions are available upon request by emailing privacy@bodaty.com.
+We maintain a version history of this Privacy Policy. Previous versions are available upon request by emailing privacy@aictrlnet.com.
 
 ---
 
@@ -839,4 +839,4 @@ If you self-host AICtrlNet Community Edition:
 
 *This Privacy Policy is effective as of [INSERT DATE].*
 
-*Bodaty Inc. | privacy@bodaty.com*
+*Bodaty Inc. | privacy@aictrlnet.com*

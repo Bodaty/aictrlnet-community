@@ -25,4 +25,4 @@ Add any other context, mockups, or examples here.
 
 **Note**: Features requiring ML capabilities, industry packs, or enterprise features
 (multi-tenancy, federation) may be better suited for Business or Enterprise editions.
-Contact sales@bodaty.com for those inquiries.
+Contact sales@aictrlnet.com for those inquiries.

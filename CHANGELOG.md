@@ -33,4 +33,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-For Business and Enterprise edition changelogs, contact sales@bodaty.com.
+For Business and Enterprise edition changelogs, contact sales@aictrlnet.com.

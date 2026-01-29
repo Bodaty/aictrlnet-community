@@ -2,7 +2,7 @@
 
 This guide covers upgrading from Community Edition to Business or Enterprise editions. Business and Enterprise are commercial editions available from Bodaty.
 
-**Contact:** sales@bodaty.com
+**Contact:** sales@aictrlnet.com
 
 ---
 
@@ -120,7 +120,7 @@ This guide covers upgrading from Community Edition to Business or Enterprise edi
    | Enterprise | 16 GB | 8 cores | 100 GB+ |
 
 4. **Obtain License**
-   - Contact sales@bodaty.com
+   - Contact sales@aictrlnet.com
    - Receive license key and access credentials
    - Download edition-specific container images
 
@@ -550,7 +550,7 @@ Update client applications accordingly.
 
 ### Obtaining a License
 
-1. Contact sales@bodaty.com
+1. Contact sales@aictrlnet.com
 2. Describe your use case and team size
 3. Receive quote and license agreement
 4. Complete purchase
@@ -815,8 +815,8 @@ curl http://localhost:8001/api/v1/system/license
 
 ### Contact Information
 
-- **Sales Inquiries:** sales@bodaty.com
-- **Technical Support:** support@bodaty.com
+- **Sales Inquiries:** sales@aictrlnet.com
+- **Technical Support:** support@aictrlnet.com
 - **General Questions:** team@aictrlnet.com
 
 ---

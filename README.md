@@ -144,7 +144,7 @@ Lindy is a no-code platform for creating AI "employees" with 4,000+ integrations
 | **Business** | ML-enhanced features, RAG, 43 industry packs, HitLai UI | Commercial |
 | **Enterprise** | Multi-tenancy, federation, compliance, white-label | Commercial |
 
-For Business or Enterprise editions, contact sales@bodaty.com.
+For Business or Enterprise editions, contact sales@aictrlnet.com.
 
 ## Quick Start
 

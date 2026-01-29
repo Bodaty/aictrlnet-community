@@ -16,7 +16,7 @@ please report it responsibly.
 
 **DO NOT** create a public GitHub issue for security vulnerabilities.
 
-Instead, please email: **security@bodaty.com**
+Instead, please email: **security@aictrlnet.com**
 
 Include the following information:
 - Type of vulnerability (e.g., SQL injection, XSS, authentication bypass)

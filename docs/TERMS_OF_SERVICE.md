@@ -189,7 +189,7 @@ The Service is offered in the following subscription tiers:
 
 #### 4.1.3 Enterprise Edition
 
-- **Price:** Custom pricing (contact sales@bodaty.com)
+- **Price:** Custom pricing (contact sales@aictrlnet.com)
 - **Features:** Everything in Business, plus: multi-tenancy, SAML/SSO integration, federation support, HIPAA and GDPR compliance tools, geographic data routing, advanced analytics, dedicated account manager, custom workflow development, white-label options
 - **Support:** Priority support with dedicated account manager, phone support available
 - **SLA:** 99.9% uptime guarantee with financial credits
@@ -312,7 +312,7 @@ You may not use AI capabilities within the Service to:
 
 ### 5.5 Reporting Violations
 
-If you become aware of any violations of this Acceptable Use Policy, please report them to legal@bodaty.com.
+If you become aware of any violations of this Acceptable Use Policy, please report them to legal@aictrlnet.com.
 
 ---
 
@@ -592,7 +592,7 @@ Our collection, use, and disclosure of Personal Data is governed by our Privacy 
 - Ensuring the security of systems and networks you use to access the Service
 - Properly configuring security features available in your subscription tier
 
-**(b)** You must promptly notify us of any suspected security incidents at security@bodaty.com.
+**(b)** You must promptly notify us of any suspected security incidents at security@aictrlnet.com.
 
 ### 11.3 Security Assessments
 
@@ -829,7 +829,7 @@ These Terms are governed by the laws of the State of Delaware, United States, wi
 
 ### 18.2 Informal Resolution
 
-**(a)** Before initiating formal dispute resolution, you agree to contact us at legal@bodaty.com to attempt to resolve the dispute informally.
+**(a)** Before initiating formal dispute resolution, you agree to contact us at legal@aictrlnet.com to attempt to resolve the dispute informally.
 
 **(b)** We will attempt to resolve disputes within 60 days of receiving notice.
 
@@ -923,7 +923,7 @@ These Terms do not create any third-party beneficiary rights.
 
 Bodaty Technologies, Inc.
 Attn: Legal Department
-legal@bodaty.com
+legal@aictrlnet.com
 
 **(b)** Notices to you will be sent to the email address associated with your Account.
 
@@ -946,19 +946,19 @@ If you have questions about these Terms, please contact us:
 **Bodaty Technologies, Inc.**
 
 **General Inquiries:**
-Email: contact@bodaty.com
+Email: contact@aictrlnet.com
 
 **Legal Department:**
-Email: legal@bodaty.com
+Email: legal@aictrlnet.com
 
 **Sales:**
-Email: sales@bodaty.com
+Email: sales@aictrlnet.com
 
 **Support:**
-Email: support@bodaty.com
+Email: support@aictrlnet.com
 
 **Privacy Inquiries:**
-Email: privacy@bodaty.com
+Email: privacy@aictrlnet.com
 
 ---
 
