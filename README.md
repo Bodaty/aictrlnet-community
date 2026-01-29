@@ -315,7 +315,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Contact
 
 - Email: team@aictrlnet.com
-- GitHub: [@bobbykoritala](https://github.com/bobbykoritala)
+- GitHub: [Bodaty/aictrlnet-community](https://github.com/Bodaty/aictrlnet-community)
 - Organization: [Bodaty](https://github.com/Bodaty)
 
 ## Related Projects
