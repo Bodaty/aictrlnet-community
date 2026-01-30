@@ -505,7 +505,7 @@ class LicenseEnforcer:
                         "5 users",
                         "Email support",
                         "99.9% uptime SLA",
-                        "2 hrs/mo expert services"
+                        "2 hrs/mo expert assistance"
                     ]
                 },
                 {
@@ -517,7 +517,7 @@ class LicenseEnforcer:
                         "20 users",
                         "Priority support",
                         "Advanced analytics",
-                        "4 hrs/mo expert services"
+                        "4 hrs/mo expert assistance"
                     ]
                 }
             ]
@@ -532,7 +532,7 @@ class LicenseEnforcer:
                         "50 users",
                         "Dedicated support",
                         "API access",
-                        "8 hrs/mo expert services"
+                        "8 hrs/mo expert assistance"
                     ]
                 },
                 {
