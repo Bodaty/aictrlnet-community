@@ -28,7 +28,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, text
 from models.community import Adapter
 
 
@@ -1335,6 +1335,8 @@ class AdapterSeeder:
             return
         
         async with self.SessionLocal() as session:
+            # Bypass Row-Level Security for seeding operations
+            await session.execute(text("SET app.is_admin = 'true'"))
             # Check if adapters already exist
             result = await session.execute(select(Adapter))
             existing_adapters = result.scalars().all()

@@ -17,7 +17,7 @@ from src.core.security import get_password_hash
 # Import SQLAlchemy components
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 # Import models directly to avoid circular import issues
 # IMPORTANT: Import UserAdapterConfig BEFORE User to ensure it's available for the relationship
@@ -721,6 +721,8 @@ async def main():
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
     async with async_session() as session:
+        # Bypass Row-Level Security for seeding operations
+        await session.execute(text("SET app.is_admin = 'true'"))
         try:
             # Seed users
             user_count = await seed_users(session)

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import select
+from sqlalchemy import select, text
 from models.community_complete import Adapter
 
 logging.basicConfig(level=logging.INFO)
@@ -137,6 +137,8 @@ async def seed_adapters_for_edition(edition: str = "community") -> Dict[str, Any
     try:
         # Seed to database
         async with async_session() as session:
+            # Bypass Row-Level Security for seeding operations
+            await session.execute(text("SET app.is_admin = 'true'"))
             results["seeded_to_db"] = await seed_adapters_to_db(session, edition)
         
         # Register in runtime
