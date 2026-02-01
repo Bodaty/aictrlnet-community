@@ -242,7 +242,22 @@ async def create_workflow(
                 status_code=400,
                 detail="Either template_id or definition must be provided"
             )
-        
+
+        # Apply Q/G/S/M metadata before saving (Business/Enterprise)
+        try:
+            from aictrlnet_business.services.qgsm import apply_qgsm
+
+            qgsm_result = apply_qgsm(
+                {"definition": workflow_data.definition},
+                context={"prompt": workflow_data.description or workflow_data.name},
+                edition="business",
+            )
+            workflow_data.definition = qgsm_result.get("definition", workflow_data.definition)
+        except ImportError:
+            pass  # Community edition — Q/G/S/M not available
+        except Exception as qgsm_err:
+            logger.warning(f"Q/G/S/M pre-save failed (non-critical): {qgsm_err}")
+
         workflow = await workflow_service.create_workflow(workflow_data, tenant_id=tenant_id)
     
     # Track usage
@@ -1036,7 +1051,25 @@ async def create_manual_workflow(
         except ImportError:
             logger.info("Unified enhancement pipeline not available, using basic workflow")
             final_definition = workflow_definition
-        
+
+        # Ensure Q/G/S/M metadata on every node (Business/Enterprise)
+        try:
+            from aictrlnet_business.services.qgsm import apply_qgsm
+
+            qgsm_workflow = apply_qgsm(
+                {"definition": final_definition},
+                context={
+                    "prompt": workflow_description or workflow_name,
+                    "category": workflow_category,
+                },
+                edition="business",
+            )
+            final_definition = qgsm_workflow.get("definition", final_definition)
+        except ImportError:
+            pass  # Community edition — Q/G/S/M not available
+        except Exception as qgsm_err:
+            logger.warning(f"Q/G/S/M enforcement failed (non-critical): {qgsm_err}")
+
         # Create the workflow in database
         workflow = WorkflowDefinition(
             name=workflow_name,
