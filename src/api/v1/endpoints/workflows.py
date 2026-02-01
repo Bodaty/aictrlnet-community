@@ -244,15 +244,24 @@ async def create_workflow(
             )
 
         # Apply Q/G/S/M metadata before saving (Business/Enterprise)
+        # Prefer dynamic (risk-driven) path when db is available
         try:
-            from aictrlnet_business.services.qgsm import apply_qgsm
+            from aictrlnet_business.services.qgsm import apply_qgsm_dynamic
+            from schemas.workflow import WorkflowDefinitionSchema
 
-            qgsm_result = apply_qgsm(
+            qgsm_result = await apply_qgsm_dynamic(
                 {"definition": workflow_data.definition},
                 context={"prompt": workflow_data.description or workflow_data.name},
                 edition="business",
+                db=db,
             )
-            workflow_data.definition = qgsm_result.get("definition", workflow_data.definition)
+            enhanced_defn = qgsm_result.get("definition")
+            if enhanced_defn is not None:
+                # Re-wrap as Pydantic model so downstream create_workflow works
+                if isinstance(enhanced_defn, dict):
+                    workflow_data.definition = WorkflowDefinitionSchema(**enhanced_defn)
+                else:
+                    workflow_data.definition = enhanced_defn
         except ImportError:
             pass  # Community edition — Q/G/S/M not available
         except Exception as qgsm_err:
@@ -1053,16 +1062,18 @@ async def create_manual_workflow(
             final_definition = workflow_definition
 
         # Ensure Q/G/S/M metadata on every node (Business/Enterprise)
+        # Prefer dynamic (risk-driven) path when db is available
         try:
-            from aictrlnet_business.services.qgsm import apply_qgsm
+            from aictrlnet_business.services.qgsm import apply_qgsm_dynamic
 
-            qgsm_workflow = apply_qgsm(
+            qgsm_workflow = await apply_qgsm_dynamic(
                 {"definition": final_definition},
                 context={
                     "prompt": workflow_description or workflow_name,
                     "category": workflow_category,
                 },
                 edition="business",
+                db=db,
             )
             final_definition = qgsm_workflow.get("definition", final_definition)
         except ImportError:
