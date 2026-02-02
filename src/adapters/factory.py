@@ -51,6 +51,7 @@ class AdapterFactory:
         "crewai": "adapters.implementations.ai_agents.crewai_adapter.CrewAIAdapter",
         "autogen": "adapters.implementations.ai_agents.autogen_adapter.AutoGenAdapter",
         "semantic-kernel": "adapters.implementations.ai_agents.semantic_kernel_adapter.SemanticKernelAdapter",
+        "openclaw": "adapters.implementations.ai_agents.openclaw_adapter.OpenClawAdapter",
     }
     
     @classmethod
