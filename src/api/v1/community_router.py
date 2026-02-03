@@ -36,6 +36,10 @@ from .endpoints import (
     google_a2a_basic,
     mfa,
     knowledge,  # Knowledge service for intelligent assistant
+    runtime_gateway_basic,  # Community runtime gateway (audit-only)
+    canvas,  # A2UI Canvas (render, auto-detect, templates)
+    marketplace,  # Marketplace (browse, search, install)
+    personal_agent,  # Personal Agent Hub
 )
 from . import platform_integration
 
@@ -117,6 +121,18 @@ api_router.include_router(cache_basic.router, prefix="/cache", tags=["cache-basi
 
 # Google A2A Protocol endpoints (Community features - discovery only)
 api_router.include_router(google_a2a_basic.router, prefix="/a2a", tags=["a2a-basic"])
+
+# Community Runtime Gateway (audit-only mode)
+api_router.include_router(runtime_gateway_basic.router, prefix="/runtime", tags=["runtime-gateway-basic"])
+
+# A2UI Canvas endpoints
+api_router.include_router(canvas.router, prefix="/canvas", tags=["canvas"])
+
+# Marketplace endpoints (Community: browse, search, install with limit)
+api_router.include_router(marketplace.router, prefix="/marketplace", tags=["marketplace"])
+
+# Personal Agent Hub endpoints
+api_router.include_router(personal_agent.router, prefix="/personal-agent", tags=["personal-agent"])
 
 # LLM endpoints (Community feature)
 try:
