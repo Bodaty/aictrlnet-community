@@ -28,6 +28,7 @@ from .endpoints import (
     data_quality,
     usage,
     license,
+    billing,  # Stripe billing integration (portal, invoices)
     iam,
     ai_agent_basic,
     agent_execution,  # New agent execution endpoints
@@ -109,6 +110,9 @@ api_router.include_router(usage.router, prefix="/usage", tags=["usage"])
 
 # License management endpoints
 api_router.include_router(license.router, prefix="/license", tags=["license"])
+
+# Billing endpoints (Stripe integration - portal, invoices)
+api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
 
 # Internal Agent Messaging endpoints
 api_router.include_router(iam.router, prefix="/iam", tags=["iam"])
