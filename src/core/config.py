@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     # Stripe Payment Processing
     STRIPE_SECRET_KEY: str = Field(default="sk_test_dummy")
     STRIPE_WEBHOOK_SECRET: str = Field(default="whsec_dummy")
+    # Pre-created Stripe Price IDs (create these in Stripe Dashboard)
+    STRIPE_PRICE_BUSINESS_STARTER: str = Field(default="")
+    STRIPE_PRICE_BUSINESS_PRO: str = Field(default="")
+    STRIPE_PRICE_BUSINESS_SCALE: str = Field(default="")
+    STRIPE_PRICE_ENTERPRISE: str = Field(default="")
     FRONTEND_URL: str = Field(default="http://localhost:3000")
     
     # Feature Flags

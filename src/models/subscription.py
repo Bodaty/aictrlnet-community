@@ -86,6 +86,7 @@ class Subscription(Base):
     current_period_end = Column(DateTime, nullable=False)
     trial_end = Column(DateTime)
     canceled_at = Column(DateTime)
+    payment_failed_at = Column(DateTime)  # Track first payment failure for grace period
     
     # Stripe integration
     stripe_customer_id = Column(String)

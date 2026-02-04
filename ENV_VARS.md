@@ -118,9 +118,29 @@ BACKEND_CORS_ORIGINS=https://app.example.com,https://admin.example.com
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STRIPE_SECRET_KEY` | test key | Stripe secret API key |
+| `STRIPE_SECRET_KEY` | test key | Stripe secret API key (or restricted key) |
 | `STRIPE_WEBHOOK_SECRET` | test key | Stripe webhook signing secret |
+| `STRIPE_PRICE_BUSINESS_STARTER` | - | Stripe Price ID for Business Starter plan |
+| `STRIPE_PRICE_BUSINESS_PRO` | - | Stripe Price ID for Business Pro plan |
+| `STRIPE_PRICE_BUSINESS_SCALE` | - | Stripe Price ID for Business Scale plan |
+| `STRIPE_PRICE_ENTERPRISE` | - | Stripe Price ID for Enterprise plan |
 | `FRONTEND_URL` | `http://localhost:3000` | Frontend URL for Stripe redirects |
+
+**Setup Steps:**
+1. Create products and prices in [Stripe Dashboard](https://dashboard.stripe.com/products)
+2. Copy each Price ID (starts with `price_`)
+3. Add webhook endpoint pointing to `/api/v1/billing/webhook`
+4. Enable these webhook events: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`
+
+**Example:**
+```bash
+STRIPE_SECRET_KEY=rk_live_your_restricted_key
+STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
+STRIPE_PRICE_BUSINESS_STARTER=price_1ABC123
+STRIPE_PRICE_BUSINESS_PRO=price_1DEF456
+STRIPE_PRICE_BUSINESS_SCALE=price_1GHI789
+STRIPE_PRICE_ENTERPRISE=price_1JKL012
+```
 
 ## Credentials Backend
 
@@ -166,7 +186,8 @@ Before deploying to production, ensure you have:
 - [ ] Set `BACKEND_CORS_ORIGINS` to your domain(s)
 - [ ] Configured `MFA_ENCRYPTION_KEY` if using MFA
 - [ ] Configured `OAUTH2_ENCRYPTION_KEY` if using OAuth2
-- [ ] Set up proper `STRIPE_*` keys if using payments
+- [ ] Set up `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` if using payments
+- [ ] Configure `STRIPE_PRICE_*` variables with your Stripe Price IDs
 
 ## Example .env Files
 
