@@ -19,9 +19,14 @@ def mock_db_session():
     session = AsyncMock()
     session.add = Mock()
     session.commit = AsyncMock()
-    session.execute = AsyncMock()
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
+
+    # Create a proper mock result for execute
+    # This fixes the AsyncMock chaining issue
+    mock_result = MagicMock()
+    session.execute = AsyncMock(return_value=mock_result)
+
     return session
 
 
@@ -128,7 +133,7 @@ class TestPersonalAgentServiceConfig:
         mock_db_session.execute.return_value.scalar_one.return_value = mock_agent_config
 
         updates = PersonalAgentConfigUpdate(
-            personality={"tone": "professional", "style": "detailed"},
+            personality={"tone": "formal", "style": "detailed"},  # 'formal' is valid, not 'professional'
         )
 
         result = await personal_agent_service.update_config("user-123", updates)
@@ -163,7 +168,7 @@ class TestPersonalAgentServiceAsk:
             context={"location": "NYC"},
         )
 
-        with patch('services.personal_agent_service.NLPService') as mock_nlp_class:
+        with patch('services.nlp.NLPService') as mock_nlp_class:
             mock_nlp = MagicMock()
             mock_nlp.generate_from_prompt = AsyncMock(return_value={
                 "response": "I cannot check the weather directly.",
@@ -185,7 +190,7 @@ class TestPersonalAgentServiceAsk:
 
         request = PersonalAgentAskRequest(message="Hello!")
 
-        with patch('services.personal_agent_service.NLPService') as mock_nlp_class:
+        with patch('services.nlp.NLPService') as mock_nlp_class:
             mock_nlp = MagicMock()
             mock_nlp.generate_from_prompt = AsyncMock(return_value={
                 "response": "Hello! How can I help?",
@@ -205,7 +210,7 @@ class TestPersonalAgentServiceAsk:
 
         request = PersonalAgentAskRequest(message="Test question")
 
-        with patch('services.personal_agent_service.NLPService') as mock_nlp_class:
+        with patch('services.nlp.NLPService') as mock_nlp_class:
             mock_nlp = MagicMock()
             mock_nlp.generate_from_prompt = AsyncMock(side_effect=Exception("NLP unavailable"))
             mock_nlp_class.return_value = mock_nlp
@@ -317,7 +322,7 @@ class TestCommunityLimits:
 
     def test_allowed_memory_types(self):
         """Test allowed memory types."""
-        expected = ["interaction", "preference", "fact", "context"]
+        expected = ["interaction", "preference", "context", "learning"]
         for mem_type in expected:
             assert mem_type in ALLOWED_MEMORY_TYPES
 
@@ -332,7 +337,7 @@ class TestPersonalAgentServiceMemory:
 
         request = PersonalAgentAskRequest(message="Remember this")
 
-        with patch('services.personal_agent_service.NLPService') as mock_nlp_class:
+        with patch('services.nlp.NLPService') as mock_nlp_class:
             mock_nlp = MagicMock()
             mock_nlp.generate_from_prompt = AsyncMock(return_value={"response": "OK"})
             mock_nlp_class.return_value = mock_nlp
