@@ -504,3 +504,176 @@ class StripeService:
         except stripe.error.StripeError as e:
             logger.error(f"Failed to create billing portal session: {e}")
             raise
+
+    async def list_invoices(
+        self,
+        user_id: str,
+        limit: int = 10,
+        starting_after: str = None
+    ) -> Dict[str, Any]:
+        """List invoices for a user.
+
+        Args:
+            user_id: The user's ID
+            limit: Maximum number of invoices to return (1-100)
+            starting_after: Invoice ID to paginate after
+
+        Returns:
+            Dict with invoices list and pagination info
+        """
+        stripe = self._get_stripe()
+
+        result = await self.db.execute(
+            select(Subscription).where(Subscription.user_id == user_id)
+        )
+        subscription = result.scalar_one_or_none()
+
+        if not subscription or not subscription.stripe_customer_id:
+            return {"invoices": [], "has_more": False}
+
+        try:
+            params = {
+                "customer": subscription.stripe_customer_id,
+                "limit": min(limit, 100),
+            }
+            if starting_after:
+                params["starting_after"] = starting_after
+
+            invoices = stripe.Invoice.list(**params)
+
+            return {
+                "invoices": [
+                    {
+                        "id": inv.id,
+                        "number": inv.number,
+                        "status": inv.status,
+                        "amount_due": inv.amount_due / 100,  # Convert from cents
+                        "amount_paid": inv.amount_paid / 100,
+                        "currency": inv.currency.upper(),
+                        "created": datetime.fromtimestamp(inv.created).isoformat(),
+                        "due_date": datetime.fromtimestamp(inv.due_date).isoformat() if inv.due_date else None,
+                        "paid_at": datetime.fromtimestamp(inv.status_transitions.paid_at).isoformat() if inv.status_transitions.paid_at else None,
+                        "period_start": datetime.fromtimestamp(inv.period_start).isoformat() if inv.period_start else None,
+                        "period_end": datetime.fromtimestamp(inv.period_end).isoformat() if inv.period_end else None,
+                        "invoice_pdf": inv.invoice_pdf,
+                        "hosted_invoice_url": inv.hosted_invoice_url,
+                        "description": inv.description,
+                    }
+                    for inv in invoices.data
+                ],
+                "has_more": invoices.has_more,
+            }
+        except stripe.error.StripeError as e:
+            logger.error(f"Failed to list invoices: {e}")
+            raise
+
+    async def get_invoice(self, user_id: str, invoice_id: str) -> Dict[str, Any]:
+        """Get a single invoice by ID.
+
+        Args:
+            user_id: The user's ID (for authorization)
+            invoice_id: The Stripe invoice ID
+
+        Returns:
+            Invoice details
+        """
+        stripe = self._get_stripe()
+
+        # Verify the user owns this invoice
+        result = await self.db.execute(
+            select(Subscription).where(Subscription.user_id == user_id)
+        )
+        subscription = result.scalar_one_or_none()
+
+        if not subscription or not subscription.stripe_customer_id:
+            raise ValueError("No billing information found")
+
+        try:
+            inv = stripe.Invoice.retrieve(invoice_id)
+
+            # Security check: ensure invoice belongs to this customer
+            if inv.customer != subscription.stripe_customer_id:
+                raise ValueError("Invoice not found")
+
+            return {
+                "id": inv.id,
+                "number": inv.number,
+                "status": inv.status,
+                "amount_due": inv.amount_due / 100,
+                "amount_paid": inv.amount_paid / 100,
+                "amount_remaining": inv.amount_remaining / 100,
+                "currency": inv.currency.upper(),
+                "created": datetime.fromtimestamp(inv.created).isoformat(),
+                "due_date": datetime.fromtimestamp(inv.due_date).isoformat() if inv.due_date else None,
+                "paid_at": datetime.fromtimestamp(inv.status_transitions.paid_at).isoformat() if inv.status_transitions.paid_at else None,
+                "period_start": datetime.fromtimestamp(inv.period_start).isoformat() if inv.period_start else None,
+                "period_end": datetime.fromtimestamp(inv.period_end).isoformat() if inv.period_end else None,
+                "invoice_pdf": inv.invoice_pdf,
+                "hosted_invoice_url": inv.hosted_invoice_url,
+                "description": inv.description,
+                "subtotal": inv.subtotal / 100,
+                "tax": inv.tax / 100 if inv.tax else 0,
+                "total": inv.total / 100,
+                "line_items": [
+                    {
+                        "description": item.description,
+                        "amount": item.amount / 100,
+                        "quantity": item.quantity,
+                        "period_start": datetime.fromtimestamp(item.period.start).isoformat() if item.period else None,
+                        "period_end": datetime.fromtimestamp(item.period.end).isoformat() if item.period else None,
+                    }
+                    for item in inv.lines.data
+                ],
+            }
+        except stripe.error.StripeError as e:
+            logger.error(f"Failed to retrieve invoice: {e}")
+            raise
+
+    async def get_upcoming_invoice(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get the upcoming invoice for a subscription.
+
+        This shows what the user will be charged at the next billing cycle.
+
+        Args:
+            user_id: The user's ID
+
+        Returns:
+            Upcoming invoice details, or None if no upcoming invoice
+        """
+        stripe = self._get_stripe()
+
+        result = await self.db.execute(
+            select(Subscription).where(Subscription.user_id == user_id)
+        )
+        subscription = result.scalar_one_or_none()
+
+        if not subscription or not subscription.stripe_customer_id:
+            return None
+
+        try:
+            inv = stripe.Invoice.upcoming(customer=subscription.stripe_customer_id)
+
+            return {
+                "amount_due": inv.amount_due / 100,
+                "currency": inv.currency.upper(),
+                "next_payment_attempt": datetime.fromtimestamp(inv.next_payment_attempt).isoformat() if inv.next_payment_attempt else None,
+                "period_start": datetime.fromtimestamp(inv.period_start).isoformat() if inv.period_start else None,
+                "period_end": datetime.fromtimestamp(inv.period_end).isoformat() if inv.period_end else None,
+                "subtotal": inv.subtotal / 100,
+                "tax": inv.tax / 100 if inv.tax else 0,
+                "total": inv.total / 100,
+                "line_items": [
+                    {
+                        "description": item.description,
+                        "amount": item.amount / 100,
+                        "quantity": item.quantity,
+                    }
+                    for item in inv.lines.data
+                ],
+            }
+        except stripe.error.InvalidRequestError:
+            # No upcoming invoice (e.g., subscription canceled)
+            return None
+        except stripe.error.StripeError as e:
+            logger.error(f"Failed to retrieve upcoming invoice: {e}")
+            raise
