@@ -108,7 +108,7 @@ class StripeService:
                 "price": price_id,
                 "quantity": 1
             }],
-            "success_url": f"{self.settings.FRONTEND_URL}/license/success?session_id={{CHECKOUT_SESSION_ID}}",
+            "success_url": f"{self.settings.FRONTEND_URL}/subscription/success?session_id={{CHECKOUT_SESSION_ID}}",
             "cancel_url": f"{self.settings.FRONTEND_URL}/subscription/cancel",
             "metadata": {
                 "user_id": user_id,
