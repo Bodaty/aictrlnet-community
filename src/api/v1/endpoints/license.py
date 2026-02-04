@@ -82,14 +82,40 @@ async def upgrade_license(
     db: AsyncSession = Depends(get_db)
 ):
     """Upgrade license to a higher plan."""
-    
+
     # Import here to avoid circular imports
     from services.stripe_service import StripeService
-    
+
     # Check if Stripe is configured
     from core.config import get_settings
     settings = get_settings()
-    
+
+    # Enterprise plan requires contacting sales
+    if request.target_plan.lower() == "enterprise":
+        return LicenseUpgradeResponse(
+            subscription={
+                "id": "enterprise_inquiry",
+                "plan": "enterprise",
+                "status": "contact_sales",
+                "current_period_start": datetime.utcnow().isoformat() + "Z",
+                "current_period_end": datetime.utcnow().isoformat() + "Z",
+                "features": {
+                    "unlimited_users": True,
+                    "unlimited_workflows": True,
+                    "sso_saml": True,
+                    "dedicated_support": True,
+                    "custom_sla": True,
+                    "on_premise_option": True,
+                    "custom_integrations": True
+                }
+            },
+            requires_payment=False,
+            contact_sales=True,
+            contact_sales_url="https://aictrlnet.com/contact-sales",
+            contact_sales_email="sales@aictrlnet.com",
+            message="Enterprise plans are customized to your organization's needs. Our sales team will work with you to create a tailored solution."
+        )
+
     if not settings.STRIPE_SECRET_KEY or settings.STRIPE_SECRET_KEY == "sk_test_dummy":
         # Return mock response if Stripe not configured
         return LicenseUpgradeResponse(
@@ -105,17 +131,17 @@ async def upgrade_license(
             requires_payment=True,
             checkout_url="/mock-checkout"  # Mock checkout URL
         )
-    
+
     # Use real Stripe integration
     stripe_service = StripeService(db)
-    
+
     try:
         checkout_data = await stripe_service.create_checkout_session(
             user_id=current_user.get("sub"),
             plan=request.target_plan,
             billing_period=request.billing_period
         )
-        
+
         return LicenseUpgradeResponse(
             subscription={
                 "id": checkout_data.get("session_id"),

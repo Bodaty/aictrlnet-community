@@ -290,3 +290,7 @@ class LicenseUpgradeResponse(BaseModel):
     payment_intent: Optional[str] = None
     requires_payment: bool = False
     checkout_url: Optional[str] = None
+    contact_sales: bool = False
+    contact_sales_url: Optional[str] = None
+    contact_sales_email: Optional[str] = None
+    message: Optional[str] = None

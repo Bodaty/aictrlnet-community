@@ -564,21 +564,29 @@ def _metric_to_limit_type(metric_type: str) -> Optional[LimitType]:
 
 
 def _get_stripe_price_id(edition: str, billing_period: str) -> Optional[str]:
-    """Get Stripe price ID for edition and billing period."""
-    
-    # These would be configured in environment or database
-    prices = {
-        ("community", "monthly"): "price_community_monthly",
-        ("community", "yearly"): "price_community_yearly",
-        ("business_starter", "monthly"): "price_business_starter_monthly",
-        ("business_starter", "yearly"): "price_business_starter_yearly",
-        ("business_growth", "monthly"): "price_business_growth_monthly",
-        ("business_growth", "yearly"): "price_business_growth_yearly",
-        ("business_scale", "monthly"): "price_business_scale_monthly",
-        ("business_scale", "yearly"): "price_business_scale_yearly",
+    """Get Stripe price ID for edition and billing period from config."""
+
+    settings = get_settings()
+
+    # Map edition names to config price IDs
+    # Note: Community is free, so no price ID needed
+    # Annual pricing would need separate config vars (not yet implemented)
+    price_mapping = {
+        "business_starter": settings.STRIPE_PRICE_BUSINESS_STARTER,
+        "business_pro": settings.STRIPE_PRICE_BUSINESS_PRO,
+        "business_scale": settings.STRIPE_PRICE_BUSINESS_SCALE,
+        "enterprise": settings.STRIPE_PRICE_ENTERPRISE,
+        # Legacy names for backwards compatibility
+        "business_growth": settings.STRIPE_PRICE_BUSINESS_PRO,
     }
-    
-    return prices.get((edition, billing_period))
+
+    price_id = price_mapping.get(edition)
+
+    # Return None if price ID is empty or not configured
+    if not price_id or price_id == "":
+        return None
+
+    return price_id
 
 
 async def _send_subscription_email(
