@@ -45,35 +45,33 @@ class MCPQualityService:
                 }
             }
             
-            # Perform quality assessment using mock for now
-            # In production, this would integrate with the full DataQualityService
-            assessment = await self._mock_quality_assessment(
-                data=data_to_assess,
-                data_type=content_type,
-                custom_criteria=assessment_criteria
-            )
-            
-            # Extract scores
+            # Perform quality assessment using real DataQualityService
+            prepared_data = self.quality_service._prepare_data(data_to_assess.get("content", ""))
+
             dimensions = {}
             overall_score = 0.0
-            
-            if hasattr(assessment, 'dimensions') and assessment.dimensions:
-                for dim in assessment.dimensions:
-                    dimensions[dim.name] = {
-                        "score": dim.score,
-                        "weight": dim.weight,
-                        "issues": dim.issues or []
-                    }
-                    overall_score += dim.score * dim.weight
-            else:
-                # Fallback if assessment doesn't have expected structure
-                dimensions = {
-                    "accuracy": {"score": 0.85, "weight": 0.3, "issues": []},
-                    "completeness": {"score": 0.9, "weight": 0.25, "issues": []},
-                    "relevance": {"score": 0.88, "weight": 0.25, "issues": []},
-                    "clarity": {"score": 0.82, "weight": 0.2, "issues": []}
+            total_weight = 0.0
+
+            for criterion, config in assessment_criteria.items():
+                weight = config.get("weight", 0.25)
+                try:
+                    score, issues, _ = await self.quality_service._assess_dimension(
+                        prepared_data, criterion, "community"
+                    )
+                except Exception:
+                    score = 0.5
+                    issues = []
+
+                dimensions[criterion] = {
+                    "score": score,
+                    "weight": weight,
+                    "issues": issues or []
                 }
-                overall_score = 0.86
+                overall_score += score * weight
+                total_weight += weight
+
+            if total_weight > 0 and total_weight != 1.0:
+                overall_score = overall_score / total_weight
             
             # Generate recommendations
             recommendations = self._generate_recommendations(dimensions, content_type)
@@ -147,32 +145,6 @@ class MCPQualityService:
             recommendations.append("Validate JSON structure and schema compliance")
         
         return recommendations[:5]  # Return top 5 recommendations
-    
-    async def _mock_quality_assessment(
-        self,
-        data: Dict[str, Any],
-        data_type: str,
-        custom_criteria: Dict[str, Any]
-    ) -> Any:
-        """Mock quality assessment for MCP demo."""
-        # Create a mock assessment object
-        class MockAssessment:
-            def __init__(self):
-                self.dimensions = []
-        
-        assessment = MockAssessment()
-        
-        # Add mock dimensions based on criteria
-        for criterion, config in (custom_criteria or self._default_criteria).items():
-            dimension = type('Dimension', (), {
-                'name': criterion,
-                'score': 0.75 + (0.1 if data_type == "json" else 0.05),
-                'weight': config.get('weight', 0.25),
-                'issues': []
-            })()
-            assessment.dimensions.append(dimension)
-        
-        return assessment
     
     async def batch_assess_quality(
         self,
