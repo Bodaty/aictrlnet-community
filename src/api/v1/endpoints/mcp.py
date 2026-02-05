@@ -1783,7 +1783,7 @@ async def create_sampling(
         # Use LLM service for sampling
         # This integrates with existing LLM adapters
         try:
-            from services.llm_service import LLMService
+            from llm.service import LLMService
             llm_service = LLMService()
 
             result = await llm_service.complete(

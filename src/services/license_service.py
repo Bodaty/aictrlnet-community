@@ -9,9 +9,17 @@ import json
 
 from models.subscription import Subscription, SubscriptionPlan, UsageTracking, SubscriptionStatus
 from models.enforcement import UsageMetric
-from models.analytics import AnalyticsMetric
 from models.user import User
-from services.analytics_service import AnalyticsService
+
+# Analytics are Business-edition modules; guard for Community where they don't exist
+try:
+    from models.analytics import AnalyticsMetric
+    from services.analytics_service import AnalyticsService
+    _analytics_available = True
+except ImportError:
+    AnalyticsMetric = None
+    AnalyticsService = None
+    _analytics_available = False
 from core.tenant_context import get_current_tenant_id
 
 logger = logging.getLogger(__name__)
@@ -152,9 +160,11 @@ class LicenseService:
                 }
                 total_usage += int(row.total_usage)
             
-            # Get analytics overview for additional context
-            analytics_overview = await AnalyticsService.get_analytics_overview(db, tenant_id, days)
-            
+            # Get analytics overview for additional context (Business+ only)
+            analytics_overview = {}
+            if _analytics_available:
+                analytics_overview = await AnalyticsService.get_analytics_overview(db, tenant_id, days)
+
             # Combine the data
             return {
                 "period_days": days,
@@ -192,16 +202,19 @@ class LicenseService:
     ) -> List[Dict[str, Any]]:
         """Get usage trends over time."""
         try:
+            if not _analytics_available:
+                return []
+
             # Get daily usage trends from analytics
             trends = await AnalyticsService.get_time_series_data(
                 db, "api_requests", tenant_id, "day", days
             )
-            
+
             # Also get task and workflow trends
             task_trends = await AnalyticsService.get_time_series_data(
                 db, "tasks_created", tenant_id, "day", days
             )
-            
+
             workflow_trends = await AnalyticsService.get_time_series_data(
                 db, "workflows_executed", tenant_id, "day", days
             )
@@ -335,15 +348,16 @@ class LicenseService:
             db.add(usage_metric)
             await db.commit()
             
-            # Also record in analytics metrics for trend analysis
-            await AnalyticsService.record_metric(
-                db=db,
-                name=f"usage_{feature_name}",
-                value=float(usage_count),
-                tenant_id=tenant_id,
-                labels={"feature": feature_name, "user_id": user_id},
-                source="license_tracking"
-            )
+            # Also record in analytics metrics for trend analysis (Business+)
+            if _analytics_available:
+                await AnalyticsService.record_metric(
+                    db=db,
+                    name=f"usage_{feature_name}",
+                    value=float(usage_count),
+                    tenant_id=tenant_id,
+                    labels={"feature": feature_name, "user_id": user_id},
+                    source="license_tracking"
+                )
             
             return True
             
