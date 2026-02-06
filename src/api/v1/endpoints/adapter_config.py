@@ -78,29 +78,44 @@ async def create_adapter_config(
 ):
     """Create a new adapter configuration."""
     service = AdapterConfigService(db)
-    
+
     # Verify adapter type exists in registry
-    if config_data.adapter_type not in adapter_registry.adapter_classes:
+    registered_types = adapter_registry.adapter_classes
+    if config_data.adapter_type not in registered_types:
+        # If no adapters are registered yet, return a helpful message
+        if not registered_types:
+            raise HTTPException(
+                status_code=503,
+                detail="Adapter registry not initialized. Please try again later."
+            )
         raise HTTPException(
             status_code=400,
-            detail=f"Adapter type '{config_data.adapter_type}' not found in registry"
+            detail=f"Adapter type '{config_data.adapter_type}' not found in registry. Available types: {list(registered_types.keys())}"
         )
-    
-    # Create configuration
-    config = await service.create_config(
-        user_id=current_user.get('id'),
-        config_data=config_data
-    )
-    
-    # Convert to response model
-    config_dict = config.to_dict()
-    # Don't include encrypted credentials in response
-    config_dict.pop('credentials', None)
-    config_dict['settings'] = config.settings
-    config_dict['credentials'] = None  # Indicate credentials are saved but not shown
-    config_dict['metadata'] = config_dict.pop('metadata', {})
-    
-    return AdapterConfigResponse(**config_dict)
+
+    try:
+        # Create configuration
+        config = await service.create_config(
+            user_id=current_user.get('id'),
+            config_data=config_data
+        )
+
+        # Convert to response model
+        config_dict = config.to_dict()
+        # Don't include encrypted credentials in response
+        config_dict.pop('credentials', None)
+        config_dict['settings'] = config.settings
+        config_dict['credentials'] = None  # Indicate credentials are saved but not shown
+        config_dict['metadata'] = config_dict.pop('metadata', {})
+
+        return AdapterConfigResponse(**config_dict)
+
+    except Exception as e:
+        logger.error(f"Failed to create adapter config: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create adapter configuration: {str(e)}"
+        )
 
 
 @router.get("/config/{config_id}", response_model=AdapterConfigWithCapabilities)
@@ -127,7 +142,7 @@ async def get_adapter_config(
         response.is_registered = True
         
         # Get capabilities from registry if instance exists
-        adapter_instance = adapter_registry.adapters.get(config.adapter_type)
+        adapter_instance = adapter_registry._adapters.get(config.adapter_type)
         if adapter_instance and hasattr(adapter_instance, 'get_capabilities'):
             try:
                 caps = adapter_instance.get_capabilities()

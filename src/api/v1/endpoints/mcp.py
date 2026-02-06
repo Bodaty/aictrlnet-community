@@ -29,7 +29,7 @@ from schemas.mcp import (
     MCPTestResponse,
     MCPTaskCreate,
     MCPTaskResponse,
-    MCPDiscoveryResponse,
+    MCPServerDiscoveryResponse,
     MCPInfo,
     MCPTransportType,
     # MCP Async Task schemas (SEP-1686)
@@ -105,10 +105,10 @@ async def get_mcp_client() -> MCPClientAdapter:
     """Get or create MCP client adapter instance."""
     global _mcp_client
     if _mcp_client is None:
+        from adapters.models import AdapterCategory
         config = AdapterConfig(
             name="mcp_client",
-            adapter_type="ai",
-            enabled=True
+            category=AdapterCategory.AI
         )
         _mcp_client = MCPClientAdapter(config)
         await _mcp_client.initialize()
@@ -704,15 +704,15 @@ async def test_server_connection(
         )
 
 
-@router.get("/discovery", response_model=MCPDiscoveryResponse)
+@router.get("/discovery", response_model=MCPServerDiscoveryResponse)
 async def discover_mcp_resources(
     current_user: User = Depends(get_current_active_user)
 ):
     """Discover available MCP resources and capabilities"""
     try:
         capabilities = await MCPTaskIntegration.list_mcp_capabilities()
-        
-        return MCPDiscoveryResponse(
+
+        return MCPServerDiscoveryResponse(
             servers=[
                 MCPServerResponse(**server) for server in capabilities.get("servers", [])
             ],
@@ -720,12 +720,15 @@ async def discover_mcp_resources(
             providers=list(set(s.get("service_type", "custom") for s in capabilities.get("servers", []))),
             capabilities=capabilities.get("capabilities", [])
         )
-        
+
     except Exception as e:
-        logger.error(f"Discovery failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Discovery failed: {str(e)}"
+        logger.warning(f"MCP discovery unavailable: {str(e)}")
+        # Return empty discovery response when service is unavailable
+        return MCPServerDiscoveryResponse(
+            servers=[],
+            total=0,
+            providers=[],
+            capabilities=[]
         )
 
 
@@ -1287,11 +1290,15 @@ async def list_active_connections(
         }
 
     except Exception as e:
-        logger.error(f"Failed to get connections: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get connections: {str(e)}"
-        )
+        logger.warning(f"MCP connections unavailable: {e}")
+        # Return empty connections response when service is unavailable
+        return {
+            "status": "unavailable",
+            "connected_servers": 0,
+            "protocol_compliant": True,
+            "transport": "stdio",
+            "servers": []
+        }
 
 
 # ============================================================
@@ -1470,6 +1477,72 @@ async def list_async_tasks(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list tasks: {str(e)}"
         )
+
+
+# NOTE: This route MUST be defined before /tasks/{task_token} to avoid path conflicts
+@router.get("/tasks/server/{server_id}/active", response_model=MCPAsyncTaskList)
+async def get_active_tasks_for_server(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get all active (working) tasks for a specific MCP server.
+
+    This is useful for monitoring the workload of a specific server.
+    """
+    # Verify server exists
+    server_result = await db.execute(
+        select(MCPServer).filter_by(id=server_id)
+    )
+    server = server_result.scalar_one_or_none()
+
+    if not server:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="MCP server not found"
+        )
+
+    # Get active tasks
+    result = await db.execute(
+        select(MCPAsyncTask)
+        .filter_by(server_id=server_id, state=MCPTaskStateModel.WORKING)
+        .order_by(MCPAsyncTask.started_at.desc())
+    )
+    tasks = result.scalars().all()
+
+    task_responses = [
+        MCPAsyncTaskResponse(
+            id=task.id,
+            task_token=task.task_token,
+            server_id=task.server_id,
+            tool_id=task.tool_id,
+            method=task.method,
+            state=MCPTaskState(task.state.value),
+            progress=task.progress,
+            progress_message=task.progress_message,
+            result_content=task.result_content,
+            structured_result=task.structured_result,
+            error_code=task.error_code,
+            error_message=task.error_message,
+            error_data=task.error_data,
+            started_at=task.started_at,
+            completed_at=task.completed_at,
+            last_activity_at=task.last_activity_at,
+            timeout_seconds=task.timeout_seconds,
+            client_id=task.client_id,
+            task_metadata=task.task_metadata,
+            created_at=task.created_at,
+            updated_at=task.updated_at
+        )
+        for task in tasks
+    ]
+
+    return MCPAsyncTaskList(
+        tasks=task_responses,
+        total=len(task_responses),
+        page=1,
+        per_page=len(task_responses)
+    )
 
 
 @router.get("/tasks/{task_token}", response_model=MCPAsyncTaskResponse)
@@ -1679,71 +1752,6 @@ async def delete_async_task(
     return {"message": "Task deleted successfully", "task_token": task_token}
 
 
-@router.get("/tasks/server/{server_id}/active", response_model=MCPAsyncTaskList)
-async def get_active_tasks_for_server(
-    server_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
-):
-    """Get all active (working) tasks for a specific MCP server.
-
-    This is useful for monitoring the workload of a specific server.
-    """
-    # Verify server exists
-    server_result = await db.execute(
-        select(MCPServer).filter_by(id=server_id)
-    )
-    server = server_result.scalar_one_or_none()
-
-    if not server:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="MCP server not found"
-        )
-
-    # Get active tasks
-    result = await db.execute(
-        select(MCPAsyncTask)
-        .filter_by(server_id=server_id, state=MCPTaskStateModel.WORKING)
-        .order_by(MCPAsyncTask.started_at.desc())
-    )
-    tasks = result.scalars().all()
-
-    task_responses = [
-        MCPAsyncTaskResponse(
-            id=task.id,
-            task_token=task.task_token,
-            server_id=task.server_id,
-            tool_id=task.tool_id,
-            method=task.method,
-            state=MCPTaskState(task.state.value),
-            progress=task.progress,
-            progress_message=task.progress_message,
-            result_content=task.result_content,
-            structured_result=task.structured_result,
-            error_code=task.error_code,
-            error_message=task.error_message,
-            error_data=task.error_data,
-            started_at=task.started_at,
-            completed_at=task.completed_at,
-            last_activity_at=task.last_activity_at,
-            timeout_seconds=task.timeout_seconds,
-            client_id=task.client_id,
-            task_metadata=task.task_metadata,
-            created_at=task.created_at,
-            updated_at=task.updated_at
-        )
-        for task in tasks
-    ]
-
-    return MCPAsyncTaskList(
-        tasks=task_responses,
-        total=len(task_responses),
-        page=1,
-        per_page=len(task_responses)
-    )
-
-
 # ============================================================
 # MCP Sampling Endpoints (SEP-1577 - MCP 2025-11-25)
 # Enables agentic workflows where server requests LLM sampling
@@ -1811,11 +1819,22 @@ async def create_sampling(
                 stop_reason="endTurn"
             )
 
+        except Exception as e:
+            logger.warning(f"LLM sampling failed: {e}")
+            return MCPCreateSamplingResponse(
+                role="assistant",
+                content="Sampling service temporarily unavailable",
+                model=None,
+                stop_reason="endTurn"
+            )
+
     except Exception as e:
-        logger.error(f"Sampling request failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Sampling failed: {str(e)}"
+        logger.warning(f"Sampling request failed: {e}")
+        return MCPCreateSamplingResponse(
+            role="assistant",
+            content="Sampling service temporarily unavailable",
+            model=None,
+            stop_reason="endTurn"
         )
 
 

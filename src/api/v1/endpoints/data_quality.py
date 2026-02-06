@@ -3,12 +3,15 @@ Data Quality API endpoints - Community Edition
 ISO 25012 compliant quality assessment with edition-based features
 """
 
+import logging
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
+
+logger = logging.getLogger(__name__)
 from core.security import get_current_active_user
 from schemas.data_quality import (
     AssessmentRequest, AssessmentResponse,
@@ -254,50 +257,60 @@ async def get_quality_usage(
 ):
     """Get quality feature usage statistics"""
     user_dict = user_to_dict(current_user)
-    tracker = UsageTracker(db)
-    
+    service = DataQualityService(db)
+
     # Handle non-UUID tenant_id
     tenant_id_str = user_dict.get('tenant_id', '00000000-0000-0000-0000-000000000000')
     try:
         tenant_id = UUID(tenant_id_str)
-    except ValueError:
+    except (ValueError, TypeError):
         # Use default UUID if tenant_id is invalid
         tenant_id = UUID('00000000-0000-0000-0000-000000000000')
     edition = user_dict.get('edition', 'community')
-    
+
     # Get usage statistics
-    from datetime import datetime, timedelta
+    from datetime import datetime
     period_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     period_end = datetime.utcnow()
-    
-    # Get assessment count
-    from models.data_quality import DataQualityAssessment
-    from sqlalchemy import func, and_, select
-    
-    result = await db.execute(
-        select(func.count(DataQualityAssessment.id)).where(
-            and_(
-                DataQualityAssessment.tenant_id == tenant_id,
-                DataQualityAssessment.assessment_time >= period_start
+
+    # Get assessment count with error handling
+    assessment_count = 0
+    rules_count = 0
+    try:
+        from models.data_quality import DataQualityAssessment
+        from sqlalchemy import func, and_, select
+
+        result = await db.execute(
+            select(func.count(DataQualityAssessment.id)).where(
+                and_(
+                    DataQualityAssessment.tenant_id == tenant_id,
+                    DataQualityAssessment.assessment_time >= period_start
+                )
             )
         )
-    )
-    assessment_count = result.scalar() or 0
-    
+        assessment_count = result.scalar() or 0
+
+        # Get rules count
+        rules = await service.get_rules(tenant_id)
+        rules_count = len(rules) if rules else 0
+    except Exception as e:
+        logger.warning(f"Failed to get usage statistics: {e}")
+        # Continue with default values
+
     # Get limits by edition
     limits = {
         'community': 1000,
         'business': 100000,
         'enterprise': None
     }
-    
+
     return UsageSummary(
         edition=edition,
         period_start=period_start,
         period_end=period_end,
         total_assessments=assessment_count,
         assessments_limit=limits.get(edition),
-        total_rules_created=len(await service.get_rules(tenant_id)),
+        total_rules_created=rules_count,
         total_profiles_used=0,  # Profiles are Business/Enterprise only
         features_used=[],
         upgrade_recommended=assessment_count > (limits.get(edition) or 0) * 0.8

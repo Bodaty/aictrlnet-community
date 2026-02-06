@@ -192,52 +192,100 @@ async def start_feature_trial(
     current_user: Dict[str, Any] = Depends(get_current_user_safe),
     db: AsyncSession = Depends(get_db)
 ):
-    """Start a trial for higher-tier features."""
-    
-    tenant_id = current_user.get("tenant_id") or get_current_tenant_id()
-    
-    # Check if trial is available
-    if not await _is_trial_available(db, tenant_id, Edition(request.target_edition)):
-        raise HTTPException(
-            status_code=400,
-            detail="Trial not available for this edition or already used"
+    """Start a trial for higher-tier features.
+
+    If a trial already exists for the same edition and is still valid,
+    returns the existing trial (idempotent behavior).
+    """
+
+    try:
+        tenant_id = current_user.get("tenant_id") or get_current_tenant_id()
+        target_edition = Edition(request.target_edition)
+
+        # No trials for community edition
+        if target_edition == Edition.COMMUNITY:
+            raise HTTPException(
+                status_code=400,
+                detail="Trial not available for Community edition"
+            )
+
+        # Check if trial already exists for this edition
+        result = await db.execute(
+            select(FeatureTrial).where(
+                and_(
+                    FeatureTrial.tenant_id == tenant_id,
+                    FeatureTrial.edition_required == target_edition.value
+                )
+            )
         )
-    
-    # Create trial
-    trial = FeatureTrial(
-        tenant_id=tenant_id,
-        feature_name=f"{request.target_edition}_trial",
-        edition_required=request.target_edition,
-        expires_at=datetime.utcnow() + timedelta(days=request.trial_days or 14)
-    )
-    db.add(trial)
-    
-    # Track trial start
-    prompt = UpgradePrompt(
-        tenant_id=tenant_id,
-        prompt_type="trial_started",
-        trigger_reason=f"Started {request.target_edition} trial",
-        action_taken="started_trial",
-        metadata={"edition": request.target_edition, "days": request.trial_days or 14}
-    )
-    db.add(prompt)
-    
-    await db.commit()
-    await db.refresh(trial)
-    
-    # Clear tenant cache to pick up new trial
-    enforcer = LicenseEnforcer(db)
-    cache_key = f"tenant_info:{tenant_id}"
-    await enforcer.cache.delete(cache_key)
-    
-    return TrialResponse(
-        trial_id=str(trial.id),
-        edition=trial.edition_required,
-        features=list(enforcer.EDITION_FEATURES.get(Edition(trial.edition_required), set())),
-        started_at=trial.started_at,
-        expires_at=trial.expires_at,
-        days_remaining=(trial.expires_at - datetime.utcnow()).days
-    )
+        existing_trial = result.scalar_one_or_none()
+
+        # If trial exists and is still valid, return it (idempotent)
+        if existing_trial and existing_trial.expires_at > datetime.utcnow():
+            enforcer = LicenseEnforcer(db)
+            return TrialResponse(
+                trial_id=str(existing_trial.id),
+                edition=existing_trial.edition_required,
+                features=list(enforcer.EDITION_FEATURES.get(Edition(existing_trial.edition_required), set())),
+                started_at=existing_trial.started_at,
+                expires_at=existing_trial.expires_at,
+                days_remaining=(existing_trial.expires_at - datetime.utcnow()).days
+            )
+
+        # If trial exists but expired, return error
+        if existing_trial:
+            raise HTTPException(
+                status_code=400,
+                detail="Trial for this edition has already been used and expired"
+            )
+
+        # Create trial
+        trial = FeatureTrial(
+            tenant_id=tenant_id,
+            feature_name=f"{request.target_edition}_trial",
+            edition_required=request.target_edition,
+            expires_at=datetime.utcnow() + timedelta(days=request.trial_days or 14)
+        )
+        db.add(trial)
+
+        # Track trial start
+        prompt = UpgradePrompt(
+            tenant_id=tenant_id,
+            prompt_type="trial_started",
+            prompt_message=f"Started {request.target_edition} trial for {request.trial_days or 14} days",
+            target_edition=request.target_edition
+        )
+        db.add(prompt)
+
+        await db.commit()
+        await db.refresh(trial)
+
+        # Clear tenant cache to pick up new trial
+        try:
+            enforcer = LicenseEnforcer(db)
+            cache_key = f"tenant_info:{tenant_id}"
+            await enforcer.cache.delete(cache_key)
+        except Exception as cache_err:
+            logger.warning(f"Failed to clear tenant cache: {cache_err}")
+
+        enforcer = LicenseEnforcer(db)
+        return TrialResponse(
+            trial_id=str(trial.id),
+            edition=trial.edition_required,
+            features=list(enforcer.EDITION_FEATURES.get(Edition(trial.edition_required), set())),
+            started_at=trial.started_at,
+            expires_at=trial.expires_at,
+            days_remaining=(trial.expires_at - datetime.utcnow()).days
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to start trial: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start trial: {str(e)}"
+        )
 
 
 @router.post("/subscribe", response_model=SubscriptionResponse)

@@ -612,8 +612,9 @@ async def create_intent(
 ):
     """
     Create a predefined conversation intent.
-    
+
     Intents help the system better understand and route user requests.
+    If an intent with the same name already exists, returns the existing one (idempotent).
     """
     # Check if intent name already exists
     stmt = select(ConversationIntent).where(
@@ -621,9 +622,10 @@ async def create_intent(
     )
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()
-    
+
+    # Return existing intent (idempotent behavior)
     if existing:
-        raise HTTPException(status_code=400, detail="Intent name already exists")
+        return existing
     
     from uuid import uuid4
     from datetime import datetime
