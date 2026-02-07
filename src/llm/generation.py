@@ -196,7 +196,20 @@ class LLMGenerationEngine:
             available_models = await self._get_ollama_models()
             if model in available_models or self._is_api_model(model):
                 return model, classify_model_tier(model)
-        
+
+        # System-default tier selection (no user preferences — use task-type mapping)
+        # This ensures tool_use, workflow_generation, etc. get the right model size
+        if not request.user_settings:
+            tier = self._determine_tier_for_task(request)
+            system_model = get_system_default_for_tier(tier)
+            try:
+                available_models = await self._get_ollama_models()
+                if system_model in available_models:
+                    logger.info(f"Using system tier default: {tier.value} tier -> {system_model} (task_type={request.task_type})")
+                    return system_model, tier
+            except Exception:
+                pass  # Fall through to enhanced selector
+
         # Use enhanced selector for sophisticated routing
         requirements = {
             "capabilities": request.context.get("required_capabilities", []) if request.context else [],
@@ -336,6 +349,7 @@ class LLMGenerationEngine:
             "complex_generation",
             "workflow_creation",
             "detailed_analysis",
+            "tool_use",
         }
 
         # Check for exact matches first
