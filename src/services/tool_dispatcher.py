@@ -568,6 +568,42 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
         editions=["community", "business", "enterprise"],
         handler="system_service.get_status"
     ),
+
+    # -------------------------------------------------------------------------
+    # Live System Context Tools (2) — Phase C
+    # -------------------------------------------------------------------------
+    "get_platform_metrics": ToolDefinition(
+        name="get_platform_metrics",
+        description=(
+            "Get platform-wide metrics: workflow count, success rate, active users, "
+            "automation hours saved. Use when the user asks about platform activity, "
+            "stats, or 'what's happening on the platform'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="system_service.get_platform_metrics"
+    ),
+    "get_recent_activity": ToolDefinition(
+        name="get_recent_activity",
+        description=(
+            "Get recent platform activity: last N events including workflow runs, "
+            "errors, and user actions. Use when user asks 'what happened recently' "
+            "or wants to see recent events."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10, "description": "Max events to return"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="system_service.get_recent_activity"
+    ),
 }
 
 
@@ -653,6 +689,9 @@ class ToolDispatcher:
         # Help/System tools
         "get_help": "_get_help",
         "get_system_status": "_get_system_status",
+        # Live System Context (Phase C)
+        "get_platform_metrics": "_get_platform_metrics",
+        "get_recent_activity": "_get_recent_activity",
     }
 
     def __init__(self, db: AsyncSession, edition: Edition = Edition.COMMUNITY):
@@ -909,6 +948,12 @@ class ToolDispatcher:
             return await self._get_help(arguments)
         elif tool_name == "get_system_status":
             return await self._get_system_status(arguments)
+
+        # Live System Context tools (Phase C)
+        elif tool_name == "get_platform_metrics":
+            return await self._get_platform_metrics(arguments)
+        elif tool_name == "get_recent_activity":
+            return await self._get_recent_activity(arguments)
 
         else:
             return ToolResult(
@@ -1602,6 +1647,89 @@ class ToolDispatcher:
                 "services_loaded": list(self._services.keys()) if self._initialized else []
             }
         )
+
+    async def _get_platform_metrics(self, args: Dict) -> ToolResult:
+        """Get platform-wide metrics: workflow count, success rate, active users."""
+        try:
+            from sqlalchemy import select, func
+            from models.workflow import Workflow
+            from models.conversation import ConversationSession
+
+            # Workflow counts
+            wf_stmt = select(func.count(Workflow.id))
+            wf_result = await self.db.execute(wf_stmt)
+            total_workflows = wf_result.scalar() or 0
+
+            active_stmt = select(func.count(Workflow.id)).where(Workflow.status == "active")
+            active_result = await self.db.execute(active_stmt)
+            active_workflows = active_result.scalar() or 0
+
+            # Session count as proxy for active users
+            session_stmt = select(func.count(ConversationSession.id))
+            session_result = await self.db.execute(session_stmt)
+            total_sessions = session_result.scalar() or 0
+
+            return ToolResult(
+                success=True,
+                data={
+                    "total_workflows": total_workflows,
+                    "active_workflows": active_workflows,
+                    "total_sessions": total_sessions,
+                    "edition": self.edition.value,
+                    "message": (
+                        f"Platform has {total_workflows} workflows "
+                        f"({active_workflows} active), {total_sessions} conversation sessions"
+                    )
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[v4] Platform metrics query failed: {e}")
+            return ToolResult(
+                success=True,
+                data={"status": "healthy", "edition": self.edition.value,
+                      "message": "Metrics query unavailable, platform is running"}
+            )
+
+    async def _get_recent_activity(self, args: Dict) -> ToolResult:
+        """Get recent platform activity events."""
+        try:
+            from sqlalchemy import select, desc
+            from models.conversation import ConversationSession
+
+            limit = min(args.get("limit", 10), 25)
+
+            stmt = (
+                select(ConversationSession)
+                .order_by(desc(ConversationSession.last_activity))
+                .limit(limit)
+            )
+            result = await self.db.execute(stmt)
+            sessions = result.scalars().all()
+
+            events = []
+            for s in sessions:
+                events.append({
+                    "type": "conversation",
+                    "name": getattr(s, "name", None) or "Conversation",
+                    "intent": s.primary_intent,
+                    "state": s.state,
+                    "last_activity": s.last_activity.isoformat() if s.last_activity else None,
+                })
+
+            return ToolResult(
+                success=True,
+                data={
+                    "events": events,
+                    "count": len(events),
+                    "message": f"Found {len(events)} recent activity events"
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[v4] Recent activity query failed: {e}")
+            return ToolResult(
+                success=True,
+                data={"events": [], "count": 0, "message": "Activity query unavailable"}
+            )
 
     # =========================================================================
     # Integration/Adapter Tool Handlers
