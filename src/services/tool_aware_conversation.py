@@ -93,40 +93,6 @@ class ToolAwareConversationService:
         """Get tool definitions available for the current edition."""
         return self.tool_dispatcher.get_available_tools()
 
-    async def _should_use_tool_calling(self, content: str, session_state: str) -> bool:
-        """Determine if the message should trigger tool calling.
-
-        Tool calling is used when:
-        - User explicitly asks to perform an action
-        - Session is in a state where tools are appropriate
-        - Message contains actionable keywords
-        """
-        content_lower = content.lower()
-
-        # Actionable keywords that suggest tool use
-        action_keywords = [
-            'create', 'make', 'generate', 'build', 'set up', 'configure',
-            'list', 'show', 'get', 'find', 'search', 'discover',
-            'execute', 'run', 'start', 'deploy', 'launch',
-            'delete', 'remove', 'cancel', 'stop',
-            'update', 'modify', 'change', 'edit',
-            'help me', 'i want to', 'i need to', 'can you',
-            'automate', 'workflow', 'agent', 'template', 'task'
-        ]
-
-        # Check for actionable content
-        has_action_keyword = any(kw in content_lower for kw in action_keywords)
-
-        # Don't use tools for simple greetings or questions about capabilities
-        simple_patterns = ['hello', 'hi', 'hey', 'what can you', 'who are you', 'help']
-        is_simple = any(p in content_lower for p in simple_patterns) and len(content) < 50
-
-        # States where tools are appropriate
-        tool_appropriate_states = ['greeting', 'gathering_intent', 'clarifying_details']
-        in_tool_state = session_state in tool_appropriate_states
-
-        return has_action_keyword and not is_simple and in_tool_state
-
     async def execute_tool_calls(
         self,
         tool_calls: List[ToolCall],
@@ -165,78 +131,6 @@ class ToolAwareConversationService:
             logger.info(f"[v4] Tool {tool_call.name} completed: success={result.success}")
 
         return results
-
-    async def generate_response_with_tool_results(
-        self,
-        original_query: str,
-        tool_calls: List[ToolCall],
-        tool_results: List[ToolResult],
-        llm_text: Optional[str] = None
-    ) -> str:
-        """Generate a natural language response incorporating tool results.
-
-        This creates a user-friendly summary of what tools were called
-        and what they accomplished.
-        """
-        # Start with LLM text if provided
-        if llm_text and not llm_text.startswith("I'll"):
-            response = llm_text + "\n\n"
-        else:
-            response = ""
-
-        # Summarize tool executions
-        successful_tools = []
-        failed_tools = []
-
-        for tool_call, result in zip(tool_calls, tool_results):
-            if result.success:
-                successful_tools.append((tool_call, result))
-            else:
-                failed_tools.append((tool_call, result))
-
-        # Report successful executions
-        if successful_tools:
-            if len(successful_tools) == 1:
-                tool_call, result = successful_tools[0]
-                tool_name = tool_call.name.replace('_', ' ')
-                response += f"I've completed the {tool_name} request.\n\n"
-
-                # Include key result data
-                if result.data:
-                    data = result.data
-                    if 'message' in data:
-                        response += f"{data['message']}\n\n"
-                    elif 'count' in data:
-                        response += f"Found {data['count']} items.\n\n"
-                    elif 'workflow' in data:
-                        response += "The workflow has been created successfully.\n\n"
-                    elif 'task' in data:
-                        response += "The task has been created.\n\n"
-            else:
-                response += f"I've completed {len(successful_tools)} actions:\n\n"
-                for tool_call, result in successful_tools:
-                    tool_name = tool_call.name.replace('_', ' ')
-                    response += f"- **{tool_name}**: Done"
-                    if result.data and 'message' in result.data:
-                        response += f" - {result.data['message']}"
-                    response += "\n"
-                response += "\n"
-
-        # Report failures
-        if failed_tools:
-            response += "**Some actions encountered issues:**\n"
-            for tool_call, result in failed_tools:
-                tool_name = tool_call.name.replace('_', ' ')
-                response += f"- {tool_name}: {result.error}\n"
-            response += "\n"
-
-        # Add follow-up prompt
-        if successful_tools and not failed_tools:
-            response += "Is there anything else you'd like me to help with?"
-        elif failed_tools:
-            response += "Would you like me to try again or take a different approach?"
-
-        return response
 
     async def determine_post_tool_state(
         self,
@@ -365,13 +259,12 @@ class ToolAwareConversationService:
                             }
                         }
 
-                # Generate final response
-                response_content = await self.generate_response_with_tool_results(
-                    original_query=content,
-                    tool_calls=llm_response.tool_calls,
-                    tool_results=tool_results,
-                    llm_text=llm_response.text
-                )
+                # Generate final response — use LLM text if available, else simple summary
+                if llm_response.text:
+                    response_content = llm_response.text
+                else:
+                    successful = [r for r in tool_results if r.success]
+                    response_content = f"Executed {len(successful)} tool(s) successfully."
 
                 yield {
                     "event": "response",

@@ -162,7 +162,7 @@ class LLMService:
     
     async def generate_with_tools(
         self,
-        prompt: str,
+        prompt: Optional[str],
         tools: List[ToolDefinition],
         user_settings: Optional[UserLLMSettings] = None,
         model_override: Optional[str] = None,
@@ -171,7 +171,8 @@ class LLMService:
         max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
         tool_choice: str = "auto",  # "auto", "required", or specific tool name
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        messages: Optional[List[Dict[str, Any]]] = None  # Multi-turn conversation
     ) -> LLMToolResponse:
         """
         Generate text with tool calling support.
@@ -183,7 +184,7 @@ class LLMService:
            → Falls back to text-based JSON parsing (less reliable)
 
         Args:
-            prompt: The user's request or query
+            prompt: The user's request or query (can be None if messages provided)
             tools: List of ToolDefinition objects available for the LLM to use
             user_settings: User's LLM preferences from UI
             model_override: Explicit model override
@@ -193,6 +194,10 @@ class LLMService:
             system_prompt: Optional system prompt override
             tool_choice: "auto" (LLM decides), "required" (must use tool), or tool name
             context: Additional context for generation
+            messages: Optional multi-turn conversation history. When provided,
+                used instead of wrapping prompt in a single message. Enables
+                iterative agent loops where tool results feed back into the
+                conversation. Format: [{"role": "system"|"user"|"assistant"|"tool", "content": ...}]
 
         Returns:
             LLMToolResponse with either text response or tool_calls to execute
@@ -205,7 +210,7 @@ class LLMService:
 
         # Determine which model we'll use
         temp_request = LLMRequest(
-            prompt=prompt,
+            prompt=prompt or "",
             user_settings=user_settings,
             model_override=model_override,
             task_type=task_type
@@ -232,7 +237,8 @@ class LLMService:
                 system_prompt=system_prompt or "You are an AI assistant that helps users accomplish tasks.",
                 tool_choice=tool_choice,
                 start_time=start_time,
-                user_settings=user_settings
+                user_settings=user_settings,
+                messages=messages
             )
         else:
             # Fallback to text-based tool calling
@@ -248,7 +254,8 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 context=context,
-                start_time=start_time
+                start_time=start_time,
+                messages=messages
             )
 
     def _supports_native_tools(self, provider: ModelProvider, model: str) -> bool:
@@ -269,7 +276,7 @@ class LLMService:
 
     async def _generate_with_native_tools(
         self,
-        prompt: str,
+        prompt: Optional[str],
         tools: List[ToolDefinition],
         model: str,
         provider: ModelProvider,
@@ -279,7 +286,8 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings]
+        user_settings: Optional[UserLLMSettings],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using native tool calling APIs - routes to provider-specific implementations."""
         import json
@@ -297,7 +305,8 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 start_time=start_time,
-                user_settings=user_settings
+                user_settings=user_settings,
+                messages=messages
             )
         elif provider == ModelProvider.ANTHROPIC:
             return await self._generate_with_anthropic_native_tools(
@@ -310,7 +319,8 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 start_time=start_time,
-                user_settings=user_settings
+                user_settings=user_settings,
+                messages=messages
             )
         elif provider == ModelProvider.OPENAI:
             return await self._generate_with_openai_native_tools(
@@ -323,7 +333,8 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 start_time=start_time,
-                user_settings=user_settings
+                user_settings=user_settings,
+                messages=messages
             )
         elif provider == ModelProvider.AZURE_OPENAI:
             return await self._generate_with_azure_native_tools(
@@ -336,7 +347,8 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 start_time=start_time,
-                user_settings=user_settings
+                user_settings=user_settings,
+                messages=messages
             )
         elif provider == ModelProvider.GEMINI:
             return await self._generate_with_gemini_native_tools(
@@ -375,7 +387,8 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 start_time=start_time,
-                user_settings=user_settings
+                user_settings=user_settings,
+                messages=messages
             )
         elif provider == ModelProvider.COHERE:
             return await self._generate_with_cohere_native_tools(
@@ -404,12 +417,13 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 context=None,
-                start_time=start_time
+                start_time=start_time,
+                messages=messages
             )
 
     async def _generate_with_ollama_native_tools(
         self,
-        prompt: str,
+        prompt: Optional[str],
         tools: List[ToolDefinition],
         model: str,
         tier: ModelTier,
@@ -418,7 +432,8 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings]
+        user_settings: Optional[UserLLMSettings],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using Ollama's native tool calling API."""
         import json
@@ -443,16 +458,38 @@ class LLMService:
             }
             ollama_tools.append(ollama_tool)
 
-        # Build messages array
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
+        # Build messages array — use provided messages or construct from prompt
+        if messages:
+            api_messages = []
+            for msg in messages:
+                if msg["role"] == "tool":
+                    # Ollama uses role=tool with content
+                    api_messages.append({
+                        "role": "tool",
+                        "content": msg["content"]
+                    })
+                elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                    # Reconstruct assistant message with tool_calls
+                    api_messages.append({
+                        "role": "assistant",
+                        "content": msg.get("content") or "",
+                        "tool_calls": [
+                            {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                            for tc in msg["tool_calls"]
+                        ]
+                    })
+                else:
+                    api_messages.append({"role": msg["role"], "content": msg["content"]})
+        else:
+            api_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
 
         # Build request payload
         payload = {
             "model": model,
-            "messages": messages,
+            "messages": api_messages,
             "tools": ollama_tools,
             "stream": False,
             "options": {
@@ -559,7 +596,7 @@ class LLMService:
 
     async def _generate_with_anthropic_native_tools(
         self,
-        prompt: str,
+        prompt: Optional[str],
         tools: List[ToolDefinition],
         model: str,
         tier: ModelTier,
@@ -568,7 +605,8 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings]
+        user_settings: Optional[UserLLMSettings],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using Anthropic/Claude's native tool calling API."""
         import json
@@ -599,13 +637,40 @@ class LLMService:
             }
             anthropic_tools.append(anthropic_tool)
 
+        # Build messages — Anthropic uses separate 'system' field
+        if messages:
+            api_messages = []
+            system_text = system_prompt
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_text = msg["content"]
+                elif msg["role"] == "tool":
+                    # Anthropic format: role=user with tool_result content blocks
+                    api_messages.append({
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": msg.get("tool_use_id", ""), "content": msg["content"]}]
+                    })
+                elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                    # Anthropic format: assistant with tool_use content blocks
+                    content = []
+                    if msg.get("content"):
+                        content.append({"type": "text", "text": msg["content"]})
+                    for tc in msg["tool_calls"]:
+                        content.append({"type": "tool_use", "id": tc.get("id", ""), "name": tc["name"], "input": tc["arguments"]})
+                    api_messages.append({"role": "assistant", "content": content})
+                else:
+                    api_messages.append({"role": msg["role"], "content": msg["content"]})
+        else:
+            api_messages = [{"role": "user", "content": prompt}]
+            system_text = system_prompt
+
         # Build request payload
         payload = {
             "model": model,
             "max_tokens": max_tokens or 4096,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": prompt}],
-            "tools": anthropic_tools,
+            "system": system_text,
+            "messages": api_messages,
+            "tools": anthropic_tools if tools else [],
             "temperature": temperature
         }
 
@@ -699,7 +764,7 @@ class LLMService:
 
     async def _generate_with_openai_native_tools(
         self,
-        prompt: str,
+        prompt: Optional[str],
         tools: List[ToolDefinition],
         model: str,
         tier: ModelTier,
@@ -708,7 +773,8 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings]
+        user_settings: Optional[UserLLMSettings],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using OpenAI's native tool calling API."""
         import json
@@ -742,16 +808,43 @@ class LLMService:
             }
             openai_tools.append(openai_tool)
 
-        # Build messages
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
+        # Build messages — use provided or construct from prompt
+        if messages:
+            api_messages = []
+            for msg in messages:
+                if msg["role"] == "tool":
+                    # OpenAI format: role=tool with tool_call_id
+                    api_messages.append({
+                        "role": "tool",
+                        "tool_call_id": msg.get("tool_call_id", msg.get("tool_use_id", "")),
+                        "content": msg["content"]
+                    })
+                elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                    # OpenAI format: assistant with tool_calls array
+                    tc_list = []
+                    for tc in msg["tool_calls"]:
+                        tc_list.append({
+                            "id": tc.get("id", ""),
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])}
+                        })
+                    api_messages.append({
+                        "role": "assistant",
+                        "content": msg.get("content"),
+                        "tool_calls": tc_list
+                    })
+                else:
+                    api_messages.append({"role": msg["role"], "content": msg["content"]})
+        else:
+            api_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
 
         # Build request payload
         payload = {
             "model": model,
-            "messages": messages,
+            "messages": api_messages,
             "tools": openai_tools,
             "temperature": temperature
         }
@@ -862,7 +955,7 @@ class LLMService:
 
     async def _generate_with_azure_native_tools(
         self,
-        prompt: str,
+        prompt: Optional[str],
         tools: List[ToolDefinition],
         model: str,
         tier: ModelTier,
@@ -871,7 +964,8 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings]
+        user_settings: Optional[UserLLMSettings],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using Azure OpenAI's native tool calling API."""
         import json
@@ -909,13 +1003,39 @@ class LLMService:
             }
             azure_tools.append(azure_tool)
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
-        ]
+        # Build messages — use provided or construct from prompt (same format as OpenAI)
+        if messages:
+            api_messages = []
+            for msg in messages:
+                if msg["role"] == "tool":
+                    api_messages.append({
+                        "role": "tool",
+                        "tool_call_id": msg.get("tool_call_id", msg.get("tool_use_id", "")),
+                        "content": msg["content"]
+                    })
+                elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                    tc_list = []
+                    for tc in msg["tool_calls"]:
+                        tc_list.append({
+                            "id": tc.get("id", ""),
+                            "type": "function",
+                            "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])}
+                        })
+                    api_messages.append({
+                        "role": "assistant",
+                        "content": msg.get("content"),
+                        "tool_calls": tc_list
+                    })
+                else:
+                    api_messages.append({"role": msg["role"], "content": msg["content"]})
+        else:
+            api_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ]
 
         payload = {
-            "messages": messages,
+            "messages": api_messages,
             "tools": azure_tools,
             "temperature": temperature
         }
@@ -1323,7 +1443,7 @@ class LLMService:
 
     async def _generate_with_bedrock_native_tools(
         self,
-        prompt: str,
+        prompt: Optional[str],
         tools: List[ToolDefinition],
         model: str,
         tier: ModelTier,
@@ -1332,7 +1452,8 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings]
+        user_settings: Optional[UserLLMSettings],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using AWS Bedrock's native tool calling API (Claude on Bedrock)."""
         import json
@@ -1367,13 +1488,38 @@ class LLMService:
             }
             bedrock_tools.append(bedrock_tool)
 
+        # Build messages — Bedrock uses Anthropic format (separate system field)
+        if messages:
+            api_messages = []
+            system_text = system_prompt
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_text = msg["content"]
+                elif msg["role"] == "tool":
+                    api_messages.append({
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": msg.get("tool_use_id", ""), "content": msg["content"]}]
+                    })
+                elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                    content = []
+                    if msg.get("content"):
+                        content.append({"type": "text", "text": msg["content"]})
+                    for tc in msg["tool_calls"]:
+                        content.append({"type": "tool_use", "id": tc.get("id", ""), "name": tc["name"], "input": tc["arguments"]})
+                    api_messages.append({"role": "assistant", "content": content})
+                else:
+                    api_messages.append({"role": msg["role"], "content": msg["content"]})
+        else:
+            api_messages = [{"role": "user", "content": prompt}]
+            system_text = system_prompt
+
         # Build request body (Anthropic format for Bedrock)
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens or 4096,
-            "system": system_prompt,
-            "messages": [{"role": "user", "content": prompt}],
-            "tools": bedrock_tools,
+            "system": system_text,
+            "messages": api_messages,
+            "tools": bedrock_tools if tools else [],
             "temperature": temperature
         }
 
@@ -1594,7 +1740,7 @@ class LLMService:
 
     async def _generate_with_text_tools(
         self,
-        prompt: str,
+        prompt: Optional[str],
         tools: List[ToolDefinition],
         user_settings: Optional[UserLLMSettings],
         model_override: Optional[str],
@@ -1604,11 +1750,28 @@ class LLMService:
         system_prompt: Optional[str],
         tool_choice: str,
         context: Optional[Dict[str, Any]],
-        start_time: datetime
+        start_time: datetime,
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using text-based tool calling (fallback for unsupported providers)."""
         import json
         import uuid
+
+        # If messages provided, concatenate into a single prompt string
+        effective_prompt = prompt or ""
+        if messages:
+            parts = []
+            for msg in messages:
+                role = msg["role"].title()
+                content = msg.get("content") or ""
+                if msg["role"] == "tool":
+                    parts.append(f"Tool Result ({msg.get('name', 'unknown')}): {content}")
+                elif msg["role"] == "system":
+                    # System content is handled via system_prompt below
+                    system_prompt = content
+                else:
+                    parts.append(f"{role}: {content}")
+            effective_prompt = "\n\n".join(parts)
 
         # Build the tool-aware system prompt
         tools_description = self._build_tools_prompt(tools)
@@ -1620,7 +1783,7 @@ class LLMService:
 
         # Create request with structured output expectations
         request = LLMRequest(
-            prompt=prompt,
+            prompt=effective_prompt,
             user_settings=user_settings,
             model_override=model_override,
             task_type=task_type,
