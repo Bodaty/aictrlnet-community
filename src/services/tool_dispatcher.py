@@ -1,11 +1,11 @@
 """Tool Dispatcher for AICtrlNet Intelligent Assistant v4.
 
 This module provides the core tool-calling infrastructure for the Intelligent Assistant.
-It is part of the Community edition and provides 30 core tools.
+It is part of the Community edition and provides 35 core tools.
 
 Business and Enterprise editions extend this with additional tools.
 
-Tool Categories (Community - 30 tools):
+Tool Categories (Community - 35 tools):
 - Workflow Tools (6): create, discover, instantiate, list, execute, status
 - Task Management (4): create, list, update, status
 - Template Discovery (4): search, list, detail, categories
@@ -13,6 +13,7 @@ Tool Categories (Community - 30 tools):
 - Integration Tools (5): list, info, configure, execute, test - exposes 51+ adapters
 - MCP Tools (4): list_servers, discover_tools, execute, configure
 - Help/System (2): get_help, system_status
+- API Introspection (3): list_api_endpoints, get_endpoint_detail, search_api_capabilities
 """
 
 import logging
@@ -37,7 +38,7 @@ class Edition(str, Enum):
 
 
 # =============================================================================
-# CORE TOOLS REGISTRY (Community Edition - 30 tools)
+# CORE TOOLS REGISTRY (Community Edition - 35 tools)
 # =============================================================================
 
 CORE_TOOLS: Dict[str, ToolDefinition] = {
@@ -604,6 +605,65 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
         editions=["community", "business", "enterprise"],
         handler="system_service.get_recent_activity"
     ),
+
+    # -------------------------------------------------------------------------
+    # API Introspection Tools (3) — Phase E
+    # -------------------------------------------------------------------------
+    "list_api_endpoints": ToolDefinition(
+        name="list_api_endpoints",
+        description=(
+            "List all API endpoints on this AICtrlNet instance. Use when user asks "
+            "'what can I do', 'show me the API', or 'what endpoints exist'. "
+            "Supports filtering by method, path prefix, or tag."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                "path_prefix": {"type": "string", "description": "Filter by path prefix, e.g. '/api/v1/workflows'"},
+                "tag": {"type": "string", "description": "Filter by OpenAPI tag"},
+                "limit": {"type": "integer", "default": 20}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="api_introspection_service.list_endpoints"
+    ),
+    "get_endpoint_detail": ToolDefinition(
+        name="get_endpoint_detail",
+        description=(
+            "Get full detail for a specific API endpoint: request body schema, "
+            "query parameters, response schema. Use when user asks HOW to call an endpoint."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "e.g. '/api/v1/workflows'"},
+                "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"}
+            },
+            "required": ["path"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="api_introspection_service.get_endpoint_detail"
+    ),
+    "search_api_capabilities": ToolDefinition(
+        name="search_api_capabilities",
+        description=(
+            "Search API endpoint descriptions by natural language. "
+            "Use when user describes something they want to do and you need to find "
+            "which endpoints support it. Example: 'risk assessment' → governance endpoints."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural language search query"},
+                "limit": {"type": "integer", "default": 10}
+            },
+            "required": ["query"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="api_introspection_service.search_capabilities"
+    ),
 }
 
 
@@ -692,6 +752,10 @@ class ToolDispatcher:
         # Live System Context (Phase C)
         "get_platform_metrics": "_get_platform_metrics",
         "get_recent_activity": "_get_recent_activity",
+        # API Introspection (Phase E)
+        "list_api_endpoints": "_list_api_endpoints",
+        "get_endpoint_detail": "_get_endpoint_detail",
+        "search_api_capabilities": "_search_api_capabilities",
     }
 
     def __init__(self, db: AsyncSession, edition: Edition = Edition.COMMUNITY):
@@ -739,6 +803,13 @@ class ToolDispatcher:
                 self._services['adapter_service'] = AdapterService(self.db)
             except ImportError:
                 logger.warning("[v4] Adapter service not available")
+
+            # API Introspection service (Phase E)
+            try:
+                from services.knowledge.api_introspection_service import ApiIntrospectionService
+                self._services['api_introspection_service'] = ApiIntrospectionService()
+            except ImportError:
+                logger.warning("[v4] API Introspection service not available")
 
             self._initialized = True
             logger.info(f"[v4] Services loaded: {list(self._services.keys())}")
@@ -954,6 +1025,14 @@ class ToolDispatcher:
             return await self._get_platform_metrics(arguments)
         elif tool_name == "get_recent_activity":
             return await self._get_recent_activity(arguments)
+
+        # API Introspection tools (Phase E)
+        elif tool_name == "list_api_endpoints":
+            return await self._list_api_endpoints(arguments)
+        elif tool_name == "get_endpoint_detail":
+            return await self._get_endpoint_detail(arguments)
+        elif tool_name == "search_api_capabilities":
+            return await self._search_api_capabilities(arguments)
 
         else:
             return ToolResult(
@@ -1730,6 +1809,69 @@ class ToolDispatcher:
                 success=True,
                 data={"events": [], "count": 0, "message": "Activity query unavailable"}
             )
+
+    # =========================================================================
+    # API Introspection Tool Handlers (Phase E)
+    # =========================================================================
+
+    async def _list_api_endpoints(self, args: Dict) -> ToolResult:
+        """List API endpoints with optional filtering."""
+        svc = self._services.get('api_introspection_service')
+        if not svc:
+            return ToolResult(
+                success=True,
+                data={"endpoints": [], "count": 0, "message": "API Introspection service not available"}
+            )
+        try:
+            await svc._ensure_initialized()
+            result = await svc.list_endpoints(
+                method=args.get("method"),
+                path_prefix=args.get("path_prefix"),
+                tag=args.get("tag"),
+                limit=args.get("limit", 20),
+            )
+            return ToolResult(success=True, data=result)
+        except Exception as e:
+            logger.warning(f"[v4] list_api_endpoints failed: {e}")
+            return ToolResult(success=False, error=str(e))
+
+    async def _get_endpoint_detail(self, args: Dict) -> ToolResult:
+        """Get full detail for a specific API endpoint."""
+        svc = self._services.get('api_introspection_service')
+        if not svc:
+            return ToolResult(
+                success=True,
+                data={"error": "API Introspection service not available"}
+            )
+        try:
+            await svc._ensure_initialized()
+            result = await svc.get_endpoint_detail(
+                path=args.get("path", ""),
+                method=args.get("method", "GET"),
+            )
+            return ToolResult(success=True, data=result)
+        except Exception as e:
+            logger.warning(f"[v4] get_endpoint_detail failed: {e}")
+            return ToolResult(success=False, error=str(e))
+
+    async def _search_api_capabilities(self, args: Dict) -> ToolResult:
+        """Search API endpoints by natural language query."""
+        svc = self._services.get('api_introspection_service')
+        if not svc:
+            return ToolResult(
+                success=True,
+                data={"results": [], "count": 0, "message": "API Introspection service not available"}
+            )
+        try:
+            await svc._ensure_initialized()
+            result = await svc.search_capabilities(
+                query=args.get("query", ""),
+                limit=args.get("limit", 10),
+            )
+            return ToolResult(success=True, data=result)
+        except Exception as e:
+            logger.warning(f"[v4] search_api_capabilities failed: {e}")
+            return ToolResult(success=False, error=str(e))
 
     # =========================================================================
     # Integration/Adapter Tool Handlers
