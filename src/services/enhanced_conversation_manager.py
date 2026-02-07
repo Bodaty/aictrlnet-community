@@ -19,6 +19,7 @@ from services.action_planner import ActionPlanner
 from services.progressive_executor import ProgressiveExecutor
 from services.pattern_learning_service import PatternLearningService
 from services.proactive_assistant import ProactiveAssistant
+from services.system_prompt_assembler import SystemPromptAssembler
 from schemas.conversation import ConversationResponse, IntentDetectionResponse
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class EnhancedConversationService(ConversationManagerService):
         self.progressive_executor = ProgressiveExecutor(db)
         self.pattern_service = PatternLearningService(db)
         self.proactive_assistant = ProactiveAssistant(db)
+        self.prompt_assembler = SystemPromptAssembler(db)
         self._knowledge_initialized = False
 
         # Initialize LLM service for intelligent responses
@@ -1258,9 +1260,11 @@ Response (just the sentence, no quotes):"""
             }
         }
 
-        # Step 2: Build knowledge-aware system prompt
-        system_prompt = await self._build_knowledge_aware_prompt(
-            content, knowledge_items, session_context
+        # Step 2: Build system prompt via assembler
+        system_prompt = await self.prompt_assembler.assemble(
+            edition="community",
+            knowledge_items=knowledge_items,
+            session_context=session_context,
         )
 
         # Step 3: Get tool definitions
@@ -1418,143 +1422,6 @@ Response (just the sentence, no quotes):"""
                 "event": "error",
                 "data": {"message": str(e)}
             }
-
-    async def _build_knowledge_aware_prompt(
-        self,
-        user_query: str,
-        knowledge_items: List["KnowledgeItem"],
-        session_context: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """
-        Build a system prompt enriched with discovered knowledge.
-
-        This is the KEY difference from ToolAwareConversationService's generic prompt.
-        It includes:
-        - Discovered templates relevant to the query
-        - Available agents with their capabilities
-        - Industry-specific context from industry packs
-        - Previous conversation context
-        """
-        # Base prompt with AICtrlNet capabilities
-        prompt = """You are AICtrlNet's intelligent assistant with deep knowledge of the system's capabilities.
-
-You have access to tools for workflow automation, agent management, template usage, and system integration.
-
-**Your Knowledge Context:**
-
-"""
-        # Add discovered templates
-        templates = [k for k in knowledge_items if k.type == "template"]
-        if templates:
-            prompt += "**Available Templates:**\n"
-            for t in templates[:5]:
-                desc = t.data.get('description', 'Workflow template')
-                category = t.data.get('category', 'general')
-                prompt += f"- **{t.name}** ({category}): {desc}\n"
-            prompt += "\n"
-
-        # Add discovered agents
-        agents = [k for k in knowledge_items if k.type == "agent"]
-        if agents:
-            prompt += "**Available AI Agents:**\n"
-            for a in agents[:5]:
-                capabilities = a.data.get('capabilities', [])
-                cap_str = ', '.join(capabilities[:3]) if capabilities else 'General assistance'
-                prompt += f"- **{a.name}**: {cap_str}\n"
-            prompt += "\n"
-
-        # Add discovered adapters
-        adapters = [k for k in knowledge_items if k.type == "adapter"]
-        if adapters:
-            prompt += "**Available Integrations:**\n"
-            for a in adapters[:5]:
-                prompt += f"- **{a.name}**: {a.data.get('description', 'Integration adapter')}\n"
-            prompt += "\n"
-
-        # Add industry-specific context if detected
-        industry_keywords = {
-            'legal': ['legal', 'e-discovery', 'litigation', 'contract', 'compliance', 'attorney', 'law firm'],
-            'healthcare': ['healthcare', 'medical', 'patient', 'hipaa', 'clinical'],
-            'finance': ['finance', 'banking', 'investment', 'trading', 'compliance'],
-            'retail': ['retail', 'e-commerce', 'inventory', 'customer', 'sales']
-        }
-
-        query_lower = user_query.lower()
-        detected_industry = None
-        for industry, keywords in industry_keywords.items():
-            if any(kw in query_lower for kw in keywords):
-                detected_industry = industry
-                break
-
-        if detected_industry:
-            prompt += f"**Industry Context: {detected_industry.title()}**\n"
-            prompt += self._get_industry_context(detected_industry)
-            prompt += "\n"
-
-        # Add session context
-        if session_context:
-            if session_context.get('primary_intent'):
-                prompt += f"\n**Current User Intent:** {session_context['primary_intent']}\n"
-            if session_context.get('extracted_params'):
-                prompt += f"**Extracted Parameters:** {session_context['extracted_params']}\n"
-
-        # Instructions for intelligent response
-        prompt += """
-**Instructions:**
-1. When the user asks to create or set up something, first check if relevant templates exist in Your Knowledge Context above
-2. If templates match, recommend them conversationally with customization options
-3. If no templates match, offer to create a custom workflow
-4. Ask clarifying questions if the request is ambiguous
-5. For complex requests, break down the steps clearly
-
-**CRITICAL Response Format Rules:**
-- NEVER output JSON in any form - not raw, not in code blocks, not anywhere
-- NEVER include code blocks with action objects like ```{"action": ...}```
-- Respond ONLY in natural, conversational English prose
-- When you want to take an action, call the tool directly - don't show the user what you're calling
-- Present template recommendations as a formatted markdown list with descriptions
-- Ask questions to gather requirements before taking action
-- Be helpful, specific, and leverage your knowledge of available resources
-
-WRONG: "To set up X, I recommend using the create_workflow tool: ```{...}```"
-RIGHT: "I can help you set up X! Based on your needs, I found these relevant templates that might work well: [list templates]. Would you like me to create a workflow using one of these, or would you prefer a custom solution?"
-"""
-
-        return prompt
-
-    def _get_industry_context(self, industry: str) -> str:
-        """Get industry-specific context for the prompt."""
-        contexts = {
-            'legal': """This appears to be a legal/e-discovery request. Consider:
-- FRCP Rule 26/34 compliance requirements
-- Document privilege detection and review
-- Chain of custody and audit trails
-- Production format requirements (TIFF, native, PDF)
-- Bates numbering and document organization
-- Defensibility documentation""",
-
-            'healthcare': """This appears to be a healthcare request. Consider:
-- HIPAA compliance requirements
-- PHI handling and encryption
-- Audit logging for access
-- Patient consent workflows
-- Clinical decision support integration""",
-
-            'finance': """This appears to be a financial services request. Consider:
-- Regulatory compliance (SOX, SEC, FINRA)
-- Transaction auditing
-- Risk assessment workflows
-- KYC/AML requirements
-- Secure document handling""",
-
-            'retail': """This appears to be a retail/e-commerce request. Consider:
-- Customer journey automation
-- Inventory management integration
-- Multi-channel communication
-- Order processing workflows
-- Customer service automation"""
-        }
-        return contexts.get(industry, "")
 
     async def _generate_tool_response_with_knowledge(
         self,
@@ -1818,10 +1685,12 @@ RIGHT: "I can help you set up X! Based on your needs, I found these relevant tem
         # =====================================================================
         # Step 4: Build comprehensive LLM context (the key to v5)
         # =====================================================================
-        system_prompt = self._build_v5_system_prompt(
+        system_prompt = await self.prompt_assembler.assemble(
+            edition="community",
             session=session,
             knowledge_items=knowledge_items,
-            conversation_history=conversation_history
+            conversation_history=conversation_history,
+            user_id=user_id,
         )
 
         # Get available tools
@@ -2094,200 +1963,6 @@ RIGHT: "I can help you set up X! Based on your needs, I found these relevant tem
         formatted += "Please respond to the user's latest message above.\n"
 
         return formatted
-
-    def _build_v5_system_prompt(
-        self,
-        session,
-        knowledge_items: List["KnowledgeItem"],
-        conversation_history: List[Dict[str, str]]
-    ) -> str:
-        """
-        Build the v5 system prompt that makes the LLM intelligent.
-
-        This is the CRITICAL component - it tells the LLM:
-        1. What capabilities it has
-        2. What knowledge is available
-        3. How to decide between asking and acting
-        4. What parameters have been gathered so far
-        """
-        prompt = """You are an intelligent assistant for AICtrlNet. You help users with workflows, agents, templates, and integrations.
-
-## MOST IMPORTANT RULE - Workflow Creation vs Integration
-
-**When user says "create/generate/build a [X] workflow":**
-- ALWAYS use **create_workflow** tool
-- Extract the workflow name from their request
-- Examples:
-  - "generate an email marketing campaign workflow" -> create_workflow(name="Email Marketing Campaign", description="email marketing campaign workflow")
-  - "create a sales pipeline workflow" -> create_workflow(name="Sales Pipeline", description="sales pipeline workflow")
-  - "build a customer onboarding workflow" -> create_workflow(name="Customer Onboarding", description="customer onboarding workflow")
-
-**Integration tools (configure_integration, execute_integration) are ONLY for:**
-- Directly sending emails/messages NOW
-- Testing if an adapter is working
-- Configuring API credentials
-- NOT for creating workflows
-
-## Available Tools
-- **create_workflow(name, description)**: Create a new workflow. Use when user says "create/generate/build workflow"
-- **list_workflows**: Show existing workflows
-- **list_templates**: Search/browse workflow templates
-- **list_agents**: Show available AI agents
-- **list_integrations**: Show available integrations/connectors
-- **get_system_status**: Check system health
-- **get_help**: Explain capabilities
-
-## Decision Rules
-
-**For CREATE requests** (user wants to make something new):
-- If user says "create/generate/build a workflow" with a topic: Call create_workflow with that topic as the name
-- If no name provided yet: Ask "What would you like to name it?"
-- A description is optional - use it if provided, otherwise leave it empty
-
-**CRITICAL - Extracting the name from user messages:**
-When user says any of these, extract the name and call create_workflow:
-- "generate an email marketing campaign workflow" -> name = "Email Marketing Campaign"
-- "create a sales pipeline workflow" -> name = "Sales Pipeline"
-- "Call it Sales Pipeline" -> name = "Sales Pipeline"
-- "Name it My Workflow" -> name = "My Workflow"
-
-**For LIST/SHOW requests** (showing existing things, asking "what integrations", "show agents"):
-- Execute immediately: list_workflows, list_agents, list_templates, or list_integrations
-- No need to ask for more details
-
-**Multi-turn conversations:**
-- Look at the FULL conversation history to understand context
-- If the previous turn asked for a name, the current message likely IS the name
-
-## Guidelines
-- Be brief and helpful
-- Execute list/show requests immediately
-- When calling create_workflow, ALWAYS pass the name parameter with the actual name the user provided
-- Never use placeholder names like "New Workflow" - use the exact name the user specified
-- REMEMBER: "create a [X] workflow" -> create_workflow, NOT integration tools
-
-"""
-        # Add available knowledge context
-        templates = [k for k in knowledge_items if k.type == "template"]
-        agents = [k for k in knowledge_items if k.type == "agent"]
-        adapters = [k for k in knowledge_items if k.type == "adapter"]
-
-        if templates or agents or adapters:
-            prompt += "## Available Resources\n\n"
-
-            if templates:
-                prompt += f"**Relevant Templates ({len(templates)}):**\n"
-                for t in templates[:5]:
-                    desc = t.data.get('description', 'Workflow template')[:100]
-                    category = t.data.get('category', 'general')
-                    prompt += f"- **{t.name}** ({category}): {desc}\n"
-                prompt += "\n"
-
-            if agents:
-                prompt += f"**Available Agents ({len(agents)}):**\n"
-                for a in agents[:3]:
-                    caps = a.data.get('capabilities', [])[:3]
-                    prompt += f"- **{a.name}**: {', '.join(caps) if caps else 'General assistance'}\n"
-                prompt += "\n"
-
-            if adapters:
-                prompt += f"**Available Integrations ({len(adapters)}):**\n"
-                for a in adapters[:3]:
-                    prompt += f"- **{a.name}**: {a.data.get('description', 'Integration')[:50]}\n"
-                prompt += "\n"
-
-        # Add industry context detection
-        industry_context = self._detect_industry_from_history(conversation_history)
-        if industry_context:
-            prompt += f"## Industry Context: {industry_context['name']}\n\n"
-            prompt += industry_context.get('guidance', '')
-            prompt += "\n\n"
-
-        # Add accumulated parameters from session
-        v5_params = session.context.get('v5_parameters', {}) if session.context else {}
-        if v5_params:
-            prompt += "## Parameters Gathered So Far\n\n"
-            for key, value in v5_params.items():
-                prompt += f"- **{key.replace('_', ' ').title()}**: {value}\n"
-            prompt += "\n"
-            prompt += "*Use these parameters when executing tools.*\n\n"
-        else:
-            prompt += "## Parameters Gathered So Far\n\n"
-            prompt += "*No parameters gathered yet. Ask the user for details as needed.*\n\n"
-
-        # Add conversation turn count for context
-        turn_count = len(conversation_history)
-        if turn_count > 1:
-            prompt += f"*This is turn {turn_count} of the conversation.*\n\n"
-
-        return prompt
-
-    def _detect_industry_from_history(
-        self,
-        conversation_history: List[Dict[str, str]]
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Detect industry context from conversation history.
-        Returns industry name and relevant guidance.
-        """
-        # Combine all conversation text for analysis
-        all_text = " ".join([msg["content"].lower() for msg in conversation_history])
-
-        industry_patterns = {
-            'legal': {
-                'keywords': ['legal', 'e-discovery', 'ediscovery', 'litigation', 'attorney',
-                            'law firm', 'deposition', 'privilege', 'frcp', 'discovery',
-                            'matter', 'case', 'court'],
-                'name': 'Legal/E-Discovery',
-                'guidance': """Legal industry considerations:
-- FRCP compliance may be required for litigation workflows
-- Privilege detection and logging should be enabled
-- Chain of custody tracking for documents
-- Audit logging for all operations
-- Consider document hold and preservation requirements"""
-            },
-            'healthcare': {
-                'keywords': ['healthcare', 'medical', 'patient', 'hipaa', 'clinical',
-                            'hospital', 'doctor', 'nurse', 'diagnosis', 'treatment'],
-                'name': 'Healthcare',
-                'guidance': """Healthcare industry considerations:
-- HIPAA compliance is critical
-- Patient data must be protected
-- Audit trails required for PHI access
-- Consider consent management workflows"""
-            },
-            'finance': {
-                'keywords': ['finance', 'banking', 'investment', 'trading', 'compliance',
-                            'audit', 'regulatory', 'sox', 'kyc', 'aml'],
-                'name': 'Finance/Banking',
-                'guidance': """Financial industry considerations:
-- SOX compliance for relevant workflows
-- KYC/AML requirements for customer processes
-- Regulatory reporting needs
-- Strict audit requirements"""
-            },
-            'retail': {
-                'keywords': ['retail', 'e-commerce', 'ecommerce', 'inventory', 'customer',
-                            'order', 'shipping', 'product', 'store'],
-                'name': 'Retail/E-Commerce',
-                'guidance': """Retail industry considerations:
-- Inventory management integration
-- Order processing automation
-- Customer communication workflows
-- Returns and refunds handling"""
-            }
-        }
-
-        for industry, config in industry_patterns.items():
-            matches = sum(1 for kw in config['keywords'] if kw in all_text)
-            if matches >= 2:  # At least 2 keyword matches
-                return {
-                    'name': config['name'],
-                    'guidance': config['guidance'],
-                    'confidence': min(matches / 5, 1.0)  # Normalize to 0-1
-                }
-
-        return None
 
     def _parse_json_tool_call(self, text: str, user_message: str = "") -> Optional[Dict[str, Any]]:
         """

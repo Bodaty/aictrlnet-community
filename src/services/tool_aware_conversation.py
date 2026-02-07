@@ -24,6 +24,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.tool_dispatcher import ToolDispatcher, CORE_TOOLS, Edition
+from services.system_prompt_assembler import SystemPromptAssembler
 from schemas.conversation import ConversationResponse
 from llm.service import LLMService
 from llm.models import ToolDefinition, ToolCall, ToolResult
@@ -57,6 +58,7 @@ class ToolAwareConversationService:
         self.db = db
         self.edition = edition
         self.tool_dispatcher = ToolDispatcher(db, edition)
+        self.prompt_assembler = SystemPromptAssembler(db)
         self._tools_initialized = False
 
         # Tool execution tracking
@@ -268,34 +270,6 @@ class ToolAwareConversationService:
         else:
             return "gathering_intent"
 
-    def build_tool_system_prompt(self, session_context: Optional[Dict[str, Any]] = None) -> str:
-        """Build system prompt for tool-aware conversation."""
-        base_prompt = """You are AICtrlNet's intelligent assistant with the ability to perform actions through tools.
-
-When the user asks you to do something, you should:
-1. Determine if you need to call a tool to accomplish the task
-2. If yes, call the appropriate tool(s) with the right parameters
-3. If no, respond directly with helpful information
-
-You have access to tools for:
-- Creating and managing workflows
-- Managing tasks
-- Discovering and using templates
-- Working with AI agents
-- Connecting to MCP servers
-
-Be helpful, concise, and action-oriented. When calling tools, explain what you're doing."""
-
-        # Add session context
-        if session_context:
-            if session_context.get('primary_intent'):
-                base_prompt += f"\n\nCurrent user intent: {session_context['primary_intent']}"
-
-            if session_context.get('extracted_params'):
-                base_prompt += f"\nExtracted parameters: {session_context['extracted_params']}"
-
-        return base_prompt
-
     async def stream_tool_execution(
         self,
         content: str,
@@ -317,7 +291,10 @@ Be helpful, concise, and action-oriented. When calling tools, explain what you'r
 
         # Get tools
         tools = self._get_tool_definitions_for_llm()
-        system_prompt = self.build_tool_system_prompt(session_context)
+        system_prompt = await self.prompt_assembler.assemble(
+            edition=self.edition.value,
+            session_context=session_context,
+        )
 
         yield {"event": "thinking", "data": {"message": "Analyzing your request..."}}
 

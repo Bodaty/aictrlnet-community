@@ -348,6 +348,59 @@ class PatternLearningService:
             logger.info(f"Stored new pattern {pattern['signature']} at {scope} scope")
             return new_pattern
 
+    async def get_patterns_for_prompt(
+        self,
+        user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        max_patterns: int = 5,
+        max_chars: int = 800
+    ) -> str:
+        """Format learned patterns as compact text for system prompt injection.
+
+        Calls get_relevant_patterns() and formats the result as a short text block
+        suitable for inclusion in a system prompt, respecting a character budget.
+
+        Returns:
+            Formatted string of patterns, or "" if none found.
+        """
+        try:
+            patterns = await self.get_relevant_patterns(
+                context={},
+                user_id=user_id,
+                organization_id=organization_id
+            )
+        except Exception:
+            logger.debug("Could not retrieve patterns for prompt")
+            return ""
+
+        if not patterns:
+            return ""
+
+        lines = []
+        total_chars = 0
+
+        for p in patterns[:max_patterns]:
+            data = p.pattern_data or {}
+            ptype = p.pattern_type
+
+            if ptype == "intent_action":
+                line = f"- When intent is \"{data.get('intent', '?')}\", use {data.get('action_type', '?')}"
+            elif ptype == "sequence":
+                seq = [i.get("intent", "?") for i in data.get("intent_sequence", [])]
+                line = f"- Sequence: {' → '.join(seq)} → {data.get('final_action', '?')}"
+            elif ptype == "parameter":
+                params = data.get("extracted_params", [])
+                line = f"- For \"{data.get('intent', '?')}\", extract: {', '.join(params)}"
+            else:
+                continue
+
+            if total_chars + len(line) + 1 > max_chars:
+                break
+            lines.append(line)
+            total_chars += len(line) + 1
+
+        return "\n".join(lines)
+
     async def get_relevant_patterns(
         self,
         context: Dict,
