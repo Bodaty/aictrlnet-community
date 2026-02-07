@@ -35,7 +35,6 @@ from schemas.conversation import (
 from core.upgrade_hints import attach_upgrade_hints
 from services.enhanced_conversation_manager import EnhancedConversationService
 from services.action_orchestrator import ActionOrchestrator
-from services.tool_aware_conversation import ToolAwareConversationService
 from services.tool_dispatcher import Edition
 from core.edition_discovery import Edition as CoreEdition
 from models.user import User
@@ -46,6 +45,17 @@ from models.conversation import (
 )
 
 router = APIRouter()
+
+
+async def _collect_v2_response(service, session_id, content, user_id):
+    """Collect response from process_message_v2 in non-streaming mode."""
+    response_data = {}
+    async for event in service.process_message_v2(session_id, content, user_id, stream=False):
+        if event.get("event") == "response":
+            response_data = event.get("data", {})
+        elif event.get("event") == "error":
+            raise HTTPException(status_code=500, detail=event["data"].get("message", "Error"))
+    return response_data
 
 
 def serialize_for_json(obj):
@@ -272,303 +282,9 @@ async def send_message(
         raise HTTPException(status_code=400, detail="Session is not active")
     
     service = EnhancedConversationService(db)
-    response = await service.process_message(
-        session_id=session_id,
-        content=message.content,
-        user_id=current_user.id
-    )
-    
-    return response
+    response_data = await _collect_v2_response(service, session_id, message.content, str(current_user.id))
 
-
-@router.post("/sessions/{session_id}/messages/stream")
-async def send_message_stream(
-    session_id: UUID,
-    message: ConversationMessageCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Send a message in a conversation session with real-time progress updates via SSE.
-
-    This endpoint streams Server-Sent Events (SSE) for long-running operations
-    like workflow creation, allowing the frontend to show real-time progress
-    and provide a cancel button.
-
-    Event types:
-    - progress: {"step": "description", "progress": 0-100, "details": {...}}
-    - complete: {"message": ConversationResponse}
-    - error: {"error": "description"}
-    """
-    # Verify session belongs to user
-    stmt = select(ConversationSession).where(
-        ConversationSession.id == session_id,
-        ConversationSession.user_id == current_user.id
-    )
-    result = await db.execute(stmt)
-    session = result.scalar_one_or_none()
-
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    if not session.is_active:
-        raise HTTPException(status_code=400, detail="Session is not active")
-
-    async def event_generator():
-        """Generate SSE events for workflow creation progress."""
-        import logging
-        logger = logging.getLogger(__name__)
-
-        try:
-            # Store user message
-            service = EnhancedConversationService(db)
-
-            # Send initial progress event
-            yield f"data: {json.dumps({'event': 'progress', 'data': {'step': 'Processing message', 'progress': 5}})}\n\n"
-            await asyncio.sleep(0.1)  # Small delay for event delivery
-
-            # Get session and detect intent
-            await service.initialize_knowledge()
-            session_obj = await service.get_session(session_id)
-
-            # Store user message
-            user_message = await service._store_message(
-                session_id=session.id,
-                role="user",
-                content=message.content
-            )
-
-            yield f"data: {json.dumps({'event': 'progress', 'data': {'step': 'Analyzing intent', 'progress': 15}})}\n\n"
-            await asyncio.sleep(0.1)
-
-            # Check if user is confirming an action
-            if session_obj.state == "confirming_action":
-                content_lower = message.content.lower()
-                if any(phrase in content_lower for phrase in ['yes', 'proceed', 'confirm', 'go ahead', 'do it', 'ok', 'sure']):
-                    if 'pending_action_plan' in session_obj.context:
-                        session_obj.context['action_confirmed'] = True
-                        logger.info(f"[SSE] User confirmed action")
-                    from sqlalchemy.orm import attributes
-                    attributes.flag_modified(session_obj, 'context')
-                    await db.commit()
-                    await db.refresh(session_obj)
-
-            # Detect intent
-            intent_result = await service._detect_intent_with_context(session_obj, message.content)
-
-            yield f"data: {json.dumps({'event': 'progress', 'data': {'step': 'Retrieving system knowledge', 'progress': 25}})}\n\n"
-            await asyncio.sleep(0.1)
-
-            # Get knowledge items
-            knowledge_items = await service.knowledge_service.find_relevant_knowledge(
-                query=message.content,
-                context=session_obj.context,
-                limit=5
-            )
-
-            # Update session with intent
-            if intent_result.confidence >= 0.6:
-                session_obj.primary_intent = intent_result.intent
-                session_obj.intent_confidence = intent_result.confidence
-                session_obj.extracted_params = {
-                    **session_obj.extracted_params,
-                    **intent_result.entities
-                }
-                await db.commit()
-                logger.info(f"[SSE] Intent set: {session_obj.primary_intent}")
-
-            yield f"data: {json.dumps({'event': 'progress', 'data': {'step': 'Generating response', 'progress': 35}})}\n\n"
-            await asyncio.sleep(0.1)
-
-            # Generate response
-            response_content = await service._generate_informed_response(
-                session=session_obj,
-                intent_result=intent_result,
-                knowledge_items=knowledge_items,
-                user_query=message.content
-            )
-
-            # Get quick actions
-            quick_actions = await service._generate_smart_actions(
-                session=session_obj,
-                intent_result=intent_result,
-                knowledge_items=knowledge_items
-            )
-
-            # Determine next state
-            next_state = await service._determine_smart_state(
-                session=session_obj,
-                intent_result=intent_result,
-                knowledge_items=knowledge_items
-            )
-
-            logger.info(f"[SSE] State transition: {session_obj.state} → {next_state}")
-
-            # Handle action planning
-            if next_state == "confirming_action" and session_obj.primary_intent:
-                yield f"data: {json.dumps({'event': 'progress', 'data': {'step': 'Creating action plan', 'progress': 45}})}\n\n"
-                await asyncio.sleep(0.1)
-
-                action_plan = await service._create_action_plan(session_obj, intent_result, message.content)
-                if action_plan:
-                    response_content = await service._format_action_plan_response(action_plan, message.content)
-                    logger.info(f"[SSE] Action plan created with {len(action_plan.steps)} steps")
-
-            # Store assistant response
-            assistant_message = await service._store_message(
-                session_id=session.id,
-                role="assistant",
-                content=response_content,
-                detected_intent=intent_result.intent,
-                intent_confidence=intent_result.confidence,
-                entities=intent_result.entities,
-                suggested_actions=quick_actions
-            )
-
-            # Update session state
-            await service.update_session_state(session.id, next_state)
-
-            # Handle execution with progress updates
-            if next_state == "executing_action" and session_obj.primary_intent:
-                # Refresh session
-                session_obj = await service.get_session(session.id)
-                logger.info(f"[SSE] Executing action: {session_obj.primary_intent}")
-
-                # Yield progress events for workflow creation stages
-                stages = [
-                    {"step": "Validating workflow security", "progress": 50},
-                    {"step": "Analyzing LLM requirements", "progress": 55},
-                    {"step": "Discovering AI agents", "progress": 65},
-                    {"step": "Provisioning orchestration hub", "progress": 75},
-                    {"step": "Learning patterns", "progress": 85},
-                    {"step": "Finalizing workflow", "progress": 95}
-                ]
-
-                for stage in stages:
-                    yield f"data: {json.dumps({'event': 'progress', 'data': stage})}\n\n"
-                    await asyncio.sleep(2)  # Simulate real-time progress
-
-                # Execute the action
-                await service._trigger_action(session_obj)
-
-                # Analyze patterns
-                try:
-                    await service.pattern_service.analyze_session(str(session.id))
-                    logger.info("[SSE] Pattern analysis completed")
-                except Exception as e:
-                    logger.warning(f"Pattern analysis failed: {e}")
-
-            # Build final response
-            from schemas.conversation import ConversationResponse
-            response = ConversationResponse(
-                session_id=session.id,
-                message=assistant_message,
-                state=next_state,
-                context=session_obj.context,
-                quick_actions=quick_actions,
-                requires_clarification=next_state == "clarifying_details",
-                clarification_options=await service._get_clarification_options(session_obj, intent_result)
-            )
-
-            # Send completion event
-            yield f"data: {json.dumps({'event': 'complete', 'data': {'message': response.dict()}})}\n\n"
-
-        except Exception as e:
-            logger.error(f"[SSE] Error during message processing: {e}", exc_info=True)
-            yield f"data: {json.dumps({'event': 'error', 'data': {'error': str(e)}})}\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
-            "Connection": "keep-alive"
-        }
-    )
-
-
-@router.post("/sessions/{session_id}/messages/tools/stream")
-async def send_message_with_tools_stream(
-    session_id: UUID,
-    message: ConversationMessageCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    v4 Feature: Send message with tool-aware processing and real-time SSE streaming.
-
-    Streams tool execution progress as SSE events for real-time UI updates.
-
-    Event types:
-    - thinking: LLM is analyzing the request
-    - tools_identified: Tools to be called have been determined
-    - tool_start: A tool is beginning execution
-    - tool_complete: A tool finished successfully
-    - tool_error: A tool failed
-    - response: Final response content
-    - complete: Processing finished
-    - error: An error occurred
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-
-    # Verify session belongs to user
-    stmt = select(ConversationSession).where(
-        ConversationSession.id == session_id,
-        ConversationSession.user_id == current_user.id
-    )
-    result = await db.execute(stmt)
-    session = result.scalar_one_or_none()
-
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    if not session.is_active:
-        raise HTTPException(status_code=400, detail="Session is not active")
-
-    async def tool_event_generator():
-        """Generate SSE events for tool execution progress."""
-        try:
-            # Use EnhancedConversationService for knowledge-integrated tool streaming
-            # This ensures knowledge retrieval, industry packs, and clarification all work
-            enhanced_service = EnhancedConversationService(db)
-
-            # Stream tool execution events with FULL knowledge integration
-            async for event in enhanced_service.stream_tool_execution(
-                content=message.content,
-                user_id=str(current_user.id),
-                session_context={
-                    'session_id': str(session_id),
-                    'primary_intent': session.primary_intent,
-                    'extracted_params': session.extracted_params
-                }
-            ):
-                # Format as SSE
-                event_type = event.get("event", "message")
-                event_data = event.get("data", {})
-
-                # Serialize data for JSON
-                serialized_data = serialize_for_json(event_data)
-
-                yield f"event: {event_type}\n"
-                yield f"data: {json.dumps(serialized_data)}\n\n"
-
-        except Exception as e:
-            logger.error(f"[v4 SSE] Error during tool streaming: {e}", exc_info=True)
-            yield f"event: error\n"
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(
-        tool_event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*"
-        }
-    )
+    return response_data
 
 
 @router.post("/messages", response_model=ConversationResponse)
@@ -593,13 +309,9 @@ async def send_message_without_session(
     else:
         session = await service.create_session(current_user.id)
     
-    response = await service.process_message(
-        session_id=session.id,
-        content=message.content,
-        user_id=current_user.id
-    )
-    
-    return response
+    response_data = await _collect_v2_response(service, session.id, message.content, str(current_user.id))
+
+    return response_data
 
 
 # === Intent Management Endpoints ===

@@ -1206,269 +1206,6 @@ Response (just the sentence, no quotes):"""
 
         return f"I'll help you {action_phrase}."
 
-    # =========================================================================
-    # v4 Tool-Aware Streaming with Knowledge Integration
-    # =========================================================================
-
-    async def stream_tool_execution(
-        self,
-        content: str,
-        user_id: str,
-        session_context: Optional[Dict[str, Any]] = None
-    ) -> "AsyncGenerator[Dict[str, Any], None]":
-        """
-        v4 Tool-aware streaming with FULL knowledge integration.
-
-        Unlike the standalone ToolAwareConversationService, this method:
-        1. Queries knowledge base for relevant templates, agents, adapters
-        2. Builds an industry-aware system prompt with discovered capabilities
-        3. Uses the state machine for multi-turn clarification when needed
-        4. Leverages ML-enhanced semantic search (Business edition)
-
-        This ensures that "Set up a new legal matter for e-discovery" produces
-        intelligent, context-aware responses rather than generic tool calls.
-        """
-        from typing import AsyncGenerator
-        from services.tool_dispatcher import ToolDispatcher, Edition
-        from llm.models import ToolDefinition
-
-        await self.initialize_knowledge()
-
-        yield {"event": "thinking", "data": {"message": "Analyzing your request..."}}
-
-        # Step 1: Query knowledge base for relevant resources
-        knowledge_items = await self.knowledge_service.find_relevant_knowledge(
-            query=content,
-            context=session_context or {},
-            limit=10
-        )
-
-        # Categorize knowledge items
-        templates = [k for k in knowledge_items if k.type == "template"]
-        agents = [k for k in knowledge_items if k.type == "agent"]
-        adapters = [k for k in knowledge_items if k.type == "adapter"]
-        features = [k for k in knowledge_items if k.type == "feature"]
-
-        yield {
-            "event": "knowledge_retrieved",
-            "data": {
-                "templates": len(templates),
-                "agents": len(agents),
-                "adapters": len(adapters),
-                "features": len(features),
-                "message": f"Found {len(knowledge_items)} relevant resources"
-            }
-        }
-
-        # Step 2: Build system prompt via assembler
-        system_prompt = await self.prompt_assembler.assemble(
-            edition="community",
-            knowledge_items=knowledge_items,
-            session_context=session_context,
-        )
-
-        # Step 3: Get tool definitions
-        tool_dispatcher = ToolDispatcher(self.db, Edition.COMMUNITY)
-        tools = tool_dispatcher.get_available_tools()
-
-        yield {
-            "event": "tools_ready",
-            "data": {
-                "tools_available": len(tools),
-                "message": "Tools initialized"
-            }
-        }
-
-        # Step 4: Generate response with tools using knowledge-aware prompt
-        if not self._enhanced_llm_service:
-            yield {"event": "error", "data": {"message": "LLM service unavailable"}}
-            return
-
-        try:
-            llm_response = await self._enhanced_llm_service.generate_with_tools(
-                prompt=content,
-                tools=tools,
-                system_prompt=system_prompt,
-                task_type="tool_use"
-            )
-
-            if llm_response.has_tool_calls():
-                yield {
-                    "event": "tools_identified",
-                    "data": {
-                        "tools": [tc.name for tc in llm_response.tool_calls],
-                        "count": len(llm_response.tool_calls)
-                    }
-                }
-
-                # Execute each tool with progress updates
-                tool_results = []
-                for i, tool_call in enumerate(llm_response.tool_calls):
-                    yield {
-                        "event": "tool_start",
-                        "data": {
-                            "tool": tool_call.name,
-                            "index": i + 1,
-                            "total": len(llm_response.tool_calls),
-                            "arguments": tool_call.arguments
-                        }
-                    }
-
-                    result = await tool_dispatcher.invoke(
-                        tool_name=tool_call.name,
-                        arguments=tool_call.arguments,
-                        user_id=user_id,
-                        context=session_context or {}
-                    )
-
-                    if result.data is None:
-                        result.data = {}
-                    result.data['tool_name'] = tool_call.name
-                    tool_results.append(result)
-
-                    if result.success:
-                        yield {
-                            "event": "tool_complete",
-                            "data": {
-                                "tool": tool_call.name,
-                                "success": True,
-                                "result": result.data,
-                                "execution_time_ms": result.execution_time_ms
-                            }
-                        }
-                    else:
-                        yield {
-                            "event": "tool_error",
-                            "data": {
-                                "tool": tool_call.name,
-                                "success": False,
-                                "error": result.error,
-                                "recovery_strategy": result.recovery_strategy.value if result.recovery_strategy else None
-                            }
-                        }
-
-                # Generate final response with knowledge context
-                response_content = await self._generate_tool_response_with_knowledge(
-                    original_query=content,
-                    tool_calls=llm_response.tool_calls,
-                    tool_results=tool_results,
-                    knowledge_items=knowledge_items,
-                    llm_text=llm_response.text
-                )
-
-                # Apply JSON stripping to the final response
-                response_content = self._strip_json_from_response(response_content)
-
-                # Extract workflow_id if a workflow was created (for frontend navigation)
-                created_workflow_id = None
-                created_workflow_name = None
-                for result in tool_results:
-                    if result.success and result.data:
-                        if result.data.get('workflow_id'):
-                            created_workflow_id = result.data.get('workflow_id')
-                            created_workflow_name = result.data.get('workflow_name')
-                            break
-
-                response_data = {
-                    "content": response_content,
-                    "tools_used": [tc.name for tc in llm_response.tool_calls],
-                    "all_successful": all(r.success for r in tool_results),
-                    "knowledge_context": {
-                        "templates_found": len(templates),
-                        "agents_found": len(agents)
-                    }
-                }
-
-                # Include workflow navigation info if a workflow was created
-                if created_workflow_id:
-                    response_data["created_workflow"] = {
-                        "id": created_workflow_id,
-                        "name": created_workflow_name,
-                        "edit_url": f"/workflows/{created_workflow_id}/edit"
-                    }
-
-                yield {
-                    "event": "response",
-                    "data": response_data
-                }
-            else:
-                # No tools needed - generate knowledge-aware response
-                response_content = await self._generate_knowledge_aware_response(
-                    content, knowledge_items, llm_response.text
-                )
-
-                # Apply JSON stripping to the final response
-                response_content = self._strip_json_from_response(response_content)
-
-                yield {
-                    "event": "response",
-                    "data": {
-                        "content": response_content,
-                        "tools_used": [],
-                        "knowledge_context": {
-                            "templates_found": len(templates),
-                            "agents_found": len(agents)
-                        }
-                    }
-                }
-
-            yield {"event": "complete", "data": {"status": "done"}}
-
-        except Exception as e:
-            logger.error(f"[v4 Knowledge] Streaming error: {e}")
-            import traceback
-            logger.error(f"[v4 Knowledge] Traceback: {traceback.format_exc()}")
-            yield {
-                "event": "error",
-                "data": {"message": str(e)}
-            }
-
-    async def _generate_tool_response_with_knowledge(
-        self,
-        original_query: str,
-        tool_calls: List[Any],
-        tool_results: List[Any],
-        knowledge_items: List["KnowledgeItem"],
-        llm_text: Optional[str] = None
-    ) -> str:
-        """Generate a response that incorporates both tool results and knowledge context."""
-        # Start with intro based on what was done
-        successful = [r for r in tool_results if r.success]
-        failed = [r for r in tool_results if not r.success]
-
-        response = ""
-
-        if successful:
-            if len(successful) == 1:
-                tool_name = tool_calls[0].name.replace('_', ' ')
-                response += f"I've completed the {tool_name} operation.\n\n"
-            else:
-                response += f"I've completed {len(successful)} actions:\n\n"
-                for tc, result in zip(tool_calls, tool_results):
-                    if result.success:
-                        response += f"- **{tc.name.replace('_', ' ')}**: Done\n"
-                response += "\n"
-
-        # Add relevant knowledge suggestions
-        templates = [k for k in knowledge_items if k.type == "template"]
-        if templates and 'search' in original_query.lower():
-            response += "**Relevant Templates Found:**\n"
-            for t in templates[:3]:
-                desc = t.data.get('description', '')
-                response += f"- **{t.name}**: {desc}\n"
-            response += "\n"
-
-        if failed:
-            response += "**Some operations had issues:**\n"
-            for tc, result in zip(tool_calls, tool_results):
-                if not result.success:
-                    response += f"- {tc.name}: {result.error}\n"
-            response += "\nWould you like me to try a different approach?\n"
-        else:
-            response += "Is there anything else you'd like me to help with?"
-
-        return response
-
     def _strip_json_from_response(self, text: str) -> str:
         """Remove any raw JSON blocks and common LLM artifacts from the response.
 
@@ -1488,39 +1225,34 @@ Response (just the sentence, no quotes):"""
         cleaned = text
 
         # Pattern 0: Extract message from JSON wrapper
-        # Handle common LLM patterns: {"action": "...", "message": "..."} or {"action": "...", "execution_plan": "..."}
         try:
             if cleaned.strip().startswith('{') and cleaned.strip().endswith('}'):
                 parsed = json.loads(cleaned.strip())
                 if isinstance(parsed, dict):
-                    # Priority order: message > execution_plan > query
                     if 'message' in parsed:
                         cleaned = parsed['message']
                     elif 'execution_plan' in parsed:
-                        # LLM described what it would do but didn't execute
-                        # Return a natural-sounding response asking for details
                         cleaned = "Happy to help with that! I need a few quick details:\n1. What's the matter/workflow name?\n2. How many documents approximately?\n3. What type of processing?"
                     elif 'query' in parsed:
-                        # LLM tried to search but didn't execute
                         cleaned = f"I can help you with {parsed.get('action', 'that')}. What specific details would you like?"
         except (json.JSONDecodeError, TypeError):
-            pass  # Not valid JSON, continue with other cleanup
+            pass
 
-        # Pattern 1: Remove JSON code blocks like ```json {...} ``` or ``` {...} ```
+        # Pattern 1: Remove JSON code blocks
         code_block_pattern = r'```(?:json)?\s*\{[^`]*\}\s*```'
         cleaned = re.sub(code_block_pattern, '', cleaned, flags=re.DOTALL)
 
-        # Pattern 2: Remove raw JSON at the start of the response
+        # Pattern 2: Remove raw JSON at the start
         start_json_pattern = r'^\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}\s*'
         match = re.match(start_json_pattern, cleaned, re.DOTALL)
         if match:
             cleaned = cleaned[match.end():]
 
-        # Pattern 3: Remove "Available Tools:" sections and everything after
+        # Pattern 3: Remove "Available Tools:" sections
         available_tools_pattern = r'\*\*Available Tools:\*\*.*$'
         cleaned = re.sub(available_tools_pattern, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
 
-        # Pattern 4: Remove tool documentation blocks (Tool: xxx, Description:, Parameters:)
+        # Pattern 4: Remove tool documentation blocks
         tool_doc_pattern = r'Tool:\s*\w+.*?(?=\n\n|\Z)'
         cleaned = re.sub(tool_doc_pattern, '', cleaned, flags=re.DOTALL | re.IGNORECASE)
 
@@ -1536,61 +1268,16 @@ Response (just the sentence, no quotes):"""
         tool_offer_pattern = r'Please let me know if you\'?d? like to use any (?:other )?tool.*?\.?\s*'
         cleaned = re.sub(tool_offer_pattern, '', cleaned, flags=re.IGNORECASE)
 
-        # Pattern 8: Remove parameter schema blocks (- name: string (required) etc.)
+        # Pattern 8: Remove parameter schema blocks
         param_schema_pattern = r'Parameters:\s*\n(?:\s*-\s*\w+:.*\n?)+'
         cleaned = re.sub(param_schema_pattern, '', cleaned, flags=re.IGNORECASE)
 
-        # Clean up any excessive newlines and whitespace
+        # Clean up excessive newlines and whitespace
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)  # Remove trailing spaces on lines
+        cleaned = re.sub(r'[ \t]+\n', '\n', cleaned)
         cleaned = cleaned.strip()
 
         return cleaned if cleaned else text
-
-    async def _generate_knowledge_aware_response(
-        self,
-        user_query: str,
-        knowledge_items: List["KnowledgeItem"],
-        llm_text: Optional[str] = None
-    ) -> str:
-        """Generate a response based on knowledge when no tools are called."""
-        # Strip any accidental JSON from LLM response
-        if llm_text:
-            llm_text = self._strip_json_from_response(llm_text)
-
-        if not knowledge_items:
-            return llm_text or "I'd be happy to help. Could you provide more details about what you'd like to accomplish?"
-
-        # Categorize knowledge
-        templates = [k for k in knowledge_items if k.type == "template"]
-        agents = [k for k in knowledge_items if k.type == "agent"]
-
-        response = ""
-        if llm_text:
-            response = llm_text + "\n\n"
-
-        if templates:
-            response += f"**Found {len(templates)} Relevant Templates:**\n\n"
-            for t in templates[:5]:
-                desc = t.data.get('description', 'Workflow template')
-                category = t.data.get('category', 'general')
-                response += f"- **{t.name}** ({category})\n  {desc}\n\n"
-            response += "Would you like me to create a workflow using one of these templates?\n"
-
-        elif agents:
-            response += f"**Available AI Agents:**\n\n"
-            for a in agents[:3]:
-                response += f"- **{a.name}**: "
-                caps = a.data.get('capabilities', [])
-                response += ', '.join(caps[:3]) if caps else 'General assistance'
-                response += "\n"
-            response += "\nWould you like to deploy one of these agents?\n"
-
-        else:
-            response += "I found some relevant resources. "
-            response += "What specific action would you like to take?"
-
-        return response
 
     # =========================================================================
     # v5 UNIFIED CONVERSATION FLOW - LLM as Brain
