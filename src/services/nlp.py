@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from models.community import WorkflowDefinition
 from schemas.workflow import (
@@ -1008,10 +1009,18 @@ Return ONLY a single number (the index). Example: 5
             tenant_id=tenant_id or get_current_tenant_id()  # Ensure tenant_id is never None
         )
         
+        # Re-set RLS tenant context before commit — intermediate commits in the
+        # conversation flow may have released the connection back to the pool,
+        # and the new connection won't have app.current_tenant_id set.
+        effective_tenant = tenant_id or get_current_tenant_id()
+        await self.db.execute(
+            text("SELECT set_config('app.current_tenant_id', :tid, false)"),
+            {"tid": effective_tenant}
+        )
         self.db.add(workflow)
         await self.db.commit()
         await self.db.refresh(workflow)
-        
+
         logger.info(f"Saved workflow definition keys: {list(workflow.definition.keys())}")
         
         # Track in learning loop for continuous improvement (Business/Enterprise only)
@@ -1069,6 +1078,10 @@ Return ONLY a single number (the index). Example: 5
                     from sqlalchemy.orm.attributes import flag_modified
                     flag_modified(workflow, "definition")
                     
+                    await self.db.execute(
+                        text("SELECT set_config('app.current_tenant_id', :tid, false)"),
+                        {"tid": effective_tenant}
+                    )
                     self.db.add(workflow)
                     await self.db.commit()
                     await self.db.refresh(workflow)

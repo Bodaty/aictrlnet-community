@@ -361,7 +361,8 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 start_time=start_time,
-                user_settings=user_settings
+                user_settings=user_settings,
+                messages=messages
             )
         elif provider == ModelProvider.VERTEX_AI:
             return await self._generate_with_vertex_native_tools(
@@ -374,7 +375,8 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 start_time=start_time,
-                user_settings=user_settings
+                user_settings=user_settings,
+                messages=messages
             )
         elif provider == ModelProvider.AWS_BEDROCK:
             return await self._generate_with_bedrock_native_tools(
@@ -401,7 +403,8 @@ class LLMService:
                 system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 start_time=start_time,
-                user_settings=user_settings
+                user_settings=user_settings,
+                messages=messages
             )
         else:
             # Fallback to text-based for unknown providers
@@ -1148,7 +1151,8 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings]
+        user_settings: Optional[UserLLMSettings],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using Google Gemini's native tool calling API."""
         import json
@@ -1179,19 +1183,47 @@ class LLMService:
             }
             gemini_functions.append(gemini_func)
 
+        # Build contents from messages or single prompt
+        effective_system_prompt = system_prompt
+        if messages:
+            contents = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    # System messages handled via systemInstruction
+                    effective_system_prompt = msg["content"]
+                elif msg["role"] == "user":
+                    contents.append({"role": "user", "parts": [{"text": msg["content"]}]})
+                elif msg["role"] == "assistant":
+                    parts = []
+                    if msg.get("content"):
+                        parts.append({"text": msg["content"]})
+                    if msg.get("tool_calls"):
+                        for tc in msg["tool_calls"]:
+                            parts.append({"functionCall": {
+                                "name": tc["name"],
+                                "args": tc.get("arguments", {})
+                            }})
+                    if parts:
+                        contents.append({"role": "model", "parts": parts})
+                elif msg["role"] == "tool":
+                    contents.append({"role": "user", "parts": [{"functionResponse": {
+                        "name": msg.get("name", "tool"),
+                        "response": {"result": msg["content"]}
+                    }}]})
+        else:
+            contents = [{"role": "user", "parts": [{"text": prompt}]}]
+
         # Build request payload
         payload = {
-            "contents": [
-                {"role": "user", "parts": [{"text": prompt}]}
-            ],
+            "contents": contents,
             "tools": [{"function_declarations": gemini_functions}],
             "generationConfig": {
                 "temperature": temperature
             }
         }
 
-        if system_prompt:
-            payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+        if effective_system_prompt:
+            payload["systemInstruction"] = {"parts": [{"text": effective_system_prompt}]}
 
         if max_tokens:
             payload["generationConfig"]["maxOutputTokens"] = max_tokens
@@ -1302,7 +1334,8 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings]
+        user_settings: Optional[UserLLMSettings],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using Google Vertex AI's native tool calling API."""
         import json
@@ -1323,7 +1356,7 @@ class LLMService:
 
         try:
             from google.cloud import aiplatform
-            from vertexai.generative_models import GenerativeModel, Tool, FunctionDeclaration
+            from vertexai.generative_models import GenerativeModel, Tool, FunctionDeclaration, Content, Part, ToolConfig
         except ImportError:
             logger.warning("google-cloud-aiplatform not installed, falling back to text-based")
             return await self._generate_with_text_tools(
@@ -1363,10 +1396,18 @@ class LLMService:
         logger.info(f"Calling Vertex AI with native tools: {[t.name for t in tools]}")
 
         try:
+            # Extract system prompt from messages if present
+            effective_system_prompt = system_prompt
+            if messages:
+                for msg in messages:
+                    if msg["role"] == "system":
+                        effective_system_prompt = msg["content"]
+                        break
+
             model_instance = GenerativeModel(
                 vertex_model,
                 tools=[vertex_tools],
-                system_instruction=system_prompt if system_prompt else None
+                system_instruction=effective_system_prompt if effective_system_prompt else None
             )
 
             generation_config = {
@@ -1374,10 +1415,59 @@ class LLMService:
                 "max_output_tokens": max_tokens or 4096
             }
 
-            response = model_instance.generate_content(
-                prompt,
-                generation_config=generation_config
-            )
+            # Build tool_config from tool_choice
+            tool_config = None
+            if tool_choice == "required":
+                tool_config = ToolConfig(
+                    function_calling_config=ToolConfig.FunctionCallingConfig(
+                        mode=ToolConfig.FunctionCallingConfig.Mode.ANY
+                    )
+                )
+            elif tool_choice and tool_choice != "auto":
+                # Specific tool name
+                tool_config = ToolConfig(
+                    function_calling_config=ToolConfig.FunctionCallingConfig(
+                        mode=ToolConfig.FunctionCallingConfig.Mode.ANY,
+                        allowed_function_names=[tool_choice]
+                    )
+                )
+
+            # Build contents from messages or single prompt
+            if messages:
+                contents = []
+                for msg in messages:
+                    if msg["role"] == "system":
+                        continue  # Handled via system_instruction
+                    elif msg["role"] == "user":
+                        contents.append(Content(role="user", parts=[Part.from_text(msg["content"])]))
+                    elif msg["role"] == "assistant":
+                        parts = []
+                        if msg.get("content"):
+                            parts.append(Part.from_text(msg["content"]))
+                        if msg.get("tool_calls"):
+                            for tc in msg["tool_calls"]:
+                                parts.append(Part.from_dict({
+                                    "function_call": {
+                                        "name": tc["name"],
+                                        "args": tc.get("arguments", {})
+                                    }
+                                }))
+                        if parts:
+                            contents.append(Content(role="model", parts=parts))
+                    elif msg["role"] == "tool":
+                        contents.append(Content(role="user", parts=[
+                            Part.from_function_response(
+                                name=msg.get("name", "tool"),
+                                response={"result": msg["content"]}
+                            )
+                        ]))
+                response = model_instance.generate_content(
+                    contents, generation_config=generation_config, tool_config=tool_config
+                )
+            else:
+                response = model_instance.generate_content(
+                    prompt, generation_config=generation_config, tool_config=tool_config
+                )
 
             tool_calls = []
             text_response = ""
@@ -1611,7 +1701,8 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings]
+        user_settings: Optional[UserLLMSettings],
+        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
         """Generate using Cohere's native tool calling API."""
         import json
@@ -1652,13 +1743,46 @@ class LLMService:
         # Build request payload
         payload = {
             "model": model if model else "command-r-plus",
-            "message": prompt,
+            "message": prompt or "",
             "tools": cohere_tools,
             "temperature": temperature
         }
 
         if system_prompt:
             payload["preamble"] = system_prompt
+
+        # Build chat_history from messages for multi-turn conversations
+        if messages:
+            chat_history = []
+            last_user_message = prompt or ""
+            for msg in messages:
+                if msg["role"] == "system":
+                    payload["preamble"] = msg["content"]
+                elif msg["role"] == "user":
+                    last_user_message = msg["content"]
+                elif msg["role"] == "assistant":
+                    chat_history.append({
+                        "role": "CHATBOT",
+                        "message": msg.get("content") or ""
+                    })
+                elif msg["role"] == "tool":
+                    chat_history.append({
+                        "role": "TOOL",
+                        "tool_results": [{
+                            "call": {"name": msg.get("name", "tool")},
+                            "outputs": [{"result": msg["content"]}]
+                        }]
+                    })
+            # Cohere uses message for the current turn, chat_history for prior turns
+            payload["message"] = last_user_message
+            if chat_history:
+                payload["chat_history"] = chat_history
+
+        # Reinforce tool use requirement via preamble (Cohere v1 has no tool_choice param)
+        # Applied after messages processing so system message overrides don't erase it
+        if tool_choice == "required":
+            tool_instruction = "\n\nIMPORTANT: You MUST use at least one of the available tools to answer. Do not respond with text alone."
+            payload["preamble"] = (payload.get("preamble") or "") + tool_instruction
 
         if max_tokens:
             payload["max_tokens"] = max_tokens

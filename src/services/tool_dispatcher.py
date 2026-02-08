@@ -23,6 +23,7 @@ from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 # Import from Community edition
 from llm.models import ToolDefinition, ToolResult, ToolRecoveryStrategy, ChainResult
@@ -914,6 +915,21 @@ class ToolDispatcher:
         logger.info(f"[v4] Invoking tool: {tool_name}")
 
         try:
+            # Re-set tenant context on DB session before tool execution.
+            # Intermediate commits in the conversation flow can release the connection
+            # back to the pool; a new connection won't have app.current_tenant_id set,
+            # causing RLS policy violations on INSERT/UPDATE.
+            try:
+                from core.tenant_context import get_current_tenant_id
+                tenant_id = get_current_tenant_id()
+                if tenant_id:
+                    await self.db.execute(
+                        text("SELECT set_config('app.current_tenant_id', :tid, false)"),
+                        {"tid": tenant_id}
+                    )
+            except Exception as e:
+                logger.warning(f"[v4] Could not re-set tenant context: {e}")
+
             # Route to appropriate handler
             result = await self._route_tool_call(tool_name, arguments, user_id, context)
 
