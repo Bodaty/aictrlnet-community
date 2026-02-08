@@ -73,7 +73,8 @@ class StripeService:
         self,
         user_id: str,
         plan: str,
-        billing_period: str = "monthly"
+        billing_period: str = "monthly",
+        trial_days: int = 0
     ) -> Dict[str, Any]:
         """Create a Stripe checkout session for subscription upgrade.
 
@@ -81,6 +82,8 @@ class StripeService:
             user_id: The user's ID
             plan: Plan name (business_starter, business_pro, business_scale, enterprise)
             billing_period: "monthly" or "yearly" (yearly prices should be separate Price IDs)
+            trial_days: Number of trial days (0 = no trial). When > 0, payment method
+                collection is deferred until trial end.
 
         Returns:
             Dict with checkout_url and session_id
@@ -123,6 +126,11 @@ class StripeService:
             }
         }
 
+        # Configure trial period
+        if trial_days > 0:
+            checkout_params["subscription_data"]["trial_period_days"] = trial_days
+            checkout_params["payment_method_collection"] = "if_required"
+
         # Use existing customer if available, otherwise let Stripe create one
         if existing_subscription and existing_subscription.stripe_customer_id:
             checkout_params["customer"] = existing_subscription.stripe_customer_id
@@ -158,6 +166,7 @@ class StripeService:
             "customer.subscription.created": self._handle_subscription_created,
             "customer.subscription.updated": self._handle_subscription_updated,
             "customer.subscription.deleted": self._handle_subscription_deleted,
+            "customer.subscription.trial_will_end": self._handle_trial_will_end,
             "invoice.paid": self._handle_invoice_paid,
             "invoice.payment_failed": self._handle_invoice_payment_failed,
         }
@@ -193,6 +202,19 @@ class StripeService:
         )
         subscription = result.scalar_one_or_none()
 
+        # Determine subscription status from Stripe (trialing vs active)
+        stripe_sub_status = "active"
+        trial_end_ts = None
+        if stripe_subscription_id:
+            try:
+                stripe = self._get_stripe()
+                stripe_sub = stripe.Subscription.retrieve(stripe_subscription_id)
+                stripe_sub_status = stripe_sub.get("status", "active")
+                if stripe_sub.get("trial_end"):
+                    trial_end_ts = datetime.fromtimestamp(stripe_sub["trial_end"])
+            except Exception:
+                logger.warning(f"Could not fetch subscription {stripe_subscription_id} details")
+
         if not subscription:
             subscription = Subscription(
                 id=f"sub_{user_id}",
@@ -201,16 +223,18 @@ class StripeService:
                 stripe_subscription_id=stripe_subscription_id,
                 stripe_customer_id=stripe_customer_id,
                 plan_id=f"plan_{plan}",
-                status="active",
+                status=stripe_sub_status,
                 current_period_start=datetime.utcnow(),
-                current_period_end=datetime.utcnow() + timedelta(days=30)
+                current_period_end=datetime.utcnow() + timedelta(days=30),
+                trial_end=trial_end_ts
             )
             self.db.add(subscription)
         else:
             subscription.stripe_subscription_id = stripe_subscription_id
             subscription.stripe_customer_id = stripe_customer_id
             subscription.plan_id = f"plan_{plan}"
-            subscription.status = "active"
+            subscription.status = stripe_sub_status
+            subscription.trial_end = trial_end_ts
             subscription.payment_failed_at = None  # Clear any previous failure
 
         # Update user edition
@@ -311,6 +335,43 @@ class StripeService:
 
         await self.db.commit()
         logger.info(f"Subscription canceled: {stripe_subscription_id}")
+
+    async def _handle_trial_will_end(self, subscription_data: Dict[str, Any]) -> None:
+        """Handle trial ending soon notification.
+
+        Fires 3 days before the trial ends. We log the event so downstream
+        systems (email, in-app notifications) can alert the user to add a
+        payment method before they lose access.
+        """
+        stripe_subscription_id = subscription_data.get("id")
+        trial_end = subscription_data.get("trial_end")
+        metadata = subscription_data.get("metadata", {})
+        user_id = metadata.get("user_id")
+
+        result = await self.db.execute(
+            select(Subscription).where(
+                Subscription.stripe_subscription_id == stripe_subscription_id
+            )
+        )
+        subscription = result.scalar_one_or_none()
+
+        if not subscription:
+            logger.warning(f"Trial will end but subscription not found: {stripe_subscription_id}")
+            return
+
+        trial_end_dt = datetime.fromtimestamp(trial_end) if trial_end else None
+        days_remaining = (trial_end_dt - datetime.utcnow()).days if trial_end_dt else 0
+
+        logger.info(
+            f"Trial ending soon: subscription={stripe_subscription_id}, "
+            f"user={subscription.user_id}, days_remaining={days_remaining}, "
+            f"trial_end={trial_end_dt.isoformat() if trial_end_dt else 'unknown'}"
+        )
+
+        # TODO: Integrate with notification service to send email/in-app alert
+        # e.g. await notification_service.send_trial_ending_notice(
+        #     user_id=subscription.user_id, days_remaining=days_remaining
+        # )
 
     async def _handle_invoice_paid(self, invoice_data: Dict[str, Any]) -> None:
         """Handle successful invoice payment.

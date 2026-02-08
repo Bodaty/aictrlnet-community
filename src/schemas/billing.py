@@ -70,3 +70,19 @@ class UpcomingInvoiceResponse(BaseModel):
     tax: float = Field(0, description="Tax amount")
     total: float = Field(..., description="Total amount")
     line_items: List[UpcomingInvoiceLineItem] = Field(default_factory=list)
+
+
+class StartTrialRequest(BaseModel):
+    """Request to start a free trial via Stripe Checkout."""
+    plan: str = Field(
+        "business_starter",
+        description="Plan to trial (business_starter, business_pro, business_scale)"
+    )
+
+
+class StartTrialResponse(BaseModel):
+    """Response after creating a trial checkout session."""
+    checkout_url: str = Field(..., description="Stripe Checkout URL to redirect the user to")
+    session_id: str = Field(..., description="Stripe Checkout Session ID")
+    trial_days: int = Field(..., description="Number of trial days")
+    trial_end: str = Field(..., description="ISO datetime when the trial ends")
