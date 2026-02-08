@@ -17,14 +17,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Add is_active column to workflow_templates table
-    op.add_column('workflow_templates', sa.Column('is_active', sa.Boolean(), nullable=True, server_default='true'))
+    connection = op.get_bind()
+    inspector = sa.inspect(connection)
+    existing_columns = [col['name'] for col in inspector.get_columns('workflow_templates')]
 
-    # Update existing rows to have is_active = true
-    op.execute("UPDATE workflow_templates SET is_active = true WHERE is_active IS NULL")
-
-    # Make column non-nullable after setting default
-    op.alter_column('workflow_templates', 'is_active', nullable=False)
+    if 'is_active' not in existing_columns:
+        op.add_column('workflow_templates', sa.Column('is_active', sa.Boolean(), nullable=True, server_default='true'))
+        op.execute("UPDATE workflow_templates SET is_active = true WHERE is_active IS NULL")
+        op.alter_column('workflow_templates', 'is_active', nullable=False)
 
 
 def downgrade() -> None:
