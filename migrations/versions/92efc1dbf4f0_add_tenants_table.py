@@ -43,21 +43,39 @@ def upgrade() -> None:
         ))
         uses_enum = result.scalar()
 
+        # Check if default tenant already exists (avoid RLS issues)
+        result = connection.execute(sa.text(
+            "SELECT EXISTS (SELECT 1 FROM tenants WHERE id = 'default-tenant')"
+        ))
+        if result.scalar():
+            return
+
+        # Temporarily disable RLS so we can insert the default tenant
+        try:
+            op.execute("ALTER TABLE tenants DISABLE ROW LEVEL SECURITY")
+        except Exception:
+            pass
+
         # Ensure default tenant exists with proper status value
         if uses_enum:
-            # Enterprise uses enum type - use uppercase enum value
             op.execute("""
                 INSERT INTO tenants (id, name, display_name, status, is_default, created_at, updated_at)
                 SELECT 'default-tenant', 'default', 'Default Tenant', 'ACTIVE'::tenantstatus, true, NOW(), NOW()
                 WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE id = 'default-tenant')
             """)
         else:
-            # Community uses string type
             op.execute("""
                 INSERT INTO tenants (id, name, display_name, status, is_default, created_at, updated_at)
                 SELECT 'default-tenant', 'default', 'Default Tenant', 'active', true, NOW(), NOW()
                 WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE id = 'default-tenant')
             """)
+
+        # Re-enable RLS
+        try:
+            op.execute("ALTER TABLE tenants ENABLE ROW LEVEL SECURITY")
+        except Exception:
+            pass
+
         return
 
     # Create basic tenants table
