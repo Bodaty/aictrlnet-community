@@ -49,14 +49,8 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     "create_workflow": ToolDefinition(
         name="create_workflow",
         description=(
-            "Create a workflow to AUTOMATE a business process. USE THIS TOOL when user describes: "
-            "(1) A process to automate: 'route emails', 'process orders', 'send notifications', 'approve requests' "
-            "(2) An action with multiple steps: 'categorize and route tickets', 'fetch data and generate reports' "
-            "(3) Something that should happen automatically: 'notify when inventory low', 'send weekly reports' "
-            "(4) Any request with ACTION VERBS like: route, send, process, notify, approve, schedule, categorize, sync, monitor, track. "
-            "EXAMPLES: 'Route support emails by urgency to the right team' -> create_workflow, "
-            "'Send weekly reports to sales' -> create_workflow, 'Process refunds automatically' -> create_workflow. "
-            "Do NOT use create_task for these - create_task is ONLY for simple reminders/to-do items."
+            "Create a workflow to automate a business process. Use for any action/process request "
+            "(route, send, process, notify, approve, schedule, monitor, etc.)."
         ),
         parameters={
             "type": "object",
@@ -150,7 +144,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     ),
     "update_workflow": ToolDefinition(
         name="update_workflow",
-        description="Update an existing workflow's description, settings, or configuration. Use when user wants to add details to a recently created workflow.",
+        description="Update an existing workflow's settings or configuration.",
         parameters={
             "type": "object",
             "properties": {
@@ -576,11 +570,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     # -------------------------------------------------------------------------
     "get_platform_metrics": ToolDefinition(
         name="get_platform_metrics",
-        description=(
-            "Get platform-wide metrics: workflow count, success rate, active users, "
-            "automation hours saved. Use when the user asks about platform activity, "
-            "stats, or 'what's happening on the platform'."
-        ),
+        description="Get platform-wide metrics: workflow count, success rate, active users.",
         parameters={
             "type": "object",
             "properties": {},
@@ -591,11 +581,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     ),
     "get_recent_activity": ToolDefinition(
         name="get_recent_activity",
-        description=(
-            "Get recent platform activity: last N events including workflow runs, "
-            "errors, and user actions. Use when user asks 'what happened recently' "
-            "or wants to see recent events."
-        ),
+        description="Get recent platform activity: workflow runs, errors, and user actions.",
         parameters={
             "type": "object",
             "properties": {
@@ -612,11 +598,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     # -------------------------------------------------------------------------
     "list_api_endpoints": ToolDefinition(
         name="list_api_endpoints",
-        description=(
-            "List all API endpoints on this AICtrlNet instance. Use when user asks "
-            "'what can I do', 'show me the API', or 'what endpoints exist'. "
-            "Supports filtering by method, path prefix, or tag."
-        ),
+        description="List all API endpoints. Filter by method, path prefix, or tag.",
         parameters={
             "type": "object",
             "properties": {
@@ -632,10 +614,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     ),
     "get_endpoint_detail": ToolDefinition(
         name="get_endpoint_detail",
-        description=(
-            "Get full detail for a specific API endpoint: request body schema, "
-            "query parameters, response schema. Use when user asks HOW to call an endpoint."
-        ),
+        description="Get full detail for a specific API endpoint (schema, parameters).",
         parameters={
             "type": "object",
             "properties": {
@@ -649,11 +628,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     ),
     "search_api_capabilities": ToolDefinition(
         name="search_api_capabilities",
-        description=(
-            "Search API endpoint descriptions by natural language. "
-            "Use when user describes something they want to do and you need to find "
-            "which endpoints support it. Example: 'risk assessment' → governance endpoints."
-        ),
+        description="Search API capabilities by natural language query.",
         parameters={
             "type": "object",
             "properties": {

@@ -1606,7 +1606,7 @@ Response (just the sentence, no quotes):"""
         from sqlalchemy import select, desc
         from models.conversation import ConversationMessage
 
-        MAX_HISTORY_MESSAGES = 20  # Configurable
+        MAX_HISTORY_MESSAGES = 10  # Reduced from 20 to save context window
 
         # Query messages directly with async
         result = await self.db.execute(
@@ -1630,24 +1630,20 @@ Response (just the sentence, no quotes):"""
         return history
 
     def _format_history_as_prompt(self, history: List[Dict[str, str]]) -> str:
-        """
-        Format conversation history as a prompt string.
-
-        Since our LLMService takes a single prompt (not messages array),
-        we format the history into a readable conversation format.
-        """
+        """Format conversation history as a compact prompt string."""
         if not history:
             return ""
 
-        formatted = "CONVERSATION HISTORY:\n"
-        formatted += "=" * 40 + "\n\n"
+        formatted = "## Conversation History\n\n"
 
         for msg in history:
+            content = msg["content"]
+            if msg["role"] == "assistant" and len(content) > 300:
+                content = content[:300] + "..."
             role_label = "User" if msg["role"] == "user" else "Assistant"
-            formatted += f"**{role_label}:** {msg['content']}\n\n"
+            formatted += f"{role_label}: {content}\n\n"
 
-        formatted += "=" * 40 + "\n"
-        formatted += "Please respond to the user's latest message above.\n"
+        formatted += "---\nRespond to the latest message.\n"
 
         return formatted
 

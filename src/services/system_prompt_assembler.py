@@ -98,68 +98,31 @@ class SystemPromptAssembler:
     # ------------------------------------------------------------------
 
     def _build_tool_rules(self) -> str:
-        return """## MOST IMPORTANT RULE - Workflow Creation vs Integration
+        return """## Tool Selection Rules
 
-**When user says "create/generate/build a [X] workflow":**
-- ALWAYS use **create_workflow** tool
-- Extract the workflow name from their request
-- Examples:
-  - "generate an email marketing campaign workflow" -> create_workflow(name="Email Marketing Campaign", description="email marketing campaign workflow")
-  - "create a sales pipeline workflow" -> create_workflow(name="Sales Pipeline", description="sales pipeline workflow")
-  - "build a customer onboarding workflow" -> create_workflow(name="Customer Onboarding", description="customer onboarding workflow")
+**#1 Rule: "create/generate/build [X] workflow" → create_workflow**
+- Extract the name from the request (e.g., "sales pipeline workflow" → name="Sales Pipeline")
+- Integration tools are ONLY for sending messages, testing adapters, or configuring credentials — never for creating workflows
 
-**Integration tools (configure_integration, execute_integration) are ONLY for:**
-- Directly sending emails/messages NOW
-- Testing if an adapter is working
-- Configuring API credentials
-- NOT for creating workflows
-
-## Available Tools
-- **create_workflow(name, description)**: Create a new workflow. Use when user says "create/generate/build workflow"
-- **list_workflows**: Show existing workflows
-- **list_templates**: Search/browse workflow templates
-- **list_agents**: Show available AI agents
-- **list_integrations**: Show available integrations/connectors
-- **get_system_status**: Check system health
-- **get_help**: Explain capabilities
-
-## Decision Rules
-
-**For CREATE requests** (user wants to make something new):
-- If user says "create/generate/build a workflow" with a topic: Call create_workflow with that topic as the name
-- If no name provided yet: Ask "What would you like to name it?"
-- A description is optional - use it if provided, otherwise leave it empty
-
-**CRITICAL - Extracting the name from user messages:**
-When user says any of these, extract the name and call create_workflow:
-- "generate an email marketing campaign workflow" -> name = "Email Marketing Campaign"
-- "create a sales pipeline workflow" -> name = "Sales Pipeline"
-- "Call it Sales Pipeline" -> name = "Sales Pipeline"
-- "Name it My Workflow" -> name = "My Workflow"
-
-**For LIST/SHOW requests** (showing existing things, asking "what integrations", "show agents"):
-- Execute immediately: list_workflows, list_agents, list_templates, or list_integrations
-- No need to ask for more details
-
-**Multi-turn conversations:**
-- Look at the FULL conversation history to understand context
-- If the previous turn asked for a name, the current message likely IS the name
-
-## Guidelines
-- Be brief and helpful
-- Execute list/show requests immediately
-- When calling create_workflow, ALWAYS pass the name parameter with the actual name the user provided
-- Never use placeholder names like "New Workflow" - use the exact name the user specified
-- REMEMBER: "create a [X] workflow" -> create_workflow, NOT integration tools"""
+**Behaviors:**
+- LIST/SHOW requests → execute immediately (list_workflows, list_agents, list_templates, list_integrations)
+- CREATE requests with a topic → call create_workflow with that topic as the name
+- CREATE without a name → ask "What would you like to name it?"
+- Multi-turn: check conversation history for context (prior turn may have the name)
+- Always use the user's exact name — never use placeholders like "New Workflow" """
 
     # ------------------------------------------------------------------
     # Knowledge items
     # ------------------------------------------------------------------
 
     def _build_knowledge_section(self, knowledge_items) -> str:
-        templates = [k for k in knowledge_items if k.type == "template"]
-        agents = [k for k in knowledge_items if k.type == "agent"]
-        adapters = [k for k in knowledge_items if k.type == "adapter"]
+        # Filter by minimum relevance to avoid noise
+        MIN_RELEVANCE = 1.0
+        relevant = [k for k in knowledge_items if getattr(k, 'relevance', 0) >= MIN_RELEVANCE]
+
+        templates = [k for k in relevant if k.type == "template"]
+        agents = [k for k in relevant if k.type == "agent"]
+        adapters = [k for k in relevant if k.type == "adapter"]
 
         if not (templates or agents or adapters):
             return ""
@@ -167,15 +130,14 @@ When user says any of these, extract the name and call create_workflow:
         parts = ["## Available Resources\n"]
 
         if templates:
-            parts.append(f"**Relevant Templates ({len(templates)}):**")
-            for t in templates[:5]:
-                desc = (t.data.get("description", "Workflow template") or "")[:100]
-                category = t.data.get("category", "general")
-                parts.append(f"- **{t.name}** ({category}): {desc}")
+            parts.append(f"**Templates ({len(templates)}):**")
+            for t in templates[:3]:
+                desc = (t.data.get("description", "") or "")[:60]
+                parts.append(f"- **{t.name}**: {desc}")
             parts.append("")
 
         if agents:
-            parts.append(f"**Available Agents ({len(agents)}):**")
+            parts.append(f"**Agents ({len(agents)}):**")
             for a in agents[:3]:
                 caps = a.data.get("capabilities", [])[:3]
                 parts.append(
@@ -184,10 +146,10 @@ When user says any of these, extract the name and call create_workflow:
             parts.append("")
 
         if adapters:
-            parts.append(f"**Available Integrations ({len(adapters)}):**")
+            parts.append(f"**Integrations ({len(adapters)}):**")
             for a in adapters[:3]:
                 parts.append(
-                    f"- **{a.name}**: {(a.data.get('description', 'Integration') or '')[:50]}"
+                    f"- **{a.name}**: {(a.data.get('description', '') or '')[:40]}"
                 )
             parts.append("")
 
