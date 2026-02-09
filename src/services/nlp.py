@@ -958,7 +958,12 @@ Return ONLY a single number (the index). Example: 5
                     enhancement_config['context']["generation_method"] = generation_method
                 if "original_prompt" not in enhancement_config['context']:
                     enhancement_config['context']["original_prompt"] = prompt
-                
+
+                # If workflow was already enhanced by direct enhancement_service call above,
+                # tell the pipeline to skip redundant re-enhancement
+                if workflow_config.get('enhancement_metadata'):
+                    enhancement_config['context']['already_enhanced'] = True
+
                 # Apply unified enhancement pipeline (includes defaults, AI, context, etc.)
                 enhanced_workflow = await unified_enhancement_pipeline.enhance(
                     workflow_dict,
