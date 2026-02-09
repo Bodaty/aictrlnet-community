@@ -941,6 +941,13 @@ class ToolDispatcher:
 
         except Exception as e:
             logger.error(f"[v4] Tool {tool_name} failed: {e}")
+            # Rollback the session to clear any failed transaction state.
+            # Without this, subsequent DB operations (e.g. _store_message)
+            # will fail with PendingRollbackError.
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
             return ToolResult(
                 success=False,
                 error=str(e),

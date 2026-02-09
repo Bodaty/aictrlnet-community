@@ -998,6 +998,10 @@ Return ONLY a single number (the index). Example: 5
                     
             except Exception as e:
                 logger.warning(f"Could not apply enhancements (non-critical): {e}")
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    pass
                 # Continue without enhancements
         
         workflow = WorkflowDefinition(
@@ -1046,7 +1050,11 @@ Return ONLY a single number (the index). Example: 5
                 logger.info(f"✅ Tracked workflow creation in learning loop")
             except Exception as e:
                 logger.warning(f"Could not track in learning loop (non-critical): {e}")
-        
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    pass
+
         # Phase 6: Connect metadata to hub features (Business/Enterprise only)
         if self.edition in ['business', 'enterprise'] and workflow.id:
             try:
@@ -1090,8 +1098,12 @@ Return ONLY a single number (the index). Example: 5
                     
             except Exception as e:
                 logger.warning(f"Could not connect metadata to hubs: {e}")
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    pass
                 # Non-critical, continue without connections
-        
+
         return workflow
     
     async def _create_fallback_workflow(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> WorkflowDefinition:
