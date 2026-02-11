@@ -640,6 +640,102 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
         editions=["community", "business", "enterprise"],
         handler="api_introspection_service.search_capabilities"
     ),
+
+    # -------------------------------------------------------------------------
+    # File Access Tools (2) - Agent can read staged files
+    # -------------------------------------------------------------------------
+    "list_user_files": ToolDefinition(
+        name="list_user_files",
+        description="List the current user's staged/uploaded files. Returns file IDs, names, types, and sizes.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 20, "description": "Max files to return"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="file_access.list_user_files"
+    ),
+    "access_staged_file": ToolDefinition(
+        name="access_staged_file",
+        description="Read the extracted data from a staged file by its ID. Returns structured content (text, tables, metadata).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "The staged file ID to access"}
+            },
+            "required": ["file_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="file_access.access_staged_file"
+    ),
+
+    # -------------------------------------------------------------------------
+    # Browser Automation Tools (3) - Agent can drive a headless browser
+    # -------------------------------------------------------------------------
+    "browser_execute": ToolDefinition(
+        name="browser_execute",
+        description=(
+            "Execute a sequence of browser actions (navigate, click, fill, screenshot, extract_text, "
+            "run_script, wait_for, download). Max 10 actions per call."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "Ordered list of browser actions",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["navigate", "click", "fill", "screenshot", "extract_text", "run_script", "wait_for", "download"]},
+                            "url": {"type": "string"},
+                            "selector": {"type": "string"},
+                            "value": {"type": "string"}
+                        },
+                        "required": ["type"]
+                    }
+                },
+                "timeout_ms": {"type": "integer", "default": 30000, "description": "Max timeout in ms (max 60000)"}
+            },
+            "required": ["actions"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="browser_tool.execute",
+        requires_confirmation=True
+    ),
+    "browser_screenshot": ToolDefinition(
+        name="browser_screenshot",
+        description="Navigate to a URL and take a screenshot. Convenience wrapper around browser_execute.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to navigate to and screenshot"}
+            },
+            "required": ["url"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="browser_tool.screenshot"
+    ),
+    "browser_extract": ToolDefinition(
+        name="browser_extract",
+        description="Navigate to a URL and extract text content from one or more CSS selectors.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to navigate to"},
+                "selectors": {
+                    "type": "array",
+                    "description": "CSS selectors to extract text from",
+                    "items": {"type": "string"}
+                }
+            },
+            "required": ["url"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="browser_tool.extract"
+    ),
 }
 
 
@@ -732,6 +828,13 @@ class ToolDispatcher:
         "list_api_endpoints": "_list_api_endpoints",
         "get_endpoint_detail": "_get_endpoint_detail",
         "search_api_capabilities": "_search_api_capabilities",
+        # File Access tools
+        "list_user_files": "_list_user_files",
+        "access_staged_file": "_access_staged_file",
+        # Browser Automation tools
+        "browser_execute": "_browser_execute",
+        "browser_screenshot": "_browser_screenshot",
+        "browser_extract": "_browser_extract",
     }
 
     def __init__(self, db: AsyncSession, edition: Edition = Edition.COMMUNITY):
@@ -2117,6 +2220,175 @@ class ToolDispatcher:
                 success=False,
                 error=f"Test failed for '{adapter_name}': {str(e)}"
             )
+
+    # =========================================================================
+    # File Access Tool Handlers
+    # =========================================================================
+
+    async def _list_user_files(self, args: Dict, user_id: str) -> ToolResult:
+        """List staged files for the current user."""
+        try:
+            from sqlalchemy import select
+            from models.staged_file import StagedFile
+            from datetime import datetime, timezone
+
+            limit = args.get("limit", 20)
+            stmt = (
+                select(StagedFile)
+                .where(StagedFile.user_id == user_id)
+                .where(StagedFile.expires_at > datetime.now(timezone.utc))
+                .order_by(StagedFile.created_at.desc())
+                .limit(limit)
+            )
+            result = await self.db.execute(stmt)
+            files = result.scalars().all()
+
+            file_list = [{
+                "file_id": str(f.id),
+                "filename": f.filename,
+                "content_type": f.content_type,
+                "file_size": f.file_size,
+                "stage": f.stage,
+                "created_at": f.created_at.isoformat() if f.created_at else None,
+                "has_extracted_data": bool(f.extracted_data)
+            } for f in files]
+
+            return ToolResult(
+                success=True,
+                data={
+                    "files": file_list,
+                    "count": len(file_list),
+                    "message": f"Found {len(file_list)} file(s)" if file_list else "No files found. Upload a file first."
+                }
+            )
+        except Exception as e:
+            logger.error(f"[v4] Error listing user files: {e}")
+            return ToolResult(success=False, error=f"Failed to list files: {str(e)}")
+
+    async def _access_staged_file(self, args: Dict, user_id: str) -> ToolResult:
+        """Read extracted data from a staged file."""
+        try:
+            from sqlalchemy import select
+            from models.staged_file import StagedFile
+            from datetime import datetime, timezone
+
+            file_id = args.get("file_id")
+            if not file_id:
+                return ToolResult(success=False, error="file_id is required")
+
+            stmt = (
+                select(StagedFile)
+                .where(StagedFile.id == file_id)
+                .where(StagedFile.user_id == user_id)
+                .where(StagedFile.expires_at > datetime.now(timezone.utc))
+            )
+            result = await self.db.execute(stmt)
+            staged = result.scalar_one_or_none()
+
+            if not staged:
+                return ToolResult(
+                    success=False,
+                    error=f"File '{file_id}' not found, expired, or not owned by you"
+                )
+
+            return ToolResult(
+                success=True,
+                data={
+                    "file_id": str(staged.id),
+                    "filename": staged.filename,
+                    "content_type": staged.content_type,
+                    "file_size": staged.file_size,
+                    "stage": staged.stage,
+                    "extracted_data": staged.extracted_data or {}
+                }
+            )
+        except Exception as e:
+            logger.error(f"[v4] Error accessing staged file: {e}")
+            return ToolResult(success=False, error=f"Failed to access file: {str(e)}")
+
+    # =========================================================================
+    # Browser Automation Tool Handlers
+    # =========================================================================
+
+    async def _browser_execute(self, args: Dict, user_id: str) -> ToolResult:
+        """Execute a sequence of browser actions via the browser service."""
+        import re
+        try:
+            actions = args.get("actions", [])
+            timeout_ms = min(args.get("timeout_ms", 30000), 60000)  # cap at 60s
+
+            if not actions:
+                return ToolResult(success=False, error="actions array is required")
+            if len(actions) > 10:
+                return ToolResult(success=False, error="Maximum 10 actions per call")
+
+            # Validate URL schemes in actions
+            blocked_schemes = re.compile(r'^(file|javascript|data):', re.IGNORECASE)
+            for action in actions:
+                url = action.get("url", "")
+                if url and blocked_schemes.match(url):
+                    return ToolResult(
+                        success=False,
+                        error=f"URL scheme not allowed: {url.split(':')[0]}://"
+                    )
+
+            import httpx
+            async with httpx.AsyncClient(timeout=timeout_ms / 1000 + 5) as client:
+                resp = await client.post(
+                    "http://browser-service:8005/browser/execute",
+                    json={
+                        "actions": actions,
+                        "timeout_ms": timeout_ms,
+                        "viewport": args.get("viewport", {"width": 1280, "height": 720})
+                    }
+                )
+                if resp.status_code != 200:
+                    return ToolResult(
+                        success=False,
+                        error=f"Browser service error: {resp.status_code} - {resp.text[:200]}"
+                    )
+                data = resp.json()
+                return ToolResult(
+                    success=data.get("success", True),
+                    data={
+                        "results": data.get("results", []),
+                        "screenshots": data.get("screenshots", []),
+                        "total_time_ms": data.get("total_time_ms", 0)
+                    }
+                )
+        except Exception as e:
+            logger.error(f"[v4] Browser execute error: {e}")
+            return ToolResult(success=False, error=f"Browser automation failed: {str(e)}")
+
+    async def _browser_screenshot(self, args: Dict, user_id: str) -> ToolResult:
+        """Navigate to URL and take screenshot."""
+        url = args.get("url")
+        if not url:
+            return ToolResult(success=False, error="url is required")
+
+        return await self._browser_execute({
+            "actions": [
+                {"type": "navigate", "url": url},
+                {"type": "screenshot"}
+            ],
+            "timeout_ms": 30000
+        }, user_id)
+
+    async def _browser_extract(self, args: Dict, user_id: str) -> ToolResult:
+        """Navigate to URL and extract text from selectors."""
+        url = args.get("url")
+        if not url:
+            return ToolResult(success=False, error="url is required")
+
+        selectors = args.get("selectors", ["body"])
+        actions = [{"type": "navigate", "url": url}]
+        for sel in selectors[:5]:  # max 5 selectors
+            actions.append({"type": "extract_text", "selector": sel})
+
+        return await self._browser_execute({
+            "actions": actions,
+            "timeout_ms": 30000
+        }, user_id)
 
     # =========================================================================
     # Tool Chaining Support

@@ -83,6 +83,7 @@ class ConversationMessageResponse(BaseModel):
     detected_intent: Optional[str] = None
     intent_confidence: Optional[float] = None
     entities: Dict[str, Any] = Field(default_factory=dict)
+    channel_type: Optional[str] = Field("web", description="Channel this message arrived from")
     llm_model_used: Optional[str] = None
     token_count: Optional[int] = None
     processing_time_ms: Optional[int] = None

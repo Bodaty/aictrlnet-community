@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -33,6 +34,40 @@ ALLOWED_TYPES = {
     "application/json",
 }
 
+# Magic byte signatures for content verification
+MAGIC_BYTES = {
+    "application/pdf": [b"%PDF"],
+    "image/png": [b"\x89PNG"],
+    "image/jpeg": [b"\xff\xd8\xff"],
+    "application/json": [b"{", b"["],  # JSON starts with { or [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [b"PK"],  # ZIP-based
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [b"PK"],
+    "application/vnd.ms-excel": [b"\xd0\xcf\x11\xe0"],  # OLE2
+}
+
+MAX_FILENAME_LENGTH = 255
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Strip path components and dangerous characters from filename."""
+    # Take only the basename (strip directory components)
+    name = os.path.basename(filename)
+    # Remove any null bytes or control characters
+    name = re.sub(r'[\x00-\x1f]', '', name)
+    # Limit length
+    if len(name) > MAX_FILENAME_LENGTH:
+        base, ext = os.path.splitext(name)
+        name = base[:MAX_FILENAME_LENGTH - len(ext)] + ext
+    return name or "unnamed"
+
+
+def _validate_magic_bytes(content: bytes, declared_type: str) -> bool:
+    """Verify file content matches declared MIME type via magic bytes."""
+    signatures = MAGIC_BYTES.get(declared_type)
+    if not signatures:
+        return True  # No signature to check (e.g., text/csv, text/plain)
+    return any(content[:len(sig)] == sig for sig in signatures)
+
 
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_file(
@@ -48,8 +83,12 @@ async def upload_file(
     """
     user_id = current_user.id if hasattr(current_user, "id") else current_user.get("id", "unknown")
 
+    # Sanitize filename
+    safe_filename = _sanitize_filename(file.filename or "unnamed")
+
     # Validate content type
     if file.content_type not in ALLOWED_TYPES:
+        logger.warning(f"File upload rejected: unsupported type {file.content_type} from user {user_id}")
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type: {file.content_type}. Allowed: {', '.join(ALLOWED_TYPES)}",
@@ -58,7 +97,24 @@ async def upload_file(
     # Read and validate size
     contents = await file.read()
     if len(contents) > MAX_FILE_SIZE:
+        logger.warning(f"File upload rejected: too large ({len(contents)} bytes) from user {user_id}")
         raise HTTPException(status_code=400, detail=f"File too large. Max size: {MAX_FILE_SIZE // (1024*1024)} MB")
+
+    # Magic-byte validation: verify content matches declared MIME type
+    if not _validate_magic_bytes(contents, file.content_type):
+        logger.warning(
+            f"File upload rejected: magic bytes mismatch for {safe_filename} "
+            f"(declared={file.content_type}) from user {user_id}"
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="File content does not match declared type. The file may be corrupted or mislabeled.",
+        )
+
+    logger.info(
+        f"File upload accepted: {safe_filename} ({file.content_type}, {len(contents)} bytes) "
+        f"from user {user_id}"
+    )
 
     # Store file
     file_id = uuid.uuid4()
@@ -71,7 +127,7 @@ async def upload_file(
     staged = StagedFile(
         id=file_id,
         user_id=str(user_id),
-        filename=file.filename or "unnamed",
+        filename=safe_filename,
         content_type=file.content_type or "application/octet-stream",
         file_size=len(contents),
         storage_path=storage_path,
