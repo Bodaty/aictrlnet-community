@@ -1,7 +1,7 @@
 """Add channel-agnostic fields and staged_files table.
 
 Revision ID: c7a1b2d3e4f5
-Revises: a3f9c8e71d42
+Revises: e8f9a0b1c2d3
 Create Date: 2026-02-10
 
 Adds:
@@ -11,7 +11,7 @@ Adds:
 """
 
 revision = 'c7a1b2d3e4f5'
-down_revision = 'a3f9c8e71d42'
+down_revision = 'e8f9a0b1c2d3'
 branch_labels = None
 depends_on = None
 

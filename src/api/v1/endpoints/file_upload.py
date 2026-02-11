@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from core.database import get_db
-from core.auth import get_current_user
+from core.security import get_current_user
 from models.staged_file import StagedFile
 from schemas.file_upload import FileUploadResponse, StagedFileResponse
 
