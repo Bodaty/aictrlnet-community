@@ -90,6 +90,74 @@ class ConversationManagerService:
             
         return session
     
+    async def find_or_create_channel_session(
+        self,
+        channel_type: str,
+        sender_id: str,
+        platform_metadata: Dict[str, Any],
+    ) -> ConversationSession:
+        """Find an existing active session for this channel sender, or create one.
+
+        Channel-agnostic session lookup: if the same sender has an active session
+        with a matching channel binding, reuse it. If they arrive from a different
+        channel but we can identify the same user, add a new binding to the
+        existing session.
+        """
+        cutoff_time = datetime.utcnow() - timedelta(minutes=30)
+
+        # Look for active sessions that have a binding for this channel + sender
+        result = await self.db.execute(
+            select(ConversationSession).filter(
+                and_(
+                    ConversationSession.is_active == True,
+                    ConversationSession.last_activity > cutoff_time,
+                )
+            ).order_by(desc(ConversationSession.last_activity))
+        )
+        sessions = result.scalars().all()
+
+        for session in sessions:
+            bindings = session.channel_bindings or {}
+            binding = bindings.get(channel_type, {})
+            if binding.get("sender_id") == sender_id:
+                return session
+
+        # No matching session found — create a new one
+        # Use sender_id as user_id placeholder for channel users
+        # (real user mapping would come from a user-linking service)
+        user_id = f"{channel_type}:{sender_id}"
+
+        new_binding = {
+            channel_type: {
+                "sender_id": sender_id,
+                **platform_metadata,
+            }
+        }
+
+        session = ConversationSession(
+            id=uuid4(),
+            user_id=user_id,
+            state="greeting",
+            started_at=datetime.utcnow(),
+            last_activity=datetime.utcnow(),
+            context={},
+            extracted_params={},
+            channel_bindings=new_binding,
+            primary_channel=channel_type,
+            session_config={
+                "multi_turn_enabled": True,
+                "edition": "community",
+                "max_turns": 20,
+                "timeout_minutes": 30,
+            },
+            is_active=True,
+            requires_human=False,
+        )
+        self.db.add(session)
+        await self.db.commit()
+        await self.db.refresh(session)
+        return session
+
     async def get_session(self, session_id: UUID) -> Optional[ConversationSession]:
         """Get a conversation session by ID."""
         result = await self.db.execute(
@@ -146,11 +214,14 @@ class ConversationManagerService:
         self,
         session_id: UUID,
         content: str,
-        user_id: str
+        user_id: str,
+        channel_type: str = "web",
+        external_message_id: Optional[str] = None,
     ) -> ConversationResponse:
         """
         Process a message in the conversation context.
         This is the main entry point for multi-turn processing.
+        Channel info is stored on the message but does NOT affect processing logic.
         """
         session = await self.get_session(session_id)
         if not session:
@@ -161,7 +232,9 @@ class ConversationManagerService:
         user_message = await self._store_message(
             session_id=session.id,
             role="user",
-            content=content
+            content=content,
+            channel_type=channel_type,
+            external_message_id=external_message_id,
         )
 
         # IMPORTANT: Check for confirmations/cancellations BEFORE running unified analysis
@@ -267,7 +340,9 @@ class ConversationManagerService:
             entities=kwargs.get('entities', {}),
             llm_model_used=kwargs.get('llm_model_used'),
             token_count=kwargs.get('token_count'),
-            processing_time_ms=kwargs.get('processing_time_ms')
+            processing_time_ms=kwargs.get('processing_time_ms'),
+            channel_type=kwargs.get('channel_type', 'web'),
+            external_message_id=kwargs.get('external_message_id'),
         )
 
         self.db.add(message)
@@ -746,11 +821,19 @@ CRITICAL: Respond with ONLY valid JSON, no explanation text before or after.
                 self.action_orchestrator = ActionOrchestrator(self.db, user_edition)
             
             action_type = self._map_intent_to_action_type(session.primary_intent)
+            # Enrich context with conversation provenance so downstream
+            # workflow executions carry triggered_by="conversation"
+            action_context = {
+                **session.context,
+                "triggered_by": "conversation",
+                "session_id": str(session.id),
+                "primary_channel": session.primary_channel or "web",
+            }
             result = await self.action_orchestrator.execute_action(
                 action_type=action_type,
                 params=session.extracted_params,
                 user_id=session.user_id,
-                context=session.context
+                context=action_context
             )
             
             # Update action with result

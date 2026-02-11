@@ -15,6 +15,9 @@ from .iam_node import IAMNode
 from .mcp_client_node import MCPClientNode
 from .mcp_server_node import MCPServerNode
 from .platform_integration_node import PlatformIntegrationNode
+from .file_process_node import FileProcessNode
+from .doc_generation_node import DocGenerationNode
+from .browser_automation_node import BrowserAutomationNode
 
 __all__ = [
     "TaskNode",
@@ -32,4 +35,7 @@ __all__ = [
     "MCPClientNode",
     "MCPServerNode",
     "PlatformIntegrationNode",
+    "FileProcessNode",
+    "DocGenerationNode",
+    "BrowserAutomationNode",
 ]

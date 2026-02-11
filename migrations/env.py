@@ -38,6 +38,7 @@ try:
     import models.workflow_execution
     import models.workflow_templates
     import models.knowledge  # NEW: Knowledge system for intelligent assistant
+    import models.staged_file  # NEW: File upload staging for workflows
     # Note: base.py is excluded as it contains the Base class itself
     print("✅ Successfully imported all Community models")
 except Exception as e:
@@ -157,6 +158,8 @@ COMMUNITY_TABLES = {
     'knowledge_queries',
     'system_manifests',
     'learned_patterns',
+    # File staging
+    'staged_files',
 }
 
 def include_object(object, name, type_, reflected, compare_to):

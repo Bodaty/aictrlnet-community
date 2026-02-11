@@ -45,6 +45,10 @@ class ConversationSession(Base):
         "multi_turn_enabled": True
     })
     
+    # Channel-agnostic conversation support
+    channel_bindings = Column(JSON, default={}, nullable=False)  # {"slack": {"channel_id": "C123"}, "whatsapp": {"phone": "+1..."}}
+    primary_channel = Column(String(50), default="web", nullable=False)  # Channel that initiated session
+
     # Flags
     is_active = Column(Boolean, default=True, nullable=False)
     requires_human = Column(Boolean, default=False, nullable=False)
@@ -72,6 +76,10 @@ class ConversationMessage(Base):
     message_config = Column(JSON, default={}, nullable=False)
     suggested_actions = Column(JSON, default=[], nullable=False)  # Quick action buttons
     
+    # Channel tracking
+    channel_type = Column(String(50), default="web", nullable=False)  # Which channel this message arrived from
+    external_message_id = Column(String(255), nullable=True)  # Platform-specific message ID for deduplication
+
     # Intent detection for this message
     detected_intent = Column(String(100), nullable=True)
     intent_confidence = Column(Float, nullable=True)

@@ -1,0 +1,138 @@
+"""{{PLATFORM_NAME}} adapter for AICtrlNet.
+
+Provides integration with the {{PLATFORM_NAME}} API for sending
+and receiving messages.
+"""
+
+import logging
+from typing import Any, Dict, List
+
+import httpx
+
+from adapters.base_adapter import BaseAdapter
+from adapters.models import (
+    AdapterCapability,
+    AdapterConfig,
+    AdapterRequest,
+    AdapterResponse,
+    AdapterStatus,
+)
+
+logger = logging.getLogger(__name__)
+
+# TODO: Replace with actual API base URL
+API_BASE_URL = "https://api.{{platform_name}}.com/v1"
+
+
+class {{PlatformName}}Adapter(BaseAdapter):
+    """Adapter for {{PLATFORM_NAME}} API."""
+
+    def __init__(self, config: AdapterConfig):
+        super().__init__(config)
+        self.api_key = (
+            config.credentials.get("api_key", "") if config.credentials else ""
+        )
+        self._client: httpx.AsyncClient | None = None
+
+    # ---- Lifecycle ----
+
+    async def initialize(self) -> None:
+        """Connect to {{PLATFORM_NAME}} API."""
+        self._client = httpx.AsyncClient(
+            base_url=API_BASE_URL,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            timeout=30.0,
+        )
+        self.status = AdapterStatus.READY
+        self._initialized = True
+        logger.info(f"{{PlatformName}}Adapter initialized")
+
+    async def shutdown(self) -> None:
+        """Disconnect from {{PLATFORM_NAME}} API."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+        self.status = AdapterStatus.STOPPED
+        logger.info(f"{{PlatformName}}Adapter shut down")
+
+    # ---- Capabilities ----
+
+    def get_capabilities(self) -> List[AdapterCapability]:
+        return [
+            AdapterCapability(
+                name="send_message",
+                description="Send a text message via {{PLATFORM_NAME}}",
+                parameters={
+                    "to": "str - Recipient identifier",
+                    "text": "str - Message text",
+                },
+            ),
+            # TODO: Add more capabilities as needed
+        ]
+
+    # ---- Execution ----
+
+    async def execute(self, request: AdapterRequest) -> AdapterResponse:
+        """Route request to the appropriate handler."""
+        handlers = {
+            "send_message": self._send_message,
+            # TODO: Add more handlers
+        }
+
+        handler = handlers.get(request.capability)
+        if not handler:
+            return AdapterResponse(
+                status="error",
+                error=f"Unknown capability: {request.capability}",
+            )
+
+        try:
+            return await handler(request.parameters)
+        except httpx.HTTPStatusError as e:
+            logger.error(f"{{PlatformName}} API error: {e.response.status_code}")
+            return AdapterResponse(
+                status="error",
+                error=f"API error: {e.response.status_code} {e.response.text}",
+            )
+        except Exception as e:
+            logger.error(f"{{PlatformName}} adapter error: {e}")
+            return AdapterResponse(status="error", error=str(e))
+
+    # ---- Handlers ----
+
+    async def _send_message(self, params: Dict[str, Any]) -> AdapterResponse:
+        """Send a text message."""
+        to = params.get("to")
+        text = params.get("text")
+
+        if not to or not text:
+            return AdapterResponse(
+                status="error", error="'to' and 'text' are required"
+            )
+
+        # TODO: Replace with actual API call
+        resp = await self._client.post(
+            "/messages",
+            json={"to": to, "text": text},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        return AdapterResponse(
+            status="success",
+            data={"message_id": data.get("id"), "to": to},
+        )
+
+    # ---- Inbound (optional) ----
+
+    def process_webhook(self, payload: Dict[str, Any]) -> Dict[str, Any] | None:
+        """Process an inbound webhook from {{PLATFORM_NAME}}.
+
+        Returns a normalized dict or None if the event should be ignored.
+        """
+        # TODO: Implement inbound message parsing
+        return {
+            "sender_id": payload.get("from", {}).get("id"),
+            "text": payload.get("message", {}).get("text"),
+            "message_id": payload.get("message", {}).get("id"),
+        }

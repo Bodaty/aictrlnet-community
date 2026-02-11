@@ -203,7 +203,9 @@ class WorkflowExecutionService:
                 {
                     "execution_id": str(execution_id),
                     "workflow_id": str(execution.workflow_id),
-                    "duration_ms": execution.duration_ms
+                    "duration_ms": execution.duration_ms,
+                    "triggered_by": execution.triggered_by,
+                    "trigger_metadata": execution.trigger_metadata or {},
                 }
             )
             

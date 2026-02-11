@@ -20,6 +20,8 @@ from .endpoints import (
     bridge,
     nlp,
     conversation,  # Multi-turn conversation endpoints
+    channel_webhook,  # Channel-agnostic webhook endpoint
+    file_upload,  # File upload for workflow processing
     websocket,
     health,
     users,
@@ -92,6 +94,12 @@ api_router.include_router(nlp.router, prefix="/nlp", tags=["nlp"])
 
 # Multi-turn conversation endpoints (works alongside NLP for backward compatibility)
 api_router.include_router(conversation.router, prefix="/conversation", tags=["conversation"])
+
+# Channel-agnostic webhook endpoints (Slack, Telegram, WhatsApp, SMS, Discord)
+api_router.include_router(channel_webhook.router, tags=["channels"])
+
+# File upload endpoints
+api_router.include_router(file_upload.router, prefix="/files", tags=["files"])
 
 # LLM endpoints (unified LLM service)
 from llm.api import endpoints as llm_endpoints

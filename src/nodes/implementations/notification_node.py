@@ -17,12 +17,14 @@ logger = logging.getLogger(__name__)
 
 class NotificationNode(BaseNode):
     """Node for sending notifications through various channels.
-    
+
     Supports:
     - Email notifications
-    - SMS notifications
+    - SMS notifications (via Twilio adapter)
     - Slack messages
     - Discord messages
+    - WhatsApp messages
+    - Telegram messages
     - Webhook notifications
     - Push notifications
     - In-app notifications
@@ -47,6 +49,10 @@ class NotificationNode(BaseNode):
                 output_data = await self._send_slack(recipients, message)
             elif channel == "discord":
                 output_data = await self._send_discord(recipients, message)
+            elif channel == "whatsapp":
+                output_data = await self._send_whatsapp(recipients, message)
+            elif channel == "telegram":
+                output_data = await self._send_telegram(recipients, message)
             elif channel == "webhook":
                 output_data = await self._send_webhook(recipients, message)
             elif channel == "push":
@@ -369,6 +375,103 @@ class NotificationNode(BaseNode):
             "adapters_used": [adapter_id]
         }
     
+    async def _send_whatsapp(self, recipients: List[Dict[str, Any]], message: Dict[str, Any]) -> Dict[str, Any]:
+        """Send WhatsApp notification via WhatsApp adapter."""
+        adapter_id = self.config.parameters.get("whatsapp_adapter", "whatsapp")
+        adapter_class = adapter_registry.get_adapter_class(adapter_id)
+        if not adapter_class:
+            raise ValueError(f"WhatsApp adapter '{adapter_id}' not found")
+
+        adapter = adapter_class({})
+
+        phone_numbers = [r.get("address") or r.get("phone") for r in recipients]
+        phone_numbers = [p for p in phone_numbers if p]
+
+        results = []
+        for phone in phone_numbers:
+            # Use template message if specified (required for 24-hour window)
+            template_name = self.config.parameters.get("whatsapp_template")
+            if template_name:
+                request = AdapterRequest(
+                    capability="send_template",
+                    parameters={
+                        "to": phone,
+                        "template_name": template_name,
+                        "language": self.config.parameters.get("whatsapp_language", "en"),
+                        "components": self.config.parameters.get("whatsapp_components", []),
+                    }
+                )
+            else:
+                request = AdapterRequest(
+                    capability="send_message",
+                    parameters={
+                        "to": phone,
+                        "text": message["body"],
+                    }
+                )
+
+            response = await adapter.execute(request)
+            results.append({
+                "phone": phone,
+                "success": response.status != "error",
+                "error": response.error if response.status == "error" else None,
+                "message_id": response.data.get("message_id") if response.status != "error" else None,
+            })
+
+        successful = sum(1 for r in results if r["success"])
+
+        return {
+            "channel": "whatsapp",
+            "sent_to": phone_numbers,
+            "results": results,
+            "successful": successful,
+            "failed": len(results) - successful,
+            "adapters_used": [adapter_id],
+        }
+
+    async def _send_telegram(self, recipients: List[Dict[str, Any]], message: Dict[str, Any]) -> Dict[str, Any]:
+        """Send Telegram notification via Telegram adapter."""
+        adapter_id = self.config.parameters.get("telegram_adapter", "telegram")
+        adapter_class = adapter_registry.get_adapter_class(adapter_id)
+        if not adapter_class:
+            raise ValueError(f"Telegram adapter '{adapter_id}' not found")
+
+        adapter = adapter_class({})
+
+        chat_ids = [r.get("address") or r.get("chat_id") for r in recipients]
+        chat_ids = [c for c in chat_ids if c]
+
+        results = []
+        for chat_id in chat_ids:
+            parse_mode = self.config.parameters.get("telegram_parse_mode", "HTML")
+            request = AdapterRequest(
+                capability="send_message",
+                parameters={
+                    "chat_id": chat_id,
+                    "text": message["body"],
+                    "parse_mode": parse_mode,
+                }
+            )
+
+            response = await adapter.execute(request)
+            results.append({
+                "chat_id": chat_id,
+                "success": response.status != "error",
+                "error": response.error if response.status == "error" else None,
+                "message_id": response.data.get("message_id") if response.status != "error" else None,
+            })
+
+        successful = sum(1 for r in results if r["success"])
+
+        return {
+            "channel": "telegram",
+            "sent_to": chat_ids,
+            "results": results,
+            "successful": successful,
+            "failed": len(results) - successful,
+            "adapters_used": [adapter_id],
+        }
+
     async def _send_webhook(self, recipients: List[Dict[str, Any]], message: Dict[str, Any]) -> Dict[str, Any]:
         """Send webhook notification."""
         # Get webhook adapter
@@ -546,6 +649,10 @@ class NotificationNode(BaseNode):
                     result = await self._send_slack(recipients, message)
                 elif channel == "discord":
                     result = await self._send_discord(recipients, message)
+                elif channel == "whatsapp":
+                    result = await self._send_whatsapp(recipients, message)
+                elif channel == "telegram":
+                    result = await self._send_telegram(recipients, message)
                 elif channel == "webhook":
                     result = await self._send_webhook(recipients, message)
                 elif channel == "push":
@@ -652,7 +759,8 @@ class NotificationNode(BaseNode):
             raise ValueError("channel parameter is required")
         
         valid_channels = [
-            "email", "sms", "slack", "discord", "webhook", "push", "in_app", "multi"
+            "email", "sms", "slack", "discord", "whatsapp", "telegram",
+            "webhook", "push", "in_app", "multi"
         ]
         
         if channel not in valid_channels:

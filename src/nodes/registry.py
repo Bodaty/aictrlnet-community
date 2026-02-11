@@ -10,7 +10,8 @@ from .implementations import (
     StartNode, EndNode, DataSourceNode,
     AIProcessNode, APICallNode, MCPNode, IAMNode,
     NotificationNode, MCPClientNode, MCPServerNode,
-    PlatformIntegrationNode
+    PlatformIntegrationNode,
+    FileProcessNode, DocGenerationNode, BrowserAutomationNode,
 )
 
 
@@ -51,7 +52,14 @@ class NodeRegistry:
         
         # Platform Integration node
         self.register_custom_node("platform", PlatformIntegrationNode)
-        
+
+        # File processing & document generation nodes
+        self.register_custom_node("fileProcess", FileProcessNode)
+        self.register_custom_node("docGeneration", DocGenerationNode)
+
+        # Browser automation node
+        self.register_custom_node("browserAutomation", BrowserAutomationNode)
+
         # Additional node types can be registered here
         logger.info("Default node types registered")
     
@@ -202,7 +210,7 @@ class NodeRegistry:
     
     def _get_custom_node_category(self, name: str) -> str:
         """Get category for a custom node."""
-        if name in ["dataSource", "transform"]:
+        if name in ["dataSource", "transform", "fileProcess", "docGeneration"]:
             return "data_processing"
         elif name in ["aiProcess"]:
             return "ai_ml"
@@ -210,7 +218,9 @@ class NodeRegistry:
             return "integration"
         elif name in ["mcp", "mcpClient", "mcpServer"]:
             return "mcp"
-        elif name == "notification":
+        elif name in ["notification"]:
+            return "integration"
+        elif name in ["browserAutomation"]:
             return "integration"
         return "data_processing"
     

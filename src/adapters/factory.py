@@ -36,6 +36,10 @@ class AdapterFactory:
         "email": "adapters.implementations.communication.email_adapter.EmailAdapter",
         "webhook": "adapters.implementations.communication.webhook_adapter.WebhookAdapter",
         "discord": "adapters.implementations.communication.discord_adapter.DiscordAdapter",
+        "telegram": "adapters.implementations.communication.telegram_adapter.TelegramAdapter",
+        "whatsapp": "adapters.implementations.communication.whatsapp_adapter.WhatsAppAdapter",
+        "twilio": "adapters.implementations.communication.twilio_adapter.TwilioAdapter",
+        "sms": "adapters.implementations.communication.twilio_adapter.TwilioAdapter",  # Alias
         
         # Human Service Adapters
         "upwork": "adapters.implementations.human.upwork_adapter.UpworkAdapter",

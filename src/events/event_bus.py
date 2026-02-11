@@ -151,6 +151,70 @@ async def track_execution_metrics(event_name: str, data: Any):
         logger.error(f"Workflow {workflow_id} failed: {error}")
 
 
+async def notify_channel_on_completion(event_name: str, data: Any):
+    """When a conversation-triggered workflow completes, send notification via the originating channel.
+
+    This handler looks up the conversation session that triggered the workflow
+    and sends a completion message back through the channel adapter.
+    """
+    if event_name != "workflow.execution.completed":
+        return
+
+    triggered_by = data.get("triggered_by", "")
+    if triggered_by not in ("conversation", "file_upload"):
+        return
+
+    trigger_meta = data.get("trigger_metadata", {})
+    session_id = trigger_meta.get("session_id")
+    if not session_id:
+        return
+
+    try:
+        from core.database import async_session_factory
+        from sqlalchemy import select as sa_select
+        from models.conversation import ConversationSession
+
+        async with async_session_factory() as db:
+            result = await db.execute(
+                sa_select(ConversationSession).filter(ConversationSession.id == session_id)
+            )
+            session = result.scalar_one_or_none()
+
+            if not session or not session.channel_bindings:
+                return
+
+            channel = session.primary_channel or "web"
+            if channel == "web":
+                return  # Web users get notified via WebSocket, not adapter
+
+            binding = session.channel_bindings.get(channel, {})
+            sender_id = binding.get("sender_id")
+            if not sender_id:
+                return
+
+            workflow_id = data.get("workflow_id", "unknown")
+            duration_ms = data.get("duration_ms", 0)
+            text = f"Workflow {workflow_id} completed in {duration_ms}ms."
+
+            from adapters.registry import adapter_registry
+            from adapters.models import AdapterRequest as AR
+
+            adapter_class = adapter_registry.get_adapter_class(channel)
+            if not adapter_class:
+                return
+
+            adapter = adapter_class({})
+            await adapter.execute(AR(capability="send_message", parameters={
+                "to": sender_id,
+                "text": text,
+                "chat_id": binding.get("chat_id", sender_id),
+            }))
+            logger.info(f"Sent workflow completion notification via {channel} to {sender_id}")
+    except Exception as e:
+        logger.warning(f"Failed to send channel completion notification: {e}")
+
+
 # Subscribe default handlers
 event_bus.subscribe("workflow.*", log_workflow_events)
 event_bus.subscribe("workflow.execution.*", track_execution_metrics)
+event_bus.subscribe("workflow.execution.completed", notify_channel_on_completion)
