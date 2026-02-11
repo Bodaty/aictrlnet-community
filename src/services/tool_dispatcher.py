@@ -1135,6 +1135,20 @@ class ToolDispatcher:
         elif tool_name == "search_api_capabilities":
             return await self._search_api_capabilities(arguments)
 
+        # File access tools
+        elif tool_name == "list_user_files":
+            return await self._list_user_files(arguments, user_id)
+        elif tool_name == "access_staged_file":
+            return await self._access_staged_file(arguments, user_id)
+
+        # Browser automation tools
+        elif tool_name == "browser_execute":
+            return await self._browser_execute(arguments, user_id)
+        elif tool_name == "browser_screenshot":
+            return await self._browser_screenshot(arguments, user_id)
+        elif tool_name == "browser_extract":
+            return await self._browser_extract(arguments, user_id)
+
         else:
             return ToolResult(
                 success=False,
@@ -2332,6 +2346,20 @@ class ToolDispatcher:
                         error=f"URL scheme not allowed: {url.split(':')[0]}://"
                     )
 
+            # Business+ governance: risk assessment on browser actions
+            try:
+                from aictrlnet_business.services.ai_governance import RiskAssessmentEngine
+                risk_engine = RiskAssessmentEngine()
+                risk_result = risk_engine.assess_browser_risk(actions)
+                if risk_result.get("risk_level") in ("very_high", "critical"):
+                    return ToolResult(
+                        success=False,
+                        error=f"Browser action blocked: risk level {risk_result.get('risk_level')}"
+                    )
+                logger.info(f"Browser governance: risk={risk_result.get('risk_level', 'n/a')}")
+            except ImportError:
+                pass  # Community edition — no governance
+
             import httpx
             async with httpx.AsyncClient(timeout=timeout_ms / 1000 + 5) as client:
                 resp = await client.post(
@@ -2348,12 +2376,22 @@ class ToolDispatcher:
                         error=f"Browser service error: {resp.status_code} - {resp.text[:200]}"
                     )
                 data = resp.json()
+                # Extract screenshots from results array (browser service
+                # embeds them as ActionResult entries with type "screenshot")
+                results = data.get("results", [])
+                screenshots = [
+                    r.get("data", {}).get("base64", "")
+                    for r in results
+                    if r.get("action_type") == "screenshot" and r.get("success")
+                ]
                 return ToolResult(
                     success=data.get("success", True),
                     data={
-                        "results": data.get("results", []),
-                        "screenshots": data.get("screenshots", []),
-                        "total_time_ms": data.get("total_time_ms", 0)
+                        "results": results,
+                        "screenshots": screenshots,
+                        "total_duration_ms": data.get("total_duration_ms", 0),
+                        "page_url": data.get("page_url"),
+                        "page_title": data.get("page_title")
                     }
                 )
         except Exception as e:

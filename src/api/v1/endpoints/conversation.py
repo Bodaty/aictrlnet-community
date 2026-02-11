@@ -803,7 +803,8 @@ async def chat_v5(
                 session_id=session_id,
                 content=message.content,
                 user_id=str(current_user.id),
-                stream=True
+                stream=True,
+                file_id=message.file_id,
             ):
                 # Format as SSE
                 event_data = serialize_for_json(event.get('data', {}))

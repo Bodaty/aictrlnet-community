@@ -116,6 +116,42 @@ async def upload_file(
         f"from user {user_id}"
     )
 
+    # Business+ governance: risk assessment on file uploads
+    try:
+        from aictrlnet_business.services.ai_governance import RiskAssessmentEngine
+        risk_engine = RiskAssessmentEngine()
+        risk_result = risk_engine.assess_file_risk({
+            "filename": safe_filename,
+            "content_type": file.content_type,
+            "file_size": len(contents),
+            "source": "web_upload",
+        })
+        if risk_result.get("risk_level") in ("very_high", "critical"):
+            logger.warning(f"File upload blocked by governance: {risk_result}")
+            raise HTTPException(
+                status_code=403,
+                detail=f"File upload blocked: risk level {risk_result.get('risk_level')} — {risk_result.get('summary', 'policy violation')}",
+            )
+        logger.info(f"File governance: risk={risk_result.get('risk_level', 'n/a')}, score={risk_result.get('risk_score', 0):.2f}")
+    except ImportError:
+        pass  # Community edition — no governance
+
+    # Enterprise audit logging
+    try:
+        from aictrlnet_enterprise.services.audit_service import AuditService
+        audit = AuditService(db)
+        await audit.audit_file_upload(
+            user_id=str(user_id),
+            tenant_id=None,
+            file_metadata={
+                "filename": safe_filename,
+                "content_type": file.content_type,
+                "file_size": len(contents),
+            }
+        )
+    except ImportError:
+        pass  # Community/Business edition — no audit service
+
     # Store file
     file_id = uuid.uuid4()
     os.makedirs(UPLOAD_DIR, exist_ok=True)

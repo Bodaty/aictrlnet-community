@@ -44,6 +44,7 @@ class ConversationMessageCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=10000)
     role: Optional[MessageRoleType] = "user"
     message_config: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    file_id: Optional[str] = Field(None, description="ID of an uploaded file to attach to this message")
 
 
 class ConversationActionExecute(BaseModel):

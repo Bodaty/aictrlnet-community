@@ -1288,7 +1288,8 @@ Response (just the sentence, no quotes):"""
         session_id: UUID,
         content: str,
         user_id: str,
-        stream: bool = True
+        stream: bool = True,
+        file_id: str = None,
     ) -> "AsyncGenerator[Dict[str, Any], None]":
         """
         v5 Unified conversation with LLM-as-brain architecture.
@@ -1338,14 +1339,25 @@ Response (just the sentence, no quotes):"""
         # =====================================================================
         # Step 2: Store user message immediately (before processing)
         # =====================================================================
+        msg_config = {}
+        if file_id:
+            msg_config["file_id"] = file_id
         user_message = await self._store_message(
             session_id=session_id,
             role="user",
-            content=content
+            content=content,
+            message_config=msg_config,
         )
 
-        # Add current message to history for this call
-        conversation_history.append({"role": "user", "content": content})
+        # Add current message to history for this call.
+        # If a file is attached, append context so the LLM knows it can access it.
+        effective_content = content
+        if file_id:
+            effective_content = (
+                f"{content}\n\n[Attached file: file_id={file_id}. "
+                f"Use the access_staged_file tool to read its contents.]"
+            )
+        conversation_history.append({"role": "user", "content": effective_content})
 
         # =====================================================================
         # Step 3: Retrieve knowledge context (templates, agents, adapters)
