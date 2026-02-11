@@ -11,6 +11,7 @@ Security model:
   handshake inline during the webhook call.
 """
 
+import json
 import logging
 import re
 from datetime import datetime
@@ -41,6 +42,7 @@ _NORMALIZERS = {
     "whatsapp": normalizer.normalize_whatsapp,
     "twilio": normalizer.normalize_twilio,
     "discord": normalizer.normalize_discord,
+    "email": normalizer.normalize_email,
 }
 
 # Regex to detect a linking command: "/link 123456" or "link 123456"
@@ -72,11 +74,35 @@ async def channel_webhook(
         if body.get("type") == "url_verification":
             return {"challenge": body.get("challenge", "")}
 
+    # Discord signature verification + PING/PONG
+    if channel_type == "discord":
+        raw_body = await request.body()
+        sig = request.headers.get("X-Signature-Ed25519", "")
+        ts = request.headers.get("X-Signature-Timestamp", "")
+        discord_pub_key = getattr(settings, "DISCORD_PUBLIC_KEY", "")
+        if discord_pub_key and not normalizer.validate_discord_signature(raw_body, sig, ts, discord_pub_key):
+            raise HTTPException(status_code=401, detail="Invalid Discord signature")
+        try:
+            body = json.loads(raw_body)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid payload")
+        if body.get("type") == 1:  # PING
+            return {"type": 1}  # PONG
+
+    # Email webhook secret validation
+    if channel_type == "email":
+        token = request.headers.get("X-Webhook-Secret", "")
+        email_secret = getattr(settings, "EMAIL_WEBHOOK_SECRET", "")
+        if email_secret and not normalizer.validate_email_webhook(token, email_secret):
+            raise HTTPException(status_code=401, detail="Invalid email webhook signature")
+
     # --- Parse payload ---
     try:
-        if channel_type == "twilio":
+        if channel_type in ("twilio", "email"):
             form = await request.form()
             payload: Dict[str, Any] = dict(form)
+        elif channel_type == "discord":
+            payload = body  # Already parsed above during signature verification
         else:
             payload = await request.json()
     except Exception:
@@ -262,6 +288,7 @@ async def _send_reply_via_channel(
         "twilio": ("twilio", "send_sms", lambda: {"to": inbound.sender_id, "body": text}),
         "slack": ("slack", "send_message", lambda: {"channel": inbound.platform_metadata.get("channel", inbound.sender_id), "text": text}),
         "discord": ("discord", "send_message", lambda: {"channel_id": inbound.platform_metadata.get("channel_id", inbound.sender_id), "content": text}),
+        "email": ("email", "send_email", lambda: {"to": inbound.sender_id, "subject": f"Re: {inbound.platform_metadata.get('subject', 'AICtrlNet')}", "body": text}),
     }
 
     entry = adapter_map.get(channel_type)

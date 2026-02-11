@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     # Set to None to disable the LLM service adapter
     LLM_SERVICE_URL: Optional[str] = Field(default=None, env="LLM_SERVICE_URL")
     
+    # Channel Webhook Secrets
+    DISCORD_PUBLIC_KEY: str = Field(default="", description="Hex-encoded Ed25519 public key from Discord Developer Portal")
+    EMAIL_WEBHOOK_SECRET: str = Field(default="", description="Shared secret for email inbound webhook validation")
+
     # Stripe Payment Processing
     STRIPE_SECRET_KEY: str = Field(default="sk_test_dummy")
     STRIPE_WEBHOOK_SECRET: str = Field(default="whsec_dummy")

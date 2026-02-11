@@ -28,7 +28,7 @@ from schemas.channel_link import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-VALID_CHANNELS = {"telegram", "whatsapp", "twilio", "slack", "discord"}
+VALID_CHANNELS = {"telegram", "whatsapp", "twilio", "slack", "discord", "email"}
 CODE_TTL_SECONDS = 600  # 10 minutes
 
 
@@ -45,6 +45,7 @@ def _link_instructions(channel_type: str, code: str) -> str:
         "twilio": f"Reply with 'link {code}' to the AICtrlNet SMS number.",
         "slack": f"In the AICtrlNet Slack app, type /link {code}",
         "discord": f"In the AICtrlNet Discord bot DM, type /link {code}",
+        "email": f"Send an email with the body 'link {code}' to the AICtrlNet inbound address.",
     }
     return channel_hints.get(channel_type, f"Send 'link {code}' via {channel_type}.")
 

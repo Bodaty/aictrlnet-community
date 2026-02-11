@@ -235,3 +235,74 @@ class ChannelNormalizer:
     def validate_telegram_secret(token: str, secret_token: str) -> bool:
         """Validate Telegram X-Telegram-Bot-Api-Secret-Token header."""
         return hmac.compare_digest(token, secret_token)
+
+    @staticmethod
+    def validate_discord_signature(body: bytes, signature: str, timestamp: str, public_key: str) -> bool:
+        """Validate Discord webhook signature using Ed25519.
+
+        Discord signs webhooks with Ed25519. The message to verify is
+        the concatenation of the timestamp and request body.
+        """
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+            key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key))
+            key.verify(bytes.fromhex(signature), timestamp.encode() + body)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def validate_email_webhook(token: str, expected_token: str) -> bool:
+        """Validate email inbound webhook using shared secret token."""
+        if not expected_token:
+            return True  # No secret configured — skip validation (dev mode)
+        return hmac.compare_digest(token, expected_token)
+
+    # === Email Normalizer ===
+
+    @staticmethod
+    def normalize_email(payload: Dict[str, Any]) -> Optional[InboundMessage]:
+        """Normalize inbound email payload (SendGrid Inbound Parse format)."""
+        import json as _json
+        import re as _re
+
+        from_addr = payload.get("from", "") or payload.get("sender_email", "")
+        text = payload.get("text", "") or payload.get("plain", "")
+        subject = payload.get("subject", "")
+
+        # Extract just the email address from "Name <email>" format
+        email_match = _re.search(r'<(.+?)>', from_addr)
+        sender_email = email_match.group(1) if email_match else from_addr.strip()
+
+        if not sender_email:
+            return None
+
+        attachments = []
+        att_info = payload.get("attachment-info", {})
+        if isinstance(att_info, str):
+            try:
+                att_info = _json.loads(att_info)
+            except Exception:
+                att_info = {}
+        for key, info in att_info.items():
+            attachments.append({
+                "type": info.get("type", "file"),
+                "name": info.get("filename", key),
+            })
+
+        return InboundMessage(
+            channel_type="email",
+            sender_id=sender_email,
+            message_text=f"[Subject: {subject}]\n{text}" if subject else text,
+            attachments=attachments,
+            external_message_id=payload.get("headers", "")[:64],
+            platform_metadata={
+                "subject": subject,
+                "to": payload.get("to", ""),
+                "cc": payload.get("cc", ""),
+                "from_display": from_addr,
+                "spam_score": payload.get("spam_score", ""),
+                "SPF": payload.get("SPF", ""),
+                "dkim": payload.get("dkim", ""),
+            },
+        )
