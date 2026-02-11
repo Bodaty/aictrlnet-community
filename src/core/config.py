@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     # Set to None to disable the LLM service adapter
     LLM_SERVICE_URL: Optional[str] = Field(default=None, env="LLM_SERVICE_URL")
     
+    # Chinese AI Provider API Keys
+    DEEPSEEK_API_KEY: str = Field(default="", description="DeepSeek Platform API key")
+
     # Channel Webhook Secrets
     DISCORD_PUBLIC_KEY: str = Field(default="", description="Hex-encoded Ed25519 public key from Discord Developer Portal")
     EMAIL_WEBHOOK_SECRET: str = Field(default="", description="Shared secret for email inbound webhook validation")

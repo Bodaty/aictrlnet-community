@@ -54,6 +54,7 @@ class LLMGenerationEngine:
         """Initialize the generation engine."""
         self.ollama_url = "http://host.docker.internal:11434"
         self._available_models_cache = None
+        self._models_cache_time = 0
         self._adapters = {}
         # Use enhanced selector for sophisticated routing
         self.enhanced_selector = get_enhanced_selector()
@@ -94,6 +95,16 @@ class LLMGenerationEngine:
             # Cohere models
             "command": 0.001,
             "command-light": 0.0004,
+
+            # DeepSeek models
+            "deepseek-chat": 0.00014,       # $0.14/1M input tokens
+            "deepseek-reasoner": 0.00055,   # $0.55/1M input tokens
+
+            # DashScope/Qwen models
+            "qwen-turbo": 0.0001,
+            "qwen-plus": 0.0004,
+            "qwen-max": 0.002,
+            "qwen-long": 0.0002,
         }
     
     async def generate(self, request: LLMRequest) -> LLMResponse:
@@ -200,13 +211,22 @@ class LLMGenerationEngine:
         # System-default tier selection (no user preferences — use task-type mapping)
         # This ensures tool_use, workflow_generation, etc. get the right model size
         if not request.user_settings:
+            from llm.tier_resolver import get_dynamic_system_default_for_tier
             tier = self._determine_tier_for_task(request)
-            system_model = get_system_default_for_tier(tier)
             try:
                 available_models = await self._get_ollama_models()
-                if system_model in available_models:
+                # Try dynamic default (picks best available model for tier)
+                system_model = get_dynamic_system_default_for_tier(tier, available_models)
+                if system_model:
                     logger.info(f"Using system tier default: {tier.value} tier -> {system_model} (task_type={request.task_type})")
                     return system_model, tier
+
+                # No model available for exact tier — try adjacent tiers
+                for fallback_tier in [ModelTier.QUALITY, ModelTier.BALANCED, ModelTier.FAST]:
+                    fallback_model = get_dynamic_system_default_for_tier(fallback_tier, available_models)
+                    if fallback_model:
+                        logger.info(f"Using fallback tier: {fallback_tier.value} -> {fallback_model}")
+                        return fallback_model, fallback_tier
             except Exception:
                 pass  # Fall through to enhanced selector
 
@@ -985,20 +1005,25 @@ Return ONLY the JSON array, no other text or explanation."""
     
     async def get_available_models(self) -> List[ModelInfo]:
         """Get all available models across all providers."""
+        from llm.model_selection import _estimate_model_size_billions
+
         models = []
-        
+
         # Get Ollama models
         ollama_models = await self._get_ollama_models()
         for model_name in ollama_models:
+            size = _estimate_model_size_billions(model_name)
             models.append(ModelInfo(
                 name=model_name,
                 provider=ModelProvider.OLLAMA,
                 tier=classify_model_tier(model_name),
                 cost_per_1k_tokens=0.0,
                 supports_streaming=True,
-                description=f"Local Ollama model: {model_name}"
+                description=f"Local Ollama model: {model_name}",
+                local=True,
+                parameter_size=f"{size}B" if size else None,
             ))
-        
+
         # Add known API models (shown in dropdown for all editions)
         # Users will be prompted for API keys when they select these models
         api_models = [
@@ -1026,8 +1051,12 @@ Return ONLY the JSON array, no other text or explanation."""
             # Cohere models
             ("command", ModelProvider.COHERE),
             ("command-light", ModelProvider.COHERE),
+
+            # DeepSeek models
+            ("deepseek-chat", ModelProvider.DEEPSEEK),
+            ("deepseek-reasoner", ModelProvider.DEEPSEEK),
         ]
-        
+
         for model_name, provider in api_models:
             if self._is_provider_configured(provider):
                 models.append(ModelInfo(
@@ -1036,10 +1065,11 @@ Return ONLY the JSON array, no other text or explanation."""
                     tier=classify_model_tier(model_name),
                     cost_per_1k_tokens=self.pricing.get(model_name, 0.0),
                     supports_streaming=True,
-                    supports_json_mode=provider in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC],
-                    description=f"{provider.value} model: {model_name}"
+                    supports_json_mode=provider in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC, ModelProvider.DEEPSEEK],
+                    description=f"{provider.value} model: {model_name}",
+                    local=False,
                 ))
-        
+
         return models
     
     async def estimate_cost(self, prompt: str, model: str) -> CostEstimate:
@@ -1060,10 +1090,12 @@ Return ONLY the JSON array, no other text or explanation."""
         )
     
     async def _get_ollama_models(self) -> List[str]:
-        """Get available Ollama models."""
-        if self._available_models_cache is not None:
+        """Get available Ollama models (5-minute TTL cache)."""
+        import time
+        now = time.time()
+        if self._available_models_cache is not None and (now - self._models_cache_time) < 300:
             return self._available_models_cache
-        
+
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(f"{self.ollama_url}/api/tags")
@@ -1071,17 +1103,23 @@ Return ONLY the JSON array, no other text or explanation."""
                     data = response.json()
                     models = data.get("models", [])
                     self._available_models_cache = [model["name"] for model in models]
+                    self._models_cache_time = now
                     logger.info(f"Available Ollama models: {self._available_models_cache}")
                     return self._available_models_cache
         except Exception as e:
             logger.warning(f"Failed to get Ollama models: {e}")
-        
+
         self._available_models_cache = []
+        self._models_cache_time = now
         return self._available_models_cache
     
     def _is_api_model(self, model: str) -> bool:
         """Check if model requires API access."""
-        return any(x in model.lower() for x in ["claude", "gpt", "gemini", "command"])
+        return any(x in model.lower() for x in [
+            "claude", "gpt", "gemini", "command",
+            "deepseek-chat", "deepseek-reasoner",
+            "qwen-turbo", "qwen-plus", "qwen-max", "qwen-long",
+        ])
 
     def _is_cloud_environment(self) -> bool:
         """Check if running in a cloud environment (GCP Cloud Run, GCE, etc.)

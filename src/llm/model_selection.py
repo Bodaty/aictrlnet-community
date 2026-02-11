@@ -6,6 +6,7 @@ scoring logic from Business Edition's LLM Router.
 
 from typing import Dict, Any, Optional, List, Tuple
 import logging
+import re
 import httpx
 from datetime import datetime
 
@@ -455,8 +456,10 @@ def select_model_for_task(
     available_models: List[str] = None
 ) -> Tuple[str, ModelTier]:
     """Original model selection for backward compatibility.
-    
+
     This maintains the original interface but uses simplified logic.
+    Falls back to adjacent tiers and then ANY available model before
+    resorting to a hardcoded default.
     """
     # Map complexity to tier
     if complexity < 0.3:
@@ -467,27 +470,96 @@ def select_model_for_task(
         tier = ModelTier.QUALITY
     else:
         tier = ModelTier.PREMIUM
-    
+
     config = MODEL_CONFIGS[tier]
     models = config["models"]
-    
+
     # Filter by available models if provided
     if available_models:
         models = [m for m in models if m in available_models]
-    
+
     if models:
         return models[0], tier
-    
-    # Fallback
+
+    # Try adjacent tiers before giving up
+    tier_order = [ModelTier.QUALITY, ModelTier.BALANCED, ModelTier.FAST, ModelTier.PREMIUM]
+    if available_models:
+        for fallback_tier in tier_order:
+            fallback_models = [m for m in MODEL_CONFIGS[fallback_tier]["models"]
+                              if m in available_models]
+            if fallback_models:
+                return fallback_models[0], fallback_tier
+
+        # Still nothing in MODEL_CONFIGS — pick ANY available model
+        if available_models:
+            best = available_models[0]
+            return best, classify_model_tier(best)
+
+    # Absolute last resort (no Ollama models at all)
     return "llama3.2:1b", ModelTier.FAST
 
 
+def _estimate_model_size_billions(model_name: str) -> Optional[float]:
+    """Extract approximate parameter count (billions) from model name.
+
+    Ollama patterns: llama3.2:1b, mistral:7b, mixtral:8x7b, qwen2.5:0.5b, deepseek-coder:6.7b
+    Returns None if size cannot be determined.
+    """
+    name_lower = model_name.lower()
+
+    # MoE pattern: 8x7b → 56.0
+    moe_match = re.search(r'(\d+)x(\d+\.?\d*)b', name_lower)
+    if moe_match:
+        return float(moe_match.group(1)) * float(moe_match.group(2))
+
+    # Standard pattern: 1b, 3b, 7b, 0.5b, 6.7b
+    size_match = re.search(r'(\d+\.?\d*)b', name_lower)
+    if size_match:
+        return float(size_match.group(1))
+
+    return None  # Can't determine (e.g., "phi3:mini")
+
+
 def classify_model_tier(model_name: str) -> ModelTier:
-    """Classify a model into a tier."""
+    """Classify a model into a tier.
+
+    Priority:
+    1. Exact match in MODEL_CONFIGS → that tier
+    2. Cloud/API model patterns → PREMIUM or QUALITY
+    3. Size-based (parse parameter count from name):
+       ≤2B → FAST, 3-8B → BALANCED, 9B+ → QUALITY
+    4. Default → BALANCED (safest middle ground)
+    """
+    # 1. Exact match
     for tier, config in MODEL_CONFIGS.items():
         if model_name in config["models"]:
             return tier
-    return ModelTier.BALANCED  # Default
+
+    model_lower = model_name.lower()
+
+    # 2. Cloud/API model patterns
+    premium_patterns = ["claude-3-opus", "gpt-4", "gemini-1.5-pro", "gemini-2"]
+    quality_patterns = [
+        "claude-3-sonnet", "claude-3-haiku", "gpt-3.5", "command",
+        "deepseek-chat", "deepseek-reasoner", "qwen-max", "qwen-plus",
+    ]
+    if any(p in model_lower for p in premium_patterns):
+        return ModelTier.PREMIUM
+    if any(p in model_lower for p in quality_patterns):
+        return ModelTier.QUALITY
+
+    # 3. Size-based for Ollama models
+    size = _estimate_model_size_billions(model_name)
+    if size is not None:
+        if size <= 2.0:
+            return ModelTier.FAST
+        elif size <= 8.0:
+            return ModelTier.BALANCED
+        else:
+            return ModelTier.QUALITY
+
+    # 4. Default: BALANCED (middle ground)
+    return ModelTier.BALANCED
 
 
 def get_model_config(model: str) -> Dict[str, Any]:
@@ -511,7 +583,11 @@ def get_provider_from_model(model: str) -> ModelProvider:
         return ModelProvider.ANTHROPIC  # Use ANTHROPIC for Claude models
     elif "gpt" in model_lower:
         return ModelProvider.OPENAI
-    elif any(x in model_lower for x in ["llama", "mistral", "phi", "mixtral"]):
+    elif model_lower in ("deepseek-chat", "deepseek-reasoner"):
+        return ModelProvider.DEEPSEEK
+    elif any(model_lower.startswith(p) for p in ["qwen-turbo", "qwen-plus", "qwen-max", "qwen-long"]):
+        return ModelProvider.DASHSCOPE
+    elif any(x in model_lower for x in ["llama", "mistral", "phi", "mixtral", "qwen", "deepseek"]):
         return ModelProvider.OLLAMA
     else:
         return ModelProvider.HUGGINGFACE

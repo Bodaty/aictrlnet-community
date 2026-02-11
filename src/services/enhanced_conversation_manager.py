@@ -1290,6 +1290,7 @@ Response (just the sentence, no quotes):"""
         user_id: str,
         stream: bool = True,
         file_id: str = None,
+        user_preferences: dict = None,
     ) -> "AsyncGenerator[Dict[str, Any], None]":
         """
         v5 Unified conversation with LLM-as-brain architecture.
@@ -1417,12 +1418,26 @@ Response (just the sentence, no quotes):"""
         full_prompt = self._format_history_as_prompt(conversation_history)
 
         try:
+            # Build UserLLMSettings from user preferences if available
+            user_settings = None
+            if user_preferences:
+                from llm.models import UserLLMSettings
+                user_settings = UserLLMSettings(
+                    user_id=user_id,
+                    selected_model=user_preferences.get('preferredQualityModel', ''),
+                    provider="ollama",
+                    preferredFastModel=user_preferences.get('preferredFastModel'),
+                    preferredBalancedModel=user_preferences.get('preferredBalancedModel'),
+                    preferredQualityModel=user_preferences.get('preferredQualityModel'),
+                )
+
             llm_response = await self._enhanced_llm_service.generate_with_tools(
                 prompt=full_prompt,
                 tools=tools,
                 system_prompt=system_prompt,
                 task_type="tool_use",
-                temperature=0.4  # Slightly higher for more natural conversation
+                temperature=0.4,  # Slightly higher for more natural conversation
+                user_settings=user_settings,
             )
 
             # =====================================================================

@@ -368,6 +368,38 @@ async def get_model_provider_status(
                 "adapter_type": "cohere",
                 "local": False
             },
+            # DeepSeek models
+            "deepseek-chat": {
+                "provider": "DeepSeek",
+                "adapter_type": "deepseek",
+                "local": False
+            },
+            "deepseek-reasoner": {
+                "provider": "DeepSeek",
+                "adapter_type": "deepseek",
+                "local": False
+            },
+            # DashScope/Qwen models
+            "qwen-turbo": {
+                "provider": "DashScope (Alibaba)",
+                "adapter_type": "dashscope",
+                "local": False
+            },
+            "qwen-plus": {
+                "provider": "DashScope (Alibaba)",
+                "adapter_type": "dashscope",
+                "local": False
+            },
+            "qwen-max": {
+                "provider": "DashScope (Alibaba)",
+                "adapter_type": "dashscope",
+                "local": False
+            },
+            "qwen-long": {
+                "provider": "DashScope (Alibaba)",
+                "adapter_type": "dashscope",
+                "local": False
+            },
             # Ollama models (local)
             "llama3.1:8b-instruct-q4_K_M": {
                 "provider": "Ollama (Local)",

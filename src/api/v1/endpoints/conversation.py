@@ -47,10 +47,12 @@ from models.conversation import (
 router = APIRouter()
 
 
-async def _collect_v2_response(service, session_id, content, user_id):
+async def _collect_v2_response(service, session_id, content, user_id, user_preferences=None):
     """Collect response from process_message_v2 in non-streaming mode."""
     response_data = {}
-    async for event in service.process_message_v2(session_id, content, user_id, stream=False):
+    async for event in service.process_message_v2(
+        session_id, content, user_id, stream=False, user_preferences=user_preferences
+    ):
         if event.get("event") == "response":
             response_data = event.get("data", {})
         elif event.get("event") == "error":
@@ -282,7 +284,10 @@ async def send_message(
         raise HTTPException(status_code=400, detail="Session is not active")
     
     service = EnhancedConversationService(db)
-    response_data = await _collect_v2_response(service, session_id, message.content, str(current_user.id))
+    user_preferences = None
+    if hasattr(current_user, 'preferences') and current_user.preferences:
+        user_preferences = current_user.preferences
+    response_data = await _collect_v2_response(service, session_id, message.content, str(current_user.id), user_preferences=user_preferences)
 
     return response_data
 
@@ -799,12 +804,18 @@ async def chat_v5(
             # Use EnhancedConversationService with v5 unified flow
             enhanced_service = EnhancedConversationService(db)
 
+            # Extract user model preferences for tier-based selection
+            user_preferences = None
+            if hasattr(current_user, 'preferences') and current_user.preferences:
+                user_preferences = current_user.preferences
+
             async for event in enhanced_service.process_message_v2(
                 session_id=session_id,
                 content=message.content,
                 user_id=str(current_user.id),
                 stream=True,
                 file_id=message.file_id,
+                user_preferences=user_preferences,
             ):
                 # Format as SSE
                 event_data = serialize_for_json(event.get('data', {}))

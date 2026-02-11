@@ -25,6 +25,7 @@ class AdapterFactory:
         "ollama": "adapters.implementations.ai.ollama_adapter.OllamaAdapter",
         "huggingface": "adapters.implementations.ai.huggingface_adapter.HuggingFaceAdapter",
         "hf": "adapters.implementations.ai.huggingface_adapter.HuggingFaceAdapter",  # Alias
+        "deepseek": "adapters.implementations.ai.deepseek_adapter.DeepSeekAdapter",
         
         # Internal Service Adapters (for unified model access)
         "llm-service": "adapters.implementations.ai.llm_service_adapter.LLMServiceAdapter",
@@ -178,7 +179,7 @@ class AdapterFactory:
             return AdapterCategory(config["category"])
         
         # Determine from adapter type
-        ai_adapters = ["openai", "claude", "anthropic", "ollama", "huggingface", "hf"]
+        ai_adapters = ["openai", "claude", "anthropic", "ollama", "huggingface", "hf", "deepseek"]
         communication_adapters = ["slack", "email", "webhook", "discord", "telegram", "whatsapp"]
         human_adapters = ["upwork", "fiverr", "taskrabbit", "mechanical_turk", "scale"]
         payment_adapters = ["stripe", "paypal", "square"]

@@ -6,7 +6,7 @@ appropriate fallback logic.
 
 import logging
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from llm.models import ModelTier
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,8 @@ def is_ollama_model(model: str) -> bool:
         'anthropic',
         'vertex',
         'openai',
+        'deepseek-chat', 'deepseek-reasoner',  # DeepSeek API models
+        'qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-long',  # DashScope API models
     ]
 
     for pattern in api_patterns:
@@ -234,3 +236,36 @@ def get_system_default_for_tier(tier: ModelTier) -> str:
         Model name for the tier
     """
     return SYSTEM_TIER_DEFAULTS.get(tier, SYSTEM_TIER_DEFAULTS[ModelTier.QUALITY])
+
+
+def get_dynamic_system_default_for_tier(
+    tier: ModelTier,
+    available_models: List[str],
+) -> Optional[str]:
+    """Get best available model for tier when hardcoded default isn't available.
+
+    1. Hardcoded default available → use it
+    2. Classify all available models by tier → pick from matching tier
+    3. No match → None (caller falls through)
+    """
+    from llm.model_selection import classify_model_tier, _estimate_model_size_billions
+
+    # Try hardcoded default first
+    default = SYSTEM_TIER_DEFAULTS.get(tier)
+    if default and default in available_models:
+        return default
+
+    # Classify available models and find best match for this tier
+    candidates = []
+    for model in available_models:
+        model_tier = classify_model_tier(model)
+        if model_tier == tier:
+            size = _estimate_model_size_billions(model) or 0.0
+            candidates.append((model, size))
+
+    if candidates:
+        # Pick largest model in tier (best quality within tier)
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
+
+    return None

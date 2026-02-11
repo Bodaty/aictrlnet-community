@@ -35,13 +35,15 @@ NATIVE_TOOL_PROVIDERS = {
     "vertex_ai": True,
     "aws_bedrock": True,  # Claude models support native, Titan uses text fallback
     "cohere": True,  # Command R+ supports native, older Command models use text fallback
+    "deepseek": True,  # DeepSeek V3/R1 support native tool calling
+    "dashscope": True,  # Qwen models support tool calling
     "ollama": "model_dependent",  # Check model name (llama3.1, llama3.2, mistral, mixtral, qwen2.5)
     "huggingface": False,  # No native tool support - always text-based fallback
 }
 
 # Ollama models that support native tool calling
 OLLAMA_NATIVE_TOOL_MODELS = [
-    "llama3.1", "llama3.2", "mistral", "mixtral", "qwen2.5"
+    "llama3.1", "llama3.2", "mistral", "mixtral", "qwen2.5", "deepseek"
 ]
 
 

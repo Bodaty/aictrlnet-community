@@ -17,6 +17,8 @@ class ModelProvider(str, Enum):
     AZURE_OPENAI = "azure_openai"
     VERTEX_AI = "vertex_ai"
     COHERE = "cohere"
+    DEEPSEEK = "deepseek"
+    DASHSCOPE = "dashscope"
     CUSTOM = "custom"
 
 
@@ -40,6 +42,8 @@ class ModelInfo(BaseModel):
     supports_json_mode: bool = False
     average_response_time: float = 1.0
     description: str
+    local: bool = False
+    parameter_size: Optional[str] = None  # e.g., "8B", "70B"
 
 
 class UserLLMSettings(BaseModel):
