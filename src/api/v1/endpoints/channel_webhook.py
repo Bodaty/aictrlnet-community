@@ -1,19 +1,30 @@
 """Channel webhook endpoint — single entry point for all messaging platforms.
 
 POST /api/v1/channels/{channel_type}/webhook
+
+Security model:
+- Every channel user MUST be linked to an authenticated AICtrlNet account via
+  the ChannelLink table before they can interact.
+- If an unlinked user sends a message, they receive a "please link your account"
+  reply and no conversation session is created.
+- The `/link <code>` (or `link <code>`) command completes the account-linking
+  handshake inline during the webhook call.
 """
 
 import logging
+import re
+from datetime import datetime
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Request, Response, HTTPException
+from fastapi import APIRouter, Request, Response, HTTPException, Depends
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from core.database import get_db
-from fastapi import Depends
 from services.channel_normalizer import ChannelNormalizer, InboundMessage
 from services.conversation_manager import ConversationManagerService
+from models.channel_link import ChannelLink, ChannelLinkCode
 from adapters.registry import adapter_registry
 from adapters.models import AdapterRequest
 
@@ -32,6 +43,9 @@ _NORMALIZERS = {
     "discord": normalizer.normalize_discord,
 }
 
+# Regex to detect a linking command: "/link 123456" or "link 123456"
+_LINK_PATTERN = re.compile(r"^/?link\s+(\d{6})$", re.IGNORECASE)
+
 
 @router.post("/channels/{channel_type}/webhook")
 async def channel_webhook(
@@ -41,8 +55,11 @@ async def channel_webhook(
 ):
     """Receive webhook from any messaging platform.
 
-    Validates signature, normalizes payload, routes to conversation manager,
-    and returns platform-appropriate response.
+    1. Validates/normalizes the payload.
+    2. Checks for a linking command — if so, completes the account-linking flow.
+    3. Looks up ChannelLink to authenticate the sender.
+    4. If authenticated, routes to the conversation manager.
+    5. If NOT authenticated, replies with "please link your account" instructions.
     """
     if channel_type not in _NORMALIZERS:
         raise HTTPException(status_code=400, detail=f"Unsupported channel: {channel_type}")
@@ -55,16 +72,9 @@ async def channel_webhook(
         if body.get("type") == "url_verification":
             return {"challenge": body.get("challenge", "")}
 
-    # WhatsApp/Meta webhook verification (GET handled separately, POST continues)
-    if channel_type == "whatsapp":
-        # Meta sends a GET for verification; POST for actual messages
-        # GET is handled by the verify endpoint below
-        pass
-
     # --- Parse payload ---
     try:
         if channel_type == "twilio":
-            # Twilio sends form-encoded data
             form = await request.form()
             payload: Dict[str, Any] = dict(form)
         else:
@@ -74,18 +84,43 @@ async def channel_webhook(
 
     # --- Normalize ---
     normalize_fn = _NORMALIZERS[channel_type]
-    message: InboundMessage | None = normalize_fn(payload)
+    message: Optional[InboundMessage] = normalize_fn(payload)
 
     if message is None:
-        # Non-message event (typing indicator, delivery receipt, etc.) — acknowledge
+        # Non-message event (typing indicator, delivery receipt, etc.)
         return Response(status_code=200)
 
-    # --- Route to conversation manager ---
+    # --- Check for linking command ---
+    link_match = _LINK_PATTERN.match((message.message_text or "").strip())
+    if link_match:
+        code_str = link_match.group(1)
+        return await _handle_link_command(
+            db, channel_type, message.sender_id, code_str, message,
+            display_name=message.platform_metadata.get("display_name"),
+        )
+
+    # --- Authenticate sender via ChannelLink ---
+    link = await _lookup_channel_link(db, channel_type, message.sender_id)
+    if link is None:
+        # Unlinked user — tell them how to link
+        await _send_reply_via_channel(
+            channel_type, message,
+            "You haven't linked your AICtrlNet account to this channel yet.\n\n"
+            "To link:\n"
+            "1. Log in to AICtrlNet (web UI)\n"
+            f'2. Go to Settings > Channels and request a linking code for "{channel_type}"\n'
+            "3. Send the code here as: link <6-digit-code>\n\n"
+            "Example: link 482901",
+        )
+        return _format_channel_response(channel_type, {"text": "Account not linked"}, message)
+
+    # --- Route to conversation manager with the REAL authenticated user_id ---
     try:
         manager = ConversationManagerService(db)
         session = await manager.find_or_create_channel_session(
             channel_type=message.channel_type,
             sender_id=message.sender_id,
+            user_id=link.user_id,  # authenticated user
             platform_metadata=message.platform_metadata,
         )
 
@@ -97,7 +132,6 @@ async def channel_webhook(
             external_message_id=message.external_message_id,
         )
 
-        # Send response back via originating channel adapter
         reply_text = _extract_reply_text(response)
         await _send_reply_via_channel(channel_type, message, reply_text)
 
@@ -105,7 +139,6 @@ async def channel_webhook(
 
     except Exception as e:
         logger.error(f"Channel webhook error ({channel_type}): {e}", exc_info=True)
-        # Return 200 to prevent platform retries on internal errors
         return Response(status_code=200)
 
 
@@ -122,6 +155,83 @@ async def whatsapp_verify(request: Request):
         return Response(content=challenge, media_type="text/plain")
 
     raise HTTPException(status_code=403, detail="Verification failed")
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+async def _lookup_channel_link(
+    db: AsyncSession, channel_type: str, sender_id: str
+) -> Optional[ChannelLink]:
+    """Find an active ChannelLink for the given channel identity."""
+    result = await db.execute(
+        select(ChannelLink).filter(
+            and_(
+                ChannelLink.channel_type == channel_type,
+                ChannelLink.channel_user_id == sender_id,
+                ChannelLink.is_active == True,
+            )
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _handle_link_command(
+    db: AsyncSession,
+    channel_type: str,
+    sender_id: str,
+    code_str: str,
+    inbound: InboundMessage,
+    display_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Verify a 6-digit linking code and create the ChannelLink.
+
+    Returns a channel-formatted response with the result.
+    """
+    # Look up the code
+    result = await db.execute(
+        select(ChannelLinkCode).filter(
+            and_(
+                ChannelLinkCode.code == code_str,
+                ChannelLinkCode.channel_type == channel_type,
+                ChannelLinkCode.used == False,
+                ChannelLinkCode.expires_at > datetime.utcnow(),
+            )
+        )
+    )
+    link_code = result.scalar_one_or_none()
+
+    if link_code is None:
+        reply = "Invalid or expired linking code. Please generate a new one from the AICtrlNet web UI."
+        await _send_reply_via_channel(channel_type, inbound, reply)
+        return _format_channel_response(channel_type, {"text": reply}, inbound)
+
+    # Check if this channel identity is already linked to someone
+    existing = await _lookup_channel_link(db, channel_type, sender_id)
+    if existing:
+        link_code.used = True
+        await db.commit()
+        reply = f"This {channel_type} account is already linked to an AICtrlNet user. Unlink first if you want to re-link."
+        await _send_reply_via_channel(channel_type, inbound, reply)
+        return _format_channel_response(channel_type, {"text": reply}, inbound)
+
+    # Create the link
+    link_code.used = True
+    new_link = ChannelLink(
+        user_id=link_code.user_id,
+        channel_type=channel_type,
+        channel_user_id=sender_id,
+        display_name=display_name,
+    )
+    db.add(new_link)
+    await db.commit()
+
+    logger.info(f"Channel linked: {channel_type}:{sender_id} -> user {link_code.user_id}")
+
+    reply = f"Account linked successfully! You can now use AICtrlNet through {channel_type}."
+    await _send_reply_via_channel(channel_type, inbound, reply)
+    return _format_channel_response(channel_type, {"text": reply}, inbound)
 
 
 def _extract_reply_text(response: Any) -> str:
@@ -166,8 +276,8 @@ async def _send_reply_via_channel(
             return
 
         adapter = adapter_class({})
-        request = AdapterRequest(capability=capability, parameters=params_fn())
-        await adapter.execute(request)
+        req = AdapterRequest(capability=capability, parameters=params_fn())
+        await adapter.execute(req)
     except Exception as e:
         logger.warning(f"Failed to send reply via {channel_type}: {e}")
 
@@ -176,14 +286,12 @@ def _format_channel_response(
     channel_type: str, response: Any, inbound: InboundMessage
 ) -> Dict[str, Any]:
     """Format conversation response for the originating channel."""
-    text = _extract_reply_text(response)
+    text = response.get("text", "") if isinstance(response, dict) else _extract_reply_text(response)
 
     if channel_type == "twilio":
-        # Twilio expects TwiML
         return Response(
             content=f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{text}</Message></Response>',
             media_type="application/xml",
         )
 
-    # Default JSON response (Telegram, WhatsApp, Slack, Discord)
     return {"text": text, "channel": channel_type}

@@ -94,21 +94,23 @@ class ConversationManagerService:
         self,
         channel_type: str,
         sender_id: str,
+        user_id: str,
         platform_metadata: Dict[str, Any],
     ) -> ConversationSession:
-        """Find an existing active session for this channel sender, or create one.
+        """Find an existing active session for this authenticated channel user, or create one.
 
-        Channel-agnostic session lookup: if the same sender has an active session
-        with a matching channel binding, reuse it. If they arrive from a different
-        channel but we can identify the same user, add a new binding to the
-        existing session.
+        The caller MUST provide a real ``user_id`` (from a verified ChannelLink).
+        Channel-agnostic session lookup: if the same user has an active session
+        with a matching channel binding, reuse it.  If they arrive from a different
+        channel, add a new binding to the existing session.
         """
         cutoff_time = datetime.utcnow() - timedelta(minutes=30)
 
-        # Look for active sessions that have a binding for this channel + sender
+        # Look for active sessions for this user with a matching channel binding
         result = await self.db.execute(
             select(ConversationSession).filter(
                 and_(
+                    ConversationSession.user_id == user_id,
                     ConversationSession.is_active == True,
                     ConversationSession.last_activity > cutoff_time,
                 )
@@ -121,12 +123,16 @@ class ConversationManagerService:
             binding = bindings.get(channel_type, {})
             if binding.get("sender_id") == sender_id:
                 return session
+            # Same user, different channel — add new binding to existing session
+            if channel_type not in bindings:
+                bindings[channel_type] = {"sender_id": sender_id, **platform_metadata}
+                session.channel_bindings = bindings
+                session.last_activity = datetime.utcnow()
+                await self.db.commit()
+                await self.db.refresh(session)
+                return session
 
-        # No matching session found — create a new one
-        # Use sender_id as user_id placeholder for channel users
-        # (real user mapping would come from a user-linking service)
-        user_id = f"{channel_type}:{sender_id}"
-
+        # No matching session — create a new one with the authenticated user_id
         new_binding = {
             channel_type: {
                 "sender_id": sender_id,

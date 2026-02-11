@@ -1,4 +1,4 @@
-"""Add channel-agnostic fields and staged_files table.
+"""Add channel-agnostic fields, staged_files, and channel_links tables.
 
 Revision ID: c7a1b2d3e4f5
 Revises: e8f9a0b1c2d3
@@ -8,6 +8,8 @@ Adds:
 - channel_bindings, primary_channel to conversation_sessions
 - channel_type, external_message_id to conversation_messages
 - staged_files table for file upload pipeline
+- channel_links table for authenticated channel identities
+- channel_link_codes table for linking verification codes
 """
 
 revision = 'c7a1b2d3e4f5'
@@ -61,8 +63,38 @@ def upgrade() -> None:
             sa.Column('expires_at', sa.DateTime(), nullable=False),
         )
 
+    # --- channel_links table (authenticated channel identities) ---
+    if 'channel_links' not in existing_tables:
+        op.create_table(
+            'channel_links',
+            sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+            sa.Column('user_id', sa.String(36), sa.ForeignKey('users.id'), nullable=False, index=True),
+            sa.Column('channel_type', sa.String(50), nullable=False, index=True),
+            sa.Column('channel_user_id', sa.String(255), nullable=False, index=True),
+            sa.Column('display_name', sa.String(200), nullable=True),
+            sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
+            sa.Column('linked_at', sa.DateTime(), nullable=False),
+            sa.Column('unlinked_at', sa.DateTime(), nullable=True),
+            sa.UniqueConstraint('channel_type', 'channel_user_id', name='uq_channel_identity'),
+        )
+
+    # --- channel_link_codes table (short-lived verification codes) ---
+    if 'channel_link_codes' not in existing_tables:
+        op.create_table(
+            'channel_link_codes',
+            sa.Column('id', postgresql.UUID(as_uuid=True), primary_key=True),
+            sa.Column('user_id', sa.String(36), sa.ForeignKey('users.id'), nullable=False),
+            sa.Column('code', sa.String(6), nullable=False, index=True),
+            sa.Column('channel_type', sa.String(50), nullable=False),
+            sa.Column('expires_at', sa.DateTime(), nullable=False),
+            sa.Column('used', sa.Boolean(), nullable=False, server_default='false'),
+            sa.Column('created_at', sa.DateTime(), nullable=False),
+        )
+
 
 def downgrade() -> None:
+    op.drop_table('channel_link_codes')
+    op.drop_table('channel_links')
     op.drop_table('staged_files')
     op.drop_column('conversation_messages', 'external_message_id')
     op.drop_column('conversation_messages', 'channel_type')

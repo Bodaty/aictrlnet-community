@@ -21,6 +21,7 @@ from .endpoints import (
     nlp,
     conversation,  # Multi-turn conversation endpoints
     channel_webhook,  # Channel-agnostic webhook endpoint
+    channel_link,  # Channel account linking (auth for messaging platforms)
     file_upload,  # File upload for workflow processing
     websocket,
     health,
@@ -97,6 +98,9 @@ api_router.include_router(conversation.router, prefix="/conversation", tags=["co
 
 # Channel-agnostic webhook endpoints (Slack, Telegram, WhatsApp, SMS, Discord)
 api_router.include_router(channel_webhook.router, tags=["channels"])
+
+# Channel account linking (authenticated users link their messaging identities)
+api_router.include_router(channel_link.router, prefix="/channels", tags=["channels"])
 
 # File upload endpoints
 api_router.include_router(file_upload.router, prefix="/files", tags=["files"])

@@ -109,6 +109,8 @@ from .workflow_templates import (
 from .adapter_config import UserAdapterConfig
 from .basic_agent import BasicAgent
 from .tenant import Tenant, TenantStatus
+from .staged_file import StagedFile
+from .channel_link import ChannelLink, ChannelLinkCode
 
 __all__ = [
     # Tenant model (multi-tenancy infrastructure)
@@ -200,4 +202,9 @@ __all__ = [
     "WorkflowTemplatePermission",
     "WorkflowTemplateUsage",
     "WorkflowTemplateReview",
+    # Staged files (file upload pipeline)
+    "StagedFile",
+    # Channel linking (account authentication for messaging platforms)
+    "ChannelLink",
+    "ChannelLinkCode",
 ]
