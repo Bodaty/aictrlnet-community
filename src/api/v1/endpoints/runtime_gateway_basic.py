@@ -196,6 +196,34 @@ async def list_instances(
     return await service.list_instances(organization_id=org_id)
 
 
+@router.delete(
+    "/instances/{instance_id}",
+    status_code=status.HTTP_200_OK,
+)
+async def deregister_runtime(
+    instance_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Deregister a runtime instance.
+
+    Sets the instance status to ``deregistered``. The instance's API key
+    will no longer be accepted for evaluate/report/heartbeat calls.
+    """
+    result = await db.execute(
+        select(RuntimeInstance).where(RuntimeInstance.id == instance_id)
+    )
+    instance = result.scalar_one_or_none()
+    if instance is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Runtime instance '{instance_id}' not found",
+        )
+    instance.status = "deregistered"
+    await db.commit()
+    return {"detail": f"Runtime instance '{instance_id}' deregistered", "instance_id": instance_id}
+
+
 @router.get(
     "/evaluations",
     response_model=EvaluationListResponse,
