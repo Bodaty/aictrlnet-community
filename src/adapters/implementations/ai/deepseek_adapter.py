@@ -5,6 +5,7 @@ Models: deepseek-chat (V3), deepseek-reasoner (R1).
 """
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -14,6 +15,7 @@ from adapters.models import (
     AdapterCapability,
     AdapterConfig,
     AdapterCategory,
+    AdapterResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,16 +116,23 @@ class DeepSeekAdapter(BaseAdapter):
             ),
         ]
 
-    async def execute(self, request) -> Dict[str, Any]:
+    async def execute(self, request) -> AdapterResponse:
         """Execute a DeepSeek API request (OpenAI-compatible)."""
+        start = time.time()
+        request_id = getattr(request, "id", "unknown")
+        capability = getattr(request, "capability", "chat_completion")
+
         if not self.client:
             await self.initialize()
 
         if not self.client:
-            return {
-                "success": False,
-                "error": "DeepSeek adapter not initialized (missing API key?)",
-            }
+            return AdapterResponse(
+                request_id=request_id,
+                capability=capability,
+                status="error",
+                error="DeepSeek adapter not initialized (missing API key?)",
+                duration_ms=(time.time() - start) * 1000,
+            )
 
         params = request.parameters if hasattr(request, "parameters") else request
         model = params.get("model", "deepseek-chat")
@@ -146,18 +155,28 @@ class DeepSeekAdapter(BaseAdapter):
             text = choices[0]["message"]["content"] if choices else ""
             usage = data.get("usage", {})
 
-            return {
-                "success": True,
-                "data": {
+            return AdapterResponse(
+                request_id=request_id,
+                capability=capability,
+                status="success",
+                duration_ms=(time.time() - start) * 1000,
+                tokens_used=usage.get("total_tokens"),
+                data={
                     "text": text,
                     "model": data.get("model", model),
                     "usage": usage,
                     "finish_reason": choices[0].get("finish_reason") if choices else None,
                 },
-            }
+            )
         except Exception as e:
             logger.error(f"DeepSeek API error: {e}")
-            return {"success": False, "error": str(e)}
+            return AdapterResponse(
+                request_id=request_id,
+                capability=capability,
+                status="error",
+                error=str(e),
+                duration_ms=(time.time() - start) * 1000,
+            )
 
     async def health_check(self) -> Dict[str, Any]:
         if self.discovery_only or not self.api_key:

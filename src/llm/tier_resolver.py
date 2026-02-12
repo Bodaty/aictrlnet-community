@@ -59,6 +59,8 @@ def is_ollama_model(model: str) -> bool:
         'anthropic',
         'vertex',
         'openai',
+        'command',  # Cohere models (command, command-light, command-r-plus)
+        'cohere',   # Cohere provider prefix
         'deepseek-chat', 'deepseek-reasoner',  # DeepSeek API models
         'qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-long',  # DashScope API models
     ]

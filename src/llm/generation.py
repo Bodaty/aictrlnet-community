@@ -277,11 +277,11 @@ class LLMGenerationEngine:
             # Fallback to original selection logic
             available_models = await self._get_ollama_models()
         
-        # 1. Explicit override
-        if request.model_override:
-            return request.model_override, classify_model_tier(request.model_override)
-        
-        # 2. User's UI selection
+        # Fallback logic (reached only when enhanced selector fails)
+        # Note: model_override is already handled by the enhanced selector above,
+        # so we skip straight to user settings.
+
+        # 1. User's UI selection
         if request.user_settings and request.user_settings.selected_model:
             model = normalize_model_name(request.user_settings.selected_model)
             # Check if model is available or is an API model
