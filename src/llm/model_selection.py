@@ -474,8 +474,9 @@ def select_model_for_task(
     config = MODEL_CONFIGS[tier]
     models = config["models"]
 
-    # Filter by available models if provided
-    if available_models:
+    # Filter by available models if provided (use `is not None` to distinguish
+    # "no filter" from "empty list means Ollama is down")
+    if available_models is not None:
         models = [m for m in models if m in available_models]
 
     if models:
@@ -483,7 +484,7 @@ def select_model_for_task(
 
     # Try adjacent tiers before giving up
     tier_order = [ModelTier.QUALITY, ModelTier.BALANCED, ModelTier.FAST, ModelTier.PREMIUM]
-    if available_models:
+    if available_models is not None and len(available_models) > 0:
         for fallback_tier in tier_order:
             fallback_models = [m for m in MODEL_CONFIGS[fallback_tier]["models"]
                               if m in available_models]
@@ -491,9 +492,8 @@ def select_model_for_task(
                 return fallback_models[0], fallback_tier
 
         # Still nothing in MODEL_CONFIGS — pick ANY available model
-        if available_models:
-            best = available_models[0]
-            return best, classify_model_tier(best)
+        best = available_models[0]
+        return best, classify_model_tier(best)
 
     # Absolute last resort (no Ollama models at all)
     return "llama3.2:1b", ModelTier.FAST

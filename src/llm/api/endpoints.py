@@ -379,7 +379,7 @@ async def get_model_provider_status(
                 "adapter_type": "deepseek",
                 "local": False
             },
-            # DashScope/Qwen models
+            # DashScope/Qwen models (adapter is Business-only; info shown for model listing)
             "qwen-turbo": {
                 "provider": "DashScope (Alibaba)",
                 "adapter_type": "dashscope",

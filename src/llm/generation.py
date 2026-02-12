@@ -303,8 +303,8 @@ class LLMGenerationEngine:
         if complexity is None:
             # Estimate complexity
             try:
-                complexity = await estimate_complexity_hybrid(request.prompt, self.ollama_url)
-            except:
+                complexity = estimate_complexity_hybrid(request.prompt)
+            except Exception:
                 complexity = len(request.prompt.split()) / 100  # Simple fallback
 
         model, tier = select_model_for_task(
@@ -1055,6 +1055,12 @@ Return ONLY the JSON array, no other text or explanation."""
             # DeepSeek models
             ("deepseek-chat", ModelProvider.DEEPSEEK),
             ("deepseek-reasoner", ModelProvider.DEEPSEEK),
+
+            # DashScope (Qwen) models
+            ("qwen-turbo", ModelProvider.DASHSCOPE),
+            ("qwen-plus", ModelProvider.DASHSCOPE),
+            ("qwen-max", ModelProvider.DASHSCOPE),
+            ("qwen-long", ModelProvider.DASHSCOPE),
         ]
 
         for model_name, provider in api_models:
@@ -1065,7 +1071,7 @@ Return ONLY the JSON array, no other text or explanation."""
                     tier=classify_model_tier(model_name),
                     cost_per_1k_tokens=self.pricing.get(model_name, 0.0),
                     supports_streaming=True,
-                    supports_json_mode=provider in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC, ModelProvider.DEEPSEEK],
+                    supports_json_mode=provider in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC, ModelProvider.DEEPSEEK, ModelProvider.DASHSCOPE],
                     description=f"{provider.value} model: {model_name}",
                     local=False,
                 ))
@@ -1110,7 +1116,8 @@ Return ONLY the JSON array, no other text or explanation."""
             logger.warning(f"Failed to get Ollama models: {e}")
 
         self._available_models_cache = []
-        self._models_cache_time = now
+        # Use short TTL (30s) for failures so recovery is fast
+        self._models_cache_time = now - 270
         return self._available_models_cache
     
     def _is_api_model(self, model: str) -> bool:

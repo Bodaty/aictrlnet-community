@@ -306,15 +306,22 @@ async def send_message_without_session(
     continuation.
     """
     service = EnhancedConversationService(db)
-    
+
     # Get or create session
     active_sessions = await service.get_active_sessions(current_user.id)
     if active_sessions:
         session = active_sessions[0]  # Use most recent
     else:
         session = await service.create_session(current_user.id)
-    
-    response_data = await _collect_v2_response(service, session.id, message.content, str(current_user.id))
+
+    user_preferences = None
+    if hasattr(current_user, 'preferences') and current_user.preferences:
+        user_preferences = current_user.preferences
+
+    response_data = await _collect_v2_response(
+        service, session.id, message.content, str(current_user.id),
+        user_preferences=user_preferences
+    )
 
     return response_data
 
