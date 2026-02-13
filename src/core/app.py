@@ -213,10 +213,15 @@ class AICtrlNetApp:
     
     def _add_middleware(self):
         """Add middleware to the application."""
-        # CORS middleware
+        # CORS: include FRONTEND_URL so non-localhost deployments work
+        cors_origins = list(self.settings.BACKEND_CORS_ORIGINS)
+        frontend = self.settings.FRONTEND_URL.rstrip("/")
+        if frontend and frontend not in cors_origins:
+            cors_origins.append(frontend)
+
         self.app.add_middleware(
             CORSMiddleware,
-            allow_origins=self.settings.BACKEND_CORS_ORIGINS,
+            allow_origins=cors_origins,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
