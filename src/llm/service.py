@@ -41,10 +41,11 @@ NATIVE_TOOL_PROVIDERS = {
     "huggingface": False,  # No native tool support - always text-based fallback
 }
 
-# Ollama models that support native tool calling
-OLLAMA_NATIVE_TOOL_MODELS = [
-    "llama3.1", "llama3.2", "mistral", "mixtral", "qwen2.5", "deepseek"
-]
+# Ollama models that support native tool calling.
+# Most modern Ollama models support tools — always try native first and
+# fall back to text-based if it fails (_generate_with_ollama_native_tools
+# already has a text-based fallback on exception).
+OLLAMA_NATIVE_TOOL_MODELS = "all"  # Legacy sentinel; see _supports_native_tools
 
 
 class LLMService:
@@ -270,9 +271,11 @@ class LLMService:
         if support == True:
             return True
         elif support == "model_dependent":
-            # For Ollama, check model name
-            model_lower = model.lower()
-            return any(supported in model_lower for supported in OLLAMA_NATIVE_TOOL_MODELS)
+            # Ollama: always try native tool calling first.
+            # Most modern models (llama3.x, qwen, deepseek, mistral, etc.) support it.
+            # If the model doesn't, _generate_with_ollama_native_tools catches the
+            # exception and falls back to text-based tool calling automatically.
+            return True
         else:
             return False
 
@@ -506,7 +509,7 @@ class LLMService:
         logger.info(f"Calling Ollama with native tools: {[t['function']['name'] for t in ollama_tools]}")
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(
                     f"{ollama_url}/api/chat",
                     json=payload
