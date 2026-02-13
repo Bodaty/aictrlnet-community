@@ -206,12 +206,13 @@ async def get_app_settings(
     db: AsyncSession = Depends(get_db),
 ):
     """Get user's application settings."""
-    # Default settings
+    # Default settings — empty model values = system auto-select
+    # The LLM tier resolver dynamically picks the best available Ollama model per tier
     default_settings = {
-        "aiModel": "llama3.1-local",  # Default AI model (legacy - 8B for backward compatibility)
-        "preferredFastModel": "llama3.2:1b",  # Fast tier model (~1-2s per call)
-        "preferredBalancedModel": "llama3.2:3b",  # Balanced tier model (~3-5s per call)
-        "preferredQualityModel": "llama3.1:8b-instruct-q4_K_M",  # Quality tier model (~20-25s per call)
+        "aiModel": "",  # Legacy field (empty = auto-select)
+        "preferredFastModel": "",  # Auto-select from available models
+        "preferredBalancedModel": "",  # Auto-select from available models
+        "preferredQualityModel": "",  # Auto-select from available models
         "theme": "light",
         "notifications": {
             "email": True,

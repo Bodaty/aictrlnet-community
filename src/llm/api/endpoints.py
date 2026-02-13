@@ -419,25 +419,44 @@ async def get_model_provider_status(
         }
 
         # Check if model exists in our map
-        if model_name not in model_provider_map:
-            # Unknown model - return generic info
-            return {
-                "provider": "Unknown",
-                "adapter_type": None,
-                "configured": False,
-                "local": False,
-                "status_message": f"Unknown model: {model_name}",
-                "configuration_url": None
-            }
-
-        provider_info = model_provider_map[model_name]
+        if model_name in model_provider_map:
+            provider_info = model_provider_map[model_name]
+        else:
+            # Not in static map — check if it's a dynamically discovered Ollama model
+            try:
+                ollama_models = await llm_service.generation_engine._get_ollama_models()
+                if model_name in ollama_models:
+                    provider_info = {
+                        "provider": "Ollama (Local)",
+                        "adapter_type": "ollama",
+                        "local": True,
+                    }
+                else:
+                    # Truly unknown model
+                    return {
+                        "provider": "Unknown",
+                        "adapter_type": None,
+                        "configured": False,
+                        "local": False,
+                        "status_message": f"Model not found: {model_name}",
+                        "configuration_url": None,
+                    }
+            except Exception:
+                return {
+                    "provider": "Unknown",
+                    "adapter_type": None,
+                    "configured": False,
+                    "local": False,
+                    "status_message": f"Unknown model: {model_name}",
+                    "configuration_url": None,
+                }
 
         # For local Ollama models, check if Ollama is accessible
         if provider_info["local"]:
             try:
                 # Check if Ollama is running
                 models = await llm_service.generation_engine._get_ollama_models()
-                configured = model_name in models or len(models) > 0
+                configured = model_name in models
 
                 return {
                     "provider": provider_info["provider"],
