@@ -57,25 +57,15 @@ class WorkflowExecutionResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
-    @model_validator(mode="before")
-    @classmethod
-    def extract_dry_run_from_context(cls, data):
-        """Extract dry_run from execution context or trigger_metadata."""
-        # Handle both dict and ORM object
-        if hasattr(data, "__dict__"):
-            ctx = getattr(data, "context", None) or {}
-            tm = getattr(data, "trigger_metadata", None) or {}
-        elif isinstance(data, dict):
-            ctx = data.get("context") or {}
-            tm = data.get("trigger_metadata") or {}
-        else:
-            return data
-        if not (isinstance(data, dict) and "dry_run" in data):
-            dry_run = ctx.get("is_dry_run", False) or tm.get("is_dry_run", False)
-            if isinstance(data, dict):
-                data["dry_run"] = dry_run
-            # For ORM objects, Pydantic will use the default; we set via __dict__ trick
-        return data
+    @model_validator(mode="after")
+    def extract_dry_run_from_context(self):
+        """Extract dry_run from execution context or trigger_metadata if not explicitly set."""
+        if not self.dry_run:
+            ctx = self.context or {}
+            tm = self.trigger_metadata or {}
+            if ctx.get("is_dry_run", False) or tm.get("is_dry_run", False):
+                self.dry_run = True
+        return self
 
 
 # Node Execution schemas
