@@ -26,6 +26,7 @@ from services.iam import IAMService
 from nodes.executor import NodeExecutor
 from nodes.registry import node_registry
 from events.event_bus import event_bus
+from core.database import get_session_maker
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,9 @@ class WorkflowExecutionService:
         if not workflow.active:
             raise ValueError(f"Workflow {workflow_id} is not active")
         
+        # Extract dry-run flag from trigger_metadata and store in context
+        is_dry_run = (trigger_metadata or {}).get("is_dry_run", False)
+
         # Create execution record
         execution = WorkflowExecution(
             workflow_id=str(workflow_id),
@@ -69,7 +73,8 @@ class WorkflowExecutionService:
             trigger_metadata=trigger_metadata or {},
             context={
                 "workflow_name": workflow.name,
-                "workflow_version": workflow.version
+                "workflow_version": workflow.version,
+                "is_dry_run": is_dry_run
             }
         )
         
@@ -145,8 +150,11 @@ class WorkflowExecutionService:
             }
         )
         
-        # If local execution (no agent), start execution
-        if not agent_id:
+        # Determine if dry-run mode is active
+        is_dry_run = execution.context.get("is_dry_run", False) if execution.context else False
+
+        # If local execution (no agent) or dry-run (skip agent dispatch), execute locally
+        if not agent_id or is_dry_run:
             asyncio.create_task(self._execute_workflow_locally(execution_id))
         else:
             # Send execution request to agent via IAM
@@ -156,76 +164,131 @@ class WorkflowExecutionService:
         return WorkflowExecutionResponse.model_validate(execution)
     
     async def _execute_workflow_locally(self, execution_id: uuid.UUID):
-        """Execute workflow locally."""
-        try:
-            # Get execution with all node executions
-            result = await self.db.execute(
-                select(WorkflowExecution)
-                .where(WorkflowExecution.id == execution_id)
-                .options(
-                    selectinload(WorkflowExecution.workflow),
-                    selectinload(WorkflowExecution.node_executions)
+        """Execute workflow locally using a dedicated DB session.
+
+        This runs as an asyncio.create_task background task, so it must use
+        its own session — the caller's session may already be mid-operation.
+        """
+        session_maker = get_session_maker()
+        async with session_maker() as db:
+            execution = None
+            try:
+                # Get execution with all node executions
+                result = await db.execute(
+                    select(WorkflowExecution)
+                    .where(WorkflowExecution.id == execution_id)
+                    .options(
+                        selectinload(WorkflowExecution.workflow),
+                        selectinload(WorkflowExecution.node_executions)
+                    )
                 )
-            )
-            execution = result.scalar_one_or_none()
-            
-            if not execution:
-                return
-            
-            # Get workflow definition
-            workflow_def = json.loads(execution.workflow.definition) if isinstance(execution.workflow.definition, str) else execution.workflow.definition
-            
-            # Create workflow instance for node executor
-            from nodes.models import WorkflowInstance as NodeWorkflowInstance
-            workflow_instance = NodeWorkflowInstance(
-                id=str(execution_id),
-                template_id=str(execution.workflow_id),
-                name=execution.workflow.name,
-                input_data=execution.input_data,
-                variables={},
-                node_instances={}
-            )
-            
-            # Execute workflow
-            await self.node_executor.execute_workflow(workflow_instance)
-            
-            # Update execution status
-            execution.status = WorkflowExecutionStatus.COMPLETED
-            execution.completed_at = datetime.utcnow()
-            execution.duration_ms = int((execution.completed_at - execution.started_at).total_seconds() * 1000)
-            execution.output_data = workflow_instance.output_data
-            
-            await self.db.commit()
-            
-            # Publish completion event
-            await event_bus.publish(
-                "workflow.execution.completed",
-                {
-                    "execution_id": str(execution_id),
-                    "workflow_id": str(execution.workflow_id),
-                    "duration_ms": execution.duration_ms,
-                    "triggered_by": execution.triggered_by,
-                    "trigger_metadata": execution.trigger_metadata or {},
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"Workflow execution failed: {e}")
-            # Update execution status to failed
-            execution.status = WorkflowExecutionStatus.FAILED
-            execution.completed_at = datetime.utcnow()
-            execution.error_details = {"error": str(e)}
-            await self.db.commit()
-            
-            # Publish failure event
-            await event_bus.publish(
-                "workflow.execution.failed",
-                {
-                    "execution_id": str(execution_id),
-                    "workflow_id": str(execution.workflow_id),
-                    "error": str(e)
-                }
-            )
+                execution = result.scalar_one_or_none()
+
+                if not execution:
+                    return
+
+                # Get workflow definition
+                workflow_def = json.loads(execution.workflow.definition) if isinstance(execution.workflow.definition, str) else execution.workflow.definition
+
+                # Thread dry-run flag from execution context into workflow variables
+                is_dry_run = execution.context.get("is_dry_run", False) if execution.context else False
+
+                # Build node instances from workflow definition
+                from nodes.models import (
+                    WorkflowInstance as NodeWorkflowInstance,
+                    NodeInstance, NodeConfig, NodeType
+                )
+
+                nodes = workflow_def.get("nodes", [])
+                edges = workflow_def.get("edges", [])
+
+                # Build edge lookup for prev/next relationships
+                next_map = {}  # node_id -> [target_ids]
+                prev_map = {}  # node_id -> [source_ids]
+                for edge in edges:
+                    src = edge.get("from") or edge.get("source")
+                    tgt = edge.get("to") or edge.get("target")
+                    if src and tgt:
+                        next_map.setdefault(src, []).append(tgt)
+                        prev_map.setdefault(tgt, []).append(src)
+
+                node_instances = {}
+                for node_def in nodes:
+                    node_id = node_def.get("id", str(uuid.uuid4()))
+                    raw_type = node_def.get("type", "task")
+                    parameters = node_def.get("parameters") or node_def.get("data") or {}
+                    if not isinstance(parameters, dict):
+                        parameters = {}
+
+                    # Resolve node type — "custom" nodes use custom_node_type param
+                    try:
+                        node_type = NodeType(raw_type)
+                    except ValueError:
+                        node_type = NodeType.TASK  # fallback for unknown types
+
+                    node_config = NodeConfig(
+                        id=node_id,
+                        name=node_def.get("name") or node_id,
+                        type=node_type,
+                        parameters=parameters
+                    )
+                    node_instances[node_id] = NodeInstance(
+                        id=node_id,
+                        node_config=node_config,
+                        workflow_instance_id=str(execution_id),
+                        previous_nodes=prev_map.get(node_id, []),
+                        next_nodes=next_map.get(node_id, [])
+                    )
+
+                # Create workflow instance for node executor
+                workflow_instance = NodeWorkflowInstance(
+                    id=str(execution_id),
+                    template_id=str(execution.workflow_id),
+                    name=execution.workflow.name,
+                    input_data=execution.input_data or {},
+                    variables={"_is_dry_run": is_dry_run},
+                    node_instances=node_instances
+                )
+
+                # Execute workflow
+                await self.node_executor.execute_workflow(workflow_instance)
+
+                # Update execution status
+                execution.status = WorkflowExecutionStatus.COMPLETED
+                execution.completed_at = datetime.utcnow()
+                execution.duration_ms = int((execution.completed_at - execution.started_at).total_seconds() * 1000)
+                execution.output_data = workflow_instance.output_data
+
+                await db.commit()
+
+                # Publish completion event
+                await event_bus.publish(
+                    "workflow.execution.completed",
+                    {
+                        "execution_id": str(execution_id),
+                        "workflow_id": str(execution.workflow_id),
+                        "duration_ms": execution.duration_ms,
+                        "triggered_by": execution.triggered_by,
+                        "trigger_metadata": execution.trigger_metadata or {},
+                    }
+                )
+
+            except Exception as e:
+                logger.error(f"Workflow execution failed: {e}")
+                if execution:
+                    execution.status = WorkflowExecutionStatus.FAILED
+                    execution.completed_at = datetime.utcnow()
+                    execution.error_details = {"error": str(e)}
+                    await db.commit()
+
+                # Publish failure event
+                await event_bus.publish(
+                    "workflow.execution.failed",
+                    {
+                        "execution_id": str(execution_id),
+                        "error": str(e)
+                    }
+                )
     
     async def _send_execution_to_agent(self, execution_id: uuid.UUID, agent_id: uuid.UUID):
         """Send workflow execution request to agent via IAM."""

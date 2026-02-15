@@ -556,13 +556,17 @@ async def execute_workflow(
     # Create workflow execution using new service
     execution_service = WorkflowExecutionService(db)
     import uuid
-    
+
+    # Extract dry_run flag and pass via trigger_metadata
+    dry_run = request.get("dry_run", False)
+    trigger_metadata = {**request.get("trigger_metadata", {}), "is_dry_run": dry_run}
+
     # Create execution
     execution = await execution_service.create_execution(
         workflow_id=workflow_id,  # Already a string
         input_data=request.get("input_data", {}),
         triggered_by=request.get("trigger_source", "manual"),
-        trigger_metadata=request.get("trigger_metadata", {})
+        trigger_metadata=trigger_metadata
     )
     
     # Start execution

@@ -14,6 +14,7 @@ class NodeSchema(BaseModel):
     name: Optional[str] = None
     position: Optional[Dict[str, float]] = None
     data: Optional[Dict[str, Any]] = None
+    parameters: Optional[Dict[str, Any]] = None  # Node execution parameters (custom_node_type, etc.)
     agent: Optional[str] = None  # Descriptive agent name for AI agent nodes
     agent_id: Optional[str] = None  # UUID of the assigned AI agent
     agent_name: Optional[str] = None  # Display name of the AI agent (with "AI " prefix)

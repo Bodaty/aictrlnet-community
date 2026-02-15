@@ -63,15 +63,44 @@ class BaseNode(ABC):
                     )
                 
                 # Prepare context
+                is_dry_run = workflow_variables.get("_is_dry_run", False)
                 context = {
                     **instance.context,
                     "workflow_id": instance.workflow_instance_id,
                     "node_id": self.config.id,
                     "node_name": self.config.name,
                     "attempt": instance.attempt_number,
-                    "workflow_variables": workflow_variables
+                    "workflow_variables": workflow_variables,
+                    "is_dry_run": is_dry_run
                 }
-                
+
+                # Dry-run interception (Business+ feature via try/except import)
+                if is_dry_run:
+                    try:
+                        from aictrlnet_business.services.dry_run_interceptor import should_intercept, simulate_node
+                        # Resolve effective node type: custom_node_type takes priority over enum type
+                        effective_type = self.config.parameters.get("custom_node_type") if (
+                            hasattr(self.config, 'parameters') and isinstance(self.config.parameters, dict)
+                        ) else None
+                        if not effective_type:
+                            effective_type = self.config.type.value if hasattr(self.config.type, 'value') else str(self.config.type)
+                        if should_intercept(effective_type, self.config):
+                            logger.info(f"DRY-RUN INTERCEPTED node {self.config.id} (effective_type={effective_type})")
+                            simulated = simulate_node(effective_type, self.config, instance.input_data)
+                            instance.output_data = simulated
+                            instance.status = NodeStatus.COMPLETED
+                            instance.completed_at = datetime.utcnow()
+                            instance.duration_ms = (time.time() - start_time) * 1000
+                            return NodeExecutionResult(
+                                node_instance_id=instance.id,
+                                status=NodeStatus.COMPLETED,
+                                output_data=simulated,
+                                duration_ms=instance.duration_ms,
+                                next_node_ids=instance.next_nodes
+                            )
+                    except ImportError:
+                        pass  # Community edition — no interceptor, run normally
+
                 # Execute with timeout
                 output_data = await asyncio.wait_for(
                     self.execute(instance.input_data, context),

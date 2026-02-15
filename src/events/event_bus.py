@@ -102,12 +102,13 @@ class EventBus:
                 self._subscribers[event_pattern].remove(handler)
                 logger.debug(f"Unsubscribed from {event_pattern}")
     
-    async def publish(self, event_name: str, data: Any):
+    async def publish(self, event_name: str, data: Any, **kwargs):
         """Publish an event.
-        
+
         Args:
             event_name: Name of the event (e.g., "workflow.execution.started")
             data: Event data
+            **kwargs: Additional metadata (source_id, source_type, etc.)
         """
         event = {
             "name": event_name,
@@ -121,6 +122,10 @@ class EventBus:
         # Log event
         logger.debug(f"Published event: {event_name}")
     
+    async def emit(self, event_name: str, data: Any, **kwargs):
+        """Alias for publish() — used by state_manager and other node modules."""
+        await self.publish(event_name, data, **kwargs)
+
     def get_subscriber_count(self, event_pattern: Optional[str] = None) -> int:
         """Get count of subscribers for a pattern or all subscribers."""
         if event_pattern:

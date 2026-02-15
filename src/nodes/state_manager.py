@@ -236,6 +236,55 @@ class SimpleStateManager:
         return stats
 
 
+    async def load_workflow_state(self, workflow_instance) -> Optional[Dict[str, Any]]:
+        """Load saved state for a workflow instance."""
+        key = f"workflow:{workflow_instance.id}"
+        entry = self._state.get("workflow", {}).get(key)
+        if entry:
+            return entry.get("value")
+        return None
+
+    async def save_workflow_state(self, workflow_instance, state: Dict[str, Any]) -> None:
+        """Save state for a workflow instance."""
+        key = f"workflow:{workflow_instance.id}"
+        if "workflow" not in self._state:
+            self._state["workflow"] = {}
+        self._state["workflow"][key] = {
+            "value": state,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+    async def checkpoint_workflow(self, workflow_instance) -> str:
+        """Create a checkpoint for a workflow instance. Returns checkpoint ID."""
+        checkpoint_id = f"cp-{workflow_instance.id}-{int(time.time())}"
+        if "checkpoints" not in self._state:
+            self._state["checkpoints"] = {}
+        self._state["checkpoints"][checkpoint_id] = {
+            "workflow_id": workflow_instance.id,
+            "variables": dict(workflow_instance.variables),
+            "created_at": datetime.utcnow().isoformat()
+        }
+        return checkpoint_id
+
+    async def load_node_state(self, node_instance, workflow_id: str) -> Optional[Dict[str, Any]]:
+        """Load saved state for a node instance."""
+        key = f"node:{workflow_id}:{node_instance.id}"
+        entry = self._state.get("node", {}).get(key)
+        if entry:
+            return entry.get("value")
+        return None
+
+    async def save_node_state(self, node_instance, state: Dict[str, Any], workflow_id: str) -> None:
+        """Save state for a node instance."""
+        key = f"node:{workflow_id}:{node_instance.id}"
+        if "node" not in self._state:
+            self._state["node"] = {}
+        self._state["node"][key] = {
+            "value": state,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+
 # Create singleton instance
 state_manager = SimpleStateManager()
 

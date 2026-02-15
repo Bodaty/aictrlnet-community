@@ -13,7 +13,7 @@ from .models import (
     NodeInstance, NodeStatus, NodeExecutionResult, 
     WorkflowInstance, NodeType
 )
-from .state_manager import NodeStateManager, state_manager
+from .state_manager import NodeStateManager, state_manager as default_state_manager
 from events.event_bus import event_bus
 
 
@@ -61,7 +61,7 @@ class NodeErrorHandler:
     """Handles errors and recovery for node execution."""
     
     def __init__(self, state_manager: Optional[NodeStateManager] = None):
-        self.state_manager = state_manager or state_manager
+        self.state_manager = state_manager or default_state_manager
         
         # Error handlers by node type
         self._error_handlers: Dict[str, Callable] = {}

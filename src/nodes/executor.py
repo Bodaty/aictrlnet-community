@@ -11,8 +11,8 @@ from .models import (
     NodeExecutionResult, WorkflowInstance
 )
 from .registry import node_registry
-from .state_manager import NodeStateManager, state_manager
-from .error_handler import NodeErrorHandler, node_error_handler
+from .state_manager import NodeStateManager, state_manager as default_state_manager
+from .error_handler import NodeErrorHandler, node_error_handler as default_error_handler
 from events.event_bus import event_bus
 
 
@@ -34,8 +34,8 @@ class NodeExecutor:
         self._lock = asyncio.Lock()
         
         # Use provided managers or defaults
-        self.state_manager = state_manager or state_manager
-        self.error_handler = error_handler or node_error_handler
+        self.state_manager = state_manager or default_state_manager
+        self.error_handler = error_handler or default_error_handler
     
     async def execute_workflow(
         self,
