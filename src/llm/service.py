@@ -515,6 +515,7 @@ class LLMService:
             max_tokens=max_tokens,
             system_prompt=system_prompt,
             tool_choice=tool_choice,
+            cache_system_prefix=True,
         )
 
     async def _to_llm_tool_response(

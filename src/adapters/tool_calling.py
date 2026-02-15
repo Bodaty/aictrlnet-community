@@ -20,6 +20,7 @@ class ToolCallingRequest(BaseModel):
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
     tool_choice: str = "auto"  # "auto", "required", or specific tool name
+    cache_system_prefix: bool = True  # Enable prompt/context caching for system prompt
 
 
 class ToolCallingResponse(BaseModel):

@@ -487,15 +487,18 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
             "temperature": request.temperature
         }
 
-        # Add system prompt with prompt caching support
+        # Add system prompt (with prompt caching if enabled)
         if system_text:
-            payload["system"] = [
-                {
-                    "type": "text",
-                    "text": system_text,
-                    "cache_control": {"type": "ephemeral"}
-                }
-            ]
+            if request.cache_system_prefix:
+                payload["system"] = [
+                    {
+                        "type": "text",
+                        "text": system_text,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ]
+            else:
+                payload["system"] = system_text
 
         # Handle tool_choice
         if request.tool_choice == "required":
