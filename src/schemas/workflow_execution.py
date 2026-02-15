@@ -1,7 +1,7 @@
 """Schemas for workflow execution tracking."""
 
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from datetime import datetime
 import uuid
 
@@ -9,6 +9,15 @@ from models.workflow_execution import WorkflowExecutionStatus, NodeExecutionStat
 
 
 # Workflow Execution schemas
+class WorkflowExecuteRequest(BaseModel):
+    """Request body for executing a workflow via the REST endpoint."""
+    input_data: Optional[Dict[str, Any]] = None
+    dry_run: bool = False
+    trigger_metadata: Optional[Dict[str, Any]] = None
+    trigger_source: Optional[str] = None
+    agent_id: Optional[str] = None
+
+
 class WorkflowExecutionCreate(BaseModel):
     """Schema for creating a workflow execution."""
     workflow_id: uuid.UUID
@@ -41,12 +50,32 @@ class WorkflowExecutionResponse(BaseModel):
     execution_metadata: Optional[Dict[str, Any]]
     triggered_by: Optional[str]
     trigger_metadata: Optional[Dict[str, Any]]
+    dry_run: bool = Field(default=False, description="Whether this execution ran in dry-run mode")
+    nodes_intercepted: Optional[int] = Field(default=None, description="Number of nodes intercepted during dry-run")
     created_at: datetime
     updated_at: datetime
-    
+
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
-populate_by_name = True
+    @model_validator(mode="before")
+    @classmethod
+    def extract_dry_run_from_context(cls, data):
+        """Extract dry_run from execution context or trigger_metadata."""
+        # Handle both dict and ORM object
+        if hasattr(data, "__dict__"):
+            ctx = getattr(data, "context", None) or {}
+            tm = getattr(data, "trigger_metadata", None) or {}
+        elif isinstance(data, dict):
+            ctx = data.get("context") or {}
+            tm = data.get("trigger_metadata") or {}
+        else:
+            return data
+        if not (isinstance(data, dict) and "dry_run" in data):
+            dry_run = ctx.get("is_dry_run", False) or tm.get("is_dry_run", False)
+            if isinstance(data, dict):
+                data["dry_run"] = dry_run
+            # For ORM objects, Pydantic will use the default; we set via __dict__ trick
+        return data
 
 
 # Node Execution schemas

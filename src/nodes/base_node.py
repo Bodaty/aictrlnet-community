@@ -15,6 +15,10 @@ from adapters.models import AdapterRequest
 
 logger = logging.getLogger(__name__)
 
+# Module-level cache for dry-run interceptor (Business+ only)
+_dry_run_interceptor = None
+_dry_run_interceptor_checked = False
+
 
 class BaseNode(ABC):
     """Base class for all workflow nodes."""
@@ -74,19 +78,28 @@ class BaseNode(ABC):
                     "is_dry_run": is_dry_run
                 }
 
-                # Dry-run interception (Business+ feature via try/except import)
+                # Dry-run interception (Business+ feature, import cached at module level)
                 if is_dry_run:
-                    try:
-                        from aictrlnet_business.services.dry_run_interceptor import should_intercept, simulate_node
+                    global _dry_run_interceptor, _dry_run_interceptor_checked
+                    if not _dry_run_interceptor_checked:
+                        try:
+                            from aictrlnet_business.services.dry_run_interceptor import should_intercept, simulate_node
+                            _dry_run_interceptor = (should_intercept, simulate_node)
+                        except ImportError:
+                            _dry_run_interceptor = None
+                        _dry_run_interceptor_checked = True
+
+                    if _dry_run_interceptor:
+                        should_intercept_fn, simulate_node_fn = _dry_run_interceptor
                         # Resolve effective node type: custom_node_type takes priority over enum type
                         effective_type = self.config.parameters.get("custom_node_type") if (
                             hasattr(self.config, 'parameters') and isinstance(self.config.parameters, dict)
                         ) else None
                         if not effective_type:
                             effective_type = self.config.type.value if hasattr(self.config.type, 'value') else str(self.config.type)
-                        if should_intercept(effective_type, self.config):
+                        if should_intercept_fn(effective_type, self.config):
                             logger.info(f"DRY-RUN INTERCEPTED node {self.config.id} (effective_type={effective_type})")
-                            simulated = simulate_node(effective_type, self.config, instance.input_data)
+                            simulated = simulate_node_fn(effective_type, self.config, instance.input_data)
                             instance.output_data = simulated
                             instance.status = NodeStatus.COMPLETED
                             instance.completed_at = datetime.utcnow()
@@ -98,8 +111,6 @@ class BaseNode(ABC):
                                 duration_ms=instance.duration_ms,
                                 next_node_ids=instance.next_nodes
                             )
-                    except ImportError:
-                        pass  # Community edition — no interceptor, run normally
 
                 # Execute with timeout
                 output_data = await asyncio.wait_for(

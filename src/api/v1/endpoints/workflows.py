@@ -36,6 +36,7 @@ from services.node_catalog import DynamicNodeCatalogService
 from services.workflow_scheduler import WorkflowScheduler, TriggerType
 from nodes.registry import node_registry
 from schemas.workflow_execution import (
+    WorkflowExecuteRequest,
     WorkflowExecutionCreate,
     WorkflowExecutionResponse,
     WorkflowTriggerCreate,
@@ -526,7 +527,7 @@ async def list_workflow_instances(
 @router.post("/{workflow_id}/execute", response_model=WorkflowExecutionResponse)
 async def execute_workflow(
     workflow_id: str,
-    request: dict = {},
+    request: WorkflowExecuteRequest = WorkflowExecuteRequest(),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_active_user),
 ):
@@ -539,33 +540,32 @@ async def execute_workflow(
         limit_type=LimitType.EXECUTIONS,
         increment=1
     )
-    
+
     # Check workflow exists
     result = await db.execute(
         select(WorkflowDefinition).filter(WorkflowDefinition.id == str(workflow_id))
     )
     workflow = result.scalar_one_or_none()
-    
+
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    
+
     # Track execution start
     import time
     start_time = time.time()
-    
+
     # Create workflow execution using new service
     execution_service = WorkflowExecutionService(db)
     import uuid
 
     # Extract dry_run flag and pass via trigger_metadata
-    dry_run = request.get("dry_run", False)
-    trigger_metadata = {**request.get("trigger_metadata", {}), "is_dry_run": dry_run}
+    trigger_metadata = {**(request.trigger_metadata or {}), "is_dry_run": request.dry_run}
 
     # Create execution
     execution = await execution_service.create_execution(
         workflow_id=workflow_id,  # Already a string
-        input_data=request.get("input_data", {}),
-        triggered_by=request.get("trigger_source", "manual"),
+        input_data=request.input_data or {},
+        triggered_by=request.trigger_source or "manual",
         trigger_metadata=trigger_metadata
     )
     
@@ -590,7 +590,7 @@ async def execute_workflow(
         from aictrlnet_business.services.learning_loop_service import learning_loop_service
         
         # Determine initiator type
-        is_ai_agent = request.get("trigger_source") == "ai_agent"
+        is_ai_agent = request.trigger_source == "ai_agent"
         initiated_by = "ai_agent" if is_ai_agent else "human"
         
         # Get initiator ID safely
@@ -617,7 +617,7 @@ async def execute_workflow(
             workflow_config=workflow.definition,
             initiated_by=initiated_by,
             initiator_id=initiator_id,
-            modifications_made=request.get("modifications", None)
+            modifications_made=None
         )
         
         # Store learning execution ID for later update

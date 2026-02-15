@@ -150,11 +150,8 @@ class WorkflowExecutionService:
             }
         )
         
-        # Determine if dry-run mode is active
-        is_dry_run = execution.context.get("is_dry_run", False) if execution.context else False
-
-        # If local execution (no agent) or dry-run (skip agent dispatch), execute locally
-        if not agent_id or is_dry_run:
+        # If local execution (no agent), execute locally
+        if not agent_id:
             asyncio.create_task(self._execute_workflow_locally(execution_id))
         else:
             # Send execution request to agent via IAM
@@ -270,6 +267,7 @@ class WorkflowExecutionService:
                         "duration_ms": execution.duration_ms,
                         "triggered_by": execution.triggered_by,
                         "trigger_metadata": execution.trigger_metadata or {},
+                        "is_dry_run": is_dry_run,
                     }
                 )
 
@@ -286,7 +284,8 @@ class WorkflowExecutionService:
                     "workflow.execution.failed",
                     {
                         "execution_id": str(execution_id),
-                        "error": str(e)
+                        "error": str(e),
+                        "is_dry_run": is_dry_run,
                     }
                 )
     
