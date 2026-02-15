@@ -12,13 +12,14 @@ from adapters.models import (
     AdapterCapability, AdapterRequest, AdapterResponse,
     AdapterConfig, AdapterCategory
 )
+from adapters.tool_calling import ToolCallingMixin, ToolCallingRequest, ToolCallingResponse
 from events.event_bus import event_bus
 
 
 logger = logging.getLogger(__name__)
 
 
-class ClaudeAdapter(BaseAdapter):
+class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
     """Adapter for Anthropic Claude API integration."""
     
     def __init__(self, config: AdapterConfig):
@@ -414,9 +415,9 @@ class ClaudeAdapter(BaseAdapter):
                 "messages": [{"role": "user", "content": "Hi"}],
                 "max_tokens": 10
             }
-            
+
             response = await self.client.post("/messages", json=test_data)
-            
+
             if response.status_code == 200:
                 return {
                     "status": "healthy",
@@ -427,9 +428,139 @@ class ClaudeAdapter(BaseAdapter):
                     "status": "unhealthy",
                     "status_code": response.status_code
                 }
-                
+
         except Exception as e:
             return {
                 "status": "unhealthy",
                 "error": str(e)
             }
+
+    # ── ToolCallingMixin implementation ──────────────────────────────────
+
+    async def chat_with_tools(self, request: ToolCallingRequest) -> ToolCallingResponse:
+        """Execute tool-augmented chat via Anthropic's Messages API."""
+        import os
+        import uuid
+
+        api_key = self.api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise Exception("ANTHROPIC_API_KEY not available")
+
+        # Convert tools to Anthropic format (input_schema, not parameters)
+        anthropic_tools = []
+        for tool in request.tools:
+            anthropic_tools.append({
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "input_schema": tool.get("parameters", tool.get("input_schema", {
+                    "type": "object", "properties": {}, "required": []
+                }))
+            })
+
+        # Build messages — Anthropic uses separate 'system' field
+        api_messages = []
+        system_text = request.system_prompt or ""
+        for msg in request.messages:
+            if msg["role"] == "system":
+                system_text = msg["content"]
+            elif msg["role"] == "tool":
+                api_messages.append({
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": msg.get("tool_use_id", ""), "content": msg["content"]}]
+                })
+            elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                content = []
+                if msg.get("content"):
+                    content.append({"type": "text", "text": msg["content"]})
+                for tc in msg["tool_calls"]:
+                    content.append({"type": "tool_use", "id": tc.get("id", ""), "name": tc["name"], "input": tc["arguments"]})
+                api_messages.append({"role": "assistant", "content": content})
+            else:
+                api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # Build request payload
+        payload = {
+            "model": request.model,
+            "max_tokens": request.max_tokens or 4096,
+            "messages": api_messages,
+            "tools": anthropic_tools if request.tools else [],
+            "temperature": request.temperature
+        }
+
+        # Add system prompt with prompt caching support
+        if system_text:
+            payload["system"] = [
+                {
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+
+        # Handle tool_choice
+        if request.tool_choice == "required":
+            payload["tool_choice"] = {"type": "any"}
+        elif request.tool_choice != "auto":
+            payload["tool_choice"] = {"type": "tool", "name": request.tool_choice}
+
+        logger.info(f"Claude chat_with_tools: {[t['name'] for t in anthropic_tools]}")
+
+        # Use existing client or create temporary one
+        client = self.client
+        close_client = False
+        if client is None:
+            client = httpx.AsyncClient(
+                base_url=self.base_url or "https://api.anthropic.com/v1",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "prompt-caching-2024-07-31",
+                    "content-type": "application/json"
+                },
+                timeout=120.0,
+            )
+            close_client = True
+
+        try:
+            response = await client.post("/messages", json=payload)
+
+            if response.status_code != 200:
+                logger.error(f"Anthropic tool calling error: {response.status_code} - {response.text}")
+                raise Exception(f"Anthropic API error: {response.status_code}")
+
+            result = response.json()
+
+            # Extract tool calls and text
+            tool_calls = []
+            text_response = ""
+            for content_block in result.get("content", []):
+                if content_block.get("type") == "tool_use":
+                    tool_calls.append({
+                        "name": content_block.get("name"),
+                        "arguments": content_block.get("input", {}),
+                        "id": content_block.get("id", str(uuid.uuid4()))
+                    })
+                    logger.info(f"Claude tool call: {content_block.get('name')}")
+                elif content_block.get("type") == "text":
+                    text_response += content_block.get("text", "")
+
+            usage = result.get("usage", {})
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+            cached_tokens = usage.get("cache_read_input_tokens", 0) + usage.get("cache_creation_input_tokens", 0)
+
+            cost = self._estimate_cost(request.model, input_tokens, output_tokens)
+
+            return ToolCallingResponse(
+                text=text_response,
+                tool_calls=tool_calls,
+                tokens_used=input_tokens + output_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost=cost,
+                cached_tokens=cached_tokens,
+                stop_reason=result.get("stop_reason"),
+            )
+        finally:
+            if close_client:
+                await client.aclose()

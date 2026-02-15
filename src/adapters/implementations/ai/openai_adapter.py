@@ -12,13 +12,14 @@ from adapters.models import (
     AdapterCapability, AdapterRequest, AdapterResponse,
     AdapterConfig, AdapterCategory
 )
+from adapters.tool_calling import ToolCallingMixin, ToolCallingRequest, ToolCallingResponse
 from events.event_bus import event_bus
 
 
 logger = logging.getLogger(__name__)
 
 
-class OpenAIAdapter(BaseAdapter):
+class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
     """Adapter for OpenAI API integration."""
     
     def __init__(self, config: AdapterConfig):
@@ -512,10 +513,10 @@ class OpenAIAdapter(BaseAdapter):
             # Check models endpoint
             response = await self.client.get("/models")
             response.raise_for_status()
-            
+
             models = response.json().get("data", [])
             model_ids = [m["id"] for m in models]
-            
+
             return {
                 "status": "healthy",
                 "available_models": len(models),
@@ -526,3 +527,142 @@ class OpenAIAdapter(BaseAdapter):
                 "status": "unhealthy",
                 "error": str(e)
             }
+
+    # ── ToolCallingMixin implementation ──────────────────────────────────
+
+    async def chat_with_tools(self, request: ToolCallingRequest) -> ToolCallingResponse:
+        """Execute tool-augmented chat via OpenAI's Chat Completions API."""
+        import os
+        import uuid
+
+        api_key = self.api_key or os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise Exception("OPENAI_API_KEY not available")
+
+        # Convert tools to OpenAI format
+        openai_tools = []
+        for tool in request.tools:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.get("name", ""),
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("parameters", {
+                        "type": "object", "properties": {}, "required": []
+                    })
+                }
+            })
+
+        # Build messages
+        api_messages = []
+        for msg in request.messages:
+            if msg["role"] == "tool":
+                api_messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg.get("tool_call_id", msg.get("tool_use_id", "")),
+                    "content": msg["content"]
+                })
+            elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                tc_list = []
+                for tc in msg["tool_calls"]:
+                    tc_list.append({
+                        "id": tc.get("id", ""),
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])}
+                    })
+                api_messages.append({
+                    "role": "assistant",
+                    "content": msg.get("content"),
+                    "tool_calls": tc_list
+                })
+            else:
+                api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        payload = {
+            "model": request.model,
+            "messages": api_messages,
+            "tools": openai_tools,
+            "temperature": request.temperature
+        }
+
+        if request.max_tokens:
+            payload["max_tokens"] = request.max_tokens
+
+        # Handle tool_choice
+        if request.tool_choice == "required":
+            payload["tool_choice"] = "required"
+        elif request.tool_choice == "auto":
+            payload["tool_choice"] = "auto"
+        else:
+            payload["tool_choice"] = {"type": "function", "function": {"name": request.tool_choice}}
+
+        logger.info(f"OpenAI chat_with_tools: {[t['function']['name'] for t in openai_tools]}")
+
+        # Use existing client or create temporary one
+        client = self.client
+        close_client = False
+        if client is None:
+            client = httpx.AsyncClient(
+                base_url=self.base_url or "https://api.openai.com/v1",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=120.0,
+            )
+            close_client = True
+
+        try:
+            response = await client.post("/chat/completions", json=payload)
+
+            if response.status_code != 200:
+                logger.error(f"OpenAI tool calling error: {response.status_code} - {response.text}")
+                raise Exception(f"OpenAI API error: {response.status_code}")
+
+            result = response.json()
+
+            tool_calls = []
+            text_response = ""
+
+            choice = result.get("choices", [{}])[0]
+            message = choice.get("message", {})
+
+            if "tool_calls" in message and message["tool_calls"]:
+                for tc in message["tool_calls"]:
+                    function = tc.get("function", {})
+                    tool_args = function.get("arguments", "{}")
+                    if isinstance(tool_args, str):
+                        try:
+                            tool_args = json.loads(tool_args)
+                        except json.JSONDecodeError:
+                            tool_args = {}
+
+                    tool_calls.append({
+                        "name": function.get("name"),
+                        "arguments": tool_args,
+                        "id": tc.get("id", str(uuid.uuid4()))
+                    })
+                    logger.info(f"OpenAI tool call: {function.get('name')}")
+
+            if "content" in message and message["content"]:
+                text_response = message["content"]
+
+            usage = result.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
+
+            # OpenAI pricing (approximate for GPT-4)
+            cost = (input_tokens * 0.03 / 1000) + (output_tokens * 0.06 / 1000)
+
+            return ToolCallingResponse(
+                text=text_response,
+                tool_calls=tool_calls,
+                tokens_used=input_tokens + output_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost=cost,
+                stop_reason=choice.get("finish_reason"),
+            )
+        finally:
+            if close_client:
+                await client.aclose()

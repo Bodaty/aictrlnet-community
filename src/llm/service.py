@@ -26,26 +26,180 @@ from .tier_resolver import get_environment_default_model
 logger = logging.getLogger(__name__)
 
 
-# Provider support for native tool calling
-NATIVE_TOOL_PROVIDERS = {
-    "anthropic": True,
-    "openai": True,
-    "azure_openai": True,
-    "google_gemini": True,
-    "vertex_ai": True,
-    "aws_bedrock": True,  # Claude models support native, Titan uses text fallback
-    "cohere": True,  # Command R+ supports native, older Command models use text fallback
-    "deepseek": True,  # DeepSeek V3/R1 support native tool calling
-    "dashscope": True,  # Qwen models support tool calling
-    "ollama": "model_dependent",  # Check model name (llama3.1, llama3.2, mistral, mixtral, qwen2.5)
-    "huggingface": False,  # No native tool support - always text-based fallback
+# Providers that support native tool calling (via adapter ToolCallingMixin).
+# HuggingFace does not — always uses text-based fallback.
+# DeepSeek and DashScope also use text-based fallback (no adapter yet).
+_NATIVE_TOOL_PROVIDER_NAMES = {
+    "ollama", "anthropic", "openai", "azure_openai", "gemini",
+    "vertex_ai", "bedrock", "cohere",
 }
 
-# Ollama models that support native tool calling.
-# Most modern Ollama models support tools — always try native first and
-# fall back to text-based if it fails (_generate_with_ollama_native_tools
-# already has a text-based fallback on exception).
-OLLAMA_NATIVE_TOOL_MODELS = "all"  # Legacy sentinel; see _supports_native_tools
+
+class _AdapterProvider:
+    """Lazy factory for tool-calling adapter instances.
+
+    Creates adapter instances on first use and caches them. This avoids
+    timing issues with app.py lifespan startup — adapters are only created
+    when tool calling is actually needed (during request handling, well
+    after startup completes).
+    """
+    _instances: Dict[str, Any] = {}
+
+    @classmethod
+    async def get(cls, provider: 'ModelProvider') -> 'Optional[Any]':
+        """Get or create a tool-calling adapter for the given provider.
+
+        Returns the adapter if it implements ToolCallingMixin, else None.
+        """
+        from adapters.tool_calling import ToolCallingMixin
+
+        key = provider.value
+        if key not in cls._instances:
+            adapter = cls._create_adapter(provider)
+            if adapter is None:
+                return None
+            if not isinstance(adapter, ToolCallingMixin):
+                logger.debug(f"Adapter for {key} does not implement ToolCallingMixin")
+                return None
+            try:
+                await adapter.initialize()
+                cls._instances[key] = adapter
+                logger.info(f"Initialized tool-calling adapter for {key}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize tool-calling adapter for {key}: {e}")
+                return None
+        return cls._instances.get(key)
+
+    @classmethod
+    def _create_adapter(cls, provider: 'ModelProvider') -> 'Optional[Any]':
+        """Create an adapter instance for the given provider."""
+        import os
+        from adapters.models import AdapterConfig, AdapterCategory
+
+        try:
+            if provider == ModelProvider.OLLAMA:
+                from adapters.implementations.ai.ollama_adapter import OllamaAdapter
+                return OllamaAdapter(AdapterConfig(
+                    name="ollama-tools",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    base_url=os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
+                    credentials={},
+                    timeout_seconds=300.0,
+                ))
+            elif provider == ModelProvider.ANTHROPIC:
+                from adapters.implementations.ai.claude_adapter import ClaudeAdapter
+                api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                if not api_key:
+                    return None
+                return ClaudeAdapter(AdapterConfig(
+                    name="claude-tools",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    api_key=api_key,
+                    credentials={"api_key": api_key},
+                    timeout_seconds=120.0,
+                ))
+            elif provider == ModelProvider.OPENAI:
+                from adapters.implementations.ai.openai_adapter import OpenAIAdapter
+                api_key = os.environ.get("OPENAI_API_KEY", "")
+                if not api_key:
+                    return None
+                return OpenAIAdapter(AdapterConfig(
+                    name="openai-tools",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    api_key=api_key,
+                    credentials={"api_key": api_key},
+                    timeout_seconds=120.0,
+                ))
+            elif provider == ModelProvider.AZURE_OPENAI:
+                try:
+                    from business_adapters.implementations.ai.azure_openai_adapter import AzureOpenAIAdapter
+                except ImportError:
+                    return None
+                api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
+                endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+                if not api_key or not endpoint:
+                    return None
+                return AzureOpenAIAdapter(AdapterConfig(
+                    name="azure-openai-tools",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    api_key=api_key,
+                    base_url=endpoint,
+                    credentials={"api_key": api_key, "endpoint": endpoint},
+                    timeout_seconds=120.0,
+                ))
+            elif provider == ModelProvider.GEMINI:
+                try:
+                    from business_adapters.implementations.ai.google_gemini_adapter import GoogleGeminiAdapter
+                except ImportError:
+                    return None
+                api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+                if not api_key:
+                    return None
+                return GoogleGeminiAdapter(AdapterConfig(
+                    name="gemini-tools",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    api_key=api_key,
+                    credentials={"api_key": api_key},
+                    timeout_seconds=120.0,
+                ))
+            elif provider == ModelProvider.VERTEX_AI:
+                try:
+                    from business_adapters.implementations.ai.vertex_ai_adapter import VertexAIAdapter
+                except ImportError:
+                    return None
+                project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("VERTEX_AI_PROJECT")
+                if not project_id:
+                    return None
+                return VertexAIAdapter(AdapterConfig(
+                    name="vertex-ai-tools",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    credentials={"project_id": project_id},
+                    timeout_seconds=120.0,
+                ))
+            elif provider == ModelProvider.BEDROCK:
+                try:
+                    from business_adapters.implementations.ai.aws_bedrock_adapter import AWSBedrockAdapter
+                except ImportError:
+                    return None
+                return AWSBedrockAdapter(AdapterConfig(
+                    name="bedrock-tools",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    credentials={},
+                    timeout_seconds=120.0,
+                ))
+            elif provider == ModelProvider.COHERE:
+                try:
+                    from business_adapters.implementations.ai.cohere_adapter import CohereAdapter
+                except ImportError:
+                    return None
+                api_key = os.environ.get("COHERE_API_KEY", "")
+                if not api_key:
+                    return None
+                return CohereAdapter(AdapterConfig(
+                    name="cohere-tools",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    api_key=api_key,
+                    credentials={"api_key": api_key},
+                    timeout_seconds=120.0,
+                ))
+            else:
+                return None
+        except Exception as e:
+            logger.warning(f"Failed to create adapter for {provider.value}: {e}")
+            return None
+
+    @classmethod
+    def reset(cls):
+        """Reset all cached adapter instances (for testing)."""
+        cls._instances.clear()
 
 
 class LLMService:
@@ -262,22 +416,8 @@ class LLMService:
             )
 
     def _supports_native_tools(self, provider: ModelProvider, model: str) -> bool:
-        """Check if a provider/model combination supports native tool calling."""
-        provider_name = provider.value.lower()
-
-        # Check provider support
-        support = NATIVE_TOOL_PROVIDERS.get(provider_name, False)
-
-        if support == True:
-            return True
-        elif support == "model_dependent":
-            # Ollama: always try native tool calling first.
-            # Most modern models (llama3.x, qwen, deepseek, mistral, etc.) support it.
-            # If the model doesn't, _generate_with_ollama_native_tools catches the
-            # exception and falls back to text-based tool calling automatically.
-            return True
-        else:
-            return False
+        """Check if a provider supports native tool calling via adapter."""
+        return provider.value in _NATIVE_TOOL_PROVIDER_NAMES
 
     async def _generate_with_native_tools(
         self,
@@ -294,1578 +434,142 @@ class LLMService:
         user_settings: Optional[UserLLMSettings],
         messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
-        """Generate using native tool calling APIs - routes to provider-specific implementations."""
-        import json
-        import uuid
-
-        # Route to provider-specific native tool calling implementation
-        if provider == ModelProvider.OLLAMA:
-            return await self._generate_with_ollama_native_tools(
-                prompt=prompt,
-                tools=tools,
-                model=model,
-                tier=tier,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                start_time=start_time,
-                user_settings=user_settings,
-                messages=messages
-            )
-        elif provider == ModelProvider.ANTHROPIC:
-            return await self._generate_with_anthropic_native_tools(
-                prompt=prompt,
-                tools=tools,
-                model=model,
-                tier=tier,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                start_time=start_time,
-                user_settings=user_settings,
-                messages=messages
-            )
-        elif provider == ModelProvider.OPENAI:
-            return await self._generate_with_openai_native_tools(
-                prompt=prompt,
-                tools=tools,
-                model=model,
-                tier=tier,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                start_time=start_time,
-                user_settings=user_settings,
-                messages=messages
-            )
-        elif provider == ModelProvider.AZURE_OPENAI:
-            return await self._generate_with_azure_native_tools(
-                prompt=prompt,
-                tools=tools,
-                model=model,
-                tier=tier,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                start_time=start_time,
-                user_settings=user_settings,
-                messages=messages
-            )
-        elif provider == ModelProvider.GEMINI:
-            return await self._generate_with_gemini_native_tools(
-                prompt=prompt,
-                tools=tools,
-                model=model,
-                tier=tier,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                start_time=start_time,
-                user_settings=user_settings,
-                messages=messages
-            )
-        elif provider == ModelProvider.VERTEX_AI:
-            return await self._generate_with_vertex_native_tools(
-                prompt=prompt,
-                tools=tools,
-                model=model,
-                tier=tier,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                start_time=start_time,
-                user_settings=user_settings,
-                messages=messages
-            )
-        elif provider == ModelProvider.AWS_BEDROCK:
-            return await self._generate_with_bedrock_native_tools(
-                prompt=prompt,
-                tools=tools,
-                model=model,
-                tier=tier,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                start_time=start_time,
-                user_settings=user_settings,
-                messages=messages
-            )
-        elif provider == ModelProvider.COHERE:
-            return await self._generate_with_cohere_native_tools(
-                prompt=prompt,
-                tools=tools,
-                model=model,
-                tier=tier,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                start_time=start_time,
-                user_settings=user_settings,
-                messages=messages
-            )
-        else:
-            # Fallback to text-based for unknown providers
-            logger.info(f"No native tool implementation for {provider.value} - using text-based fallback")
-            return await self._generate_with_text_tools(
-                prompt=prompt,
-                tools=tools,
-                user_settings=user_settings,
-                model_override=model,
-                task_type="tool_use",
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                context=None,
-                start_time=start_time,
-                messages=messages
-            )
-
-    async def _generate_with_ollama_native_tools(
-        self,
-        prompt: Optional[str],
-        tools: List[ToolDefinition],
-        model: str,
-        tier: ModelTier,
-        temperature: float,
-        max_tokens: Optional[int],
-        system_prompt: str,
-        tool_choice: str,
-        start_time: datetime,
-        user_settings: Optional[UserLLMSettings],
-        messages: Optional[List[Dict[str, Any]]] = None
-    ) -> LLMToolResponse:
-        """Generate using Ollama's native tool calling API."""
-        import json
-        import uuid
-
-        ollama_url = self.generation_engine.ollama_url
-
-        # Convert tools to Ollama format
-        ollama_tools = []
-        for tool in tools:
-            ollama_tool = {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters if tool.parameters else {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            }
-            ollama_tools.append(ollama_tool)
-
-        # Build messages array — use provided messages or construct from prompt
-        if messages:
-            api_messages = []
-            for msg in messages:
-                if msg["role"] == "tool":
-                    # Ollama uses role=tool with content
-                    api_messages.append({
-                        "role": "tool",
-                        "content": msg["content"]
-                    })
-                elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                    # Reconstruct assistant message with tool_calls
-                    api_messages.append({
-                        "role": "assistant",
-                        "content": msg.get("content") or "",
-                        "tool_calls": [
-                            {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                            for tc in msg["tool_calls"]
-                        ]
-                    })
-                else:
-                    api_messages.append({"role": msg["role"], "content": msg["content"]})
-        else:
-            api_messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ]
-
-        # Build request payload
-        payload = {
-            "model": model,
-            "messages": api_messages,
-            "tools": ollama_tools,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens or 2000
-            }
-        }
-
-        logger.info(f"Calling Ollama with native tools: {[t['function']['name'] for t in ollama_tools]}")
-
+        """Generate using native tool calling APIs via adapter framework."""
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                response = await client.post(
-                    f"{ollama_url}/api/chat",
-                    json=payload
+            adapter = await _AdapterProvider.get(provider)
+            if not adapter:
+                logger.info(f"No adapter for {provider.value} - using text-based fallback")
+                return await self._generate_with_text_tools(
+                    prompt=prompt, tools=tools, user_settings=user_settings,
+                    model_override=model, task_type="tool_use", temperature=temperature,
+                    max_tokens=max_tokens, system_prompt=system_prompt,
+                    tool_choice=tool_choice, context=None, start_time=start_time,
+                    messages=messages
                 )
 
-                if response.status_code != 200:
-                    logger.error(f"Ollama error: {response.status_code} - {response.text}")
-                    raise Exception(f"Ollama API error: {response.status_code}")
-
-                result = response.json()
-
-            # Extract tool calls from response
-            tool_calls = []
-            text_response = ""
-            message = result.get("message", {})
-
-            # Check for tool_calls in the response
-            if "tool_calls" in message and message["tool_calls"]:
-                for tc in message["tool_calls"]:
-                    function = tc.get("function", {})
-                    tool_name = function.get("name")
-                    tool_args = function.get("arguments", {})
-
-                    # Arguments might be a string that needs JSON parsing
-                    if isinstance(tool_args, str):
-                        try:
-                            tool_args = json.loads(tool_args)
-                        except json.JSONDecodeError:
-                            tool_args = {}
-
-                    if tool_name:
-                        tool_calls.append(ToolCall(
-                            name=tool_name,
-                            arguments=tool_args,
-                            id=str(uuid.uuid4())
-                        ))
-                        logger.info(f"Native tool call extracted: {tool_name}")
-
-            # Extract text content
-            if "content" in message:
-                text_response = message["content"] or ""
-
-            # Calculate tokens
-            tokens_used = result.get("eval_count", 0) + result.get("prompt_eval_count", 0)
-
-            tool_response = LLMToolResponse(
-                text=text_response,
-                tool_calls=tool_calls if tool_calls else None,
-                execution_plan=None,
-                model_used=model,
-                provider=ModelProvider.OLLAMA,
-                tier=tier,
-                tokens_used=tokens_used,
-                cost=0.0,  # Local models are free
-                response_time=(datetime.utcnow() - start_time).total_seconds(),
-                metadata={
-                    "tools_provided": len(tools),
-                    "tool_choice": tool_choice,
-                    "native_tools": True,
-                    "tool_calls_count": len(tool_calls)
-                }
+            tc_request = self._build_tool_calling_request(
+                prompt=prompt, tools=tools, model=model,
+                temperature=temperature, max_tokens=max_tokens,
+                system_prompt=system_prompt, tool_choice=tool_choice,
+                messages=messages
             )
-
-            # Track usage
-            await self.cost_tracker.track_usage(
-                user_id=user_settings.user_id if user_settings else "anonymous",
-                model=model,
-                provider=ModelProvider.OLLAMA,
-                tokens=tokens_used,
-                cost=0.0
+            response = await adapter.chat_with_tools(tc_request)
+            return await self._to_llm_tool_response(
+                response, provider=provider, tier=tier,
+                start_time=start_time, tools=tools, tool_choice=tool_choice,
+                model=model, user_settings=user_settings
             )
-
-            return tool_response
-
         except Exception as e:
-            logger.error(f"Ollama native tool calling failed: {e}")
-            # Fall back to text-based
+            logger.error(f"{provider.value} native tool calling failed: {e}")
             logger.info("Falling back to text-based tool calling")
             return await self._generate_with_text_tools(
-                prompt=prompt,
-                tools=tools,
-                user_settings=user_settings,
-                model_override=model,
-                task_type="tool_use",
-                temperature=temperature,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-                tool_choice=tool_choice,
-                context=None,
-                start_time=start_time
+                prompt=prompt, tools=tools, user_settings=user_settings,
+                model_override=model, task_type="tool_use", temperature=temperature,
+                max_tokens=max_tokens, system_prompt=system_prompt,
+                tool_choice=tool_choice, context=None, start_time=start_time,
+                messages=messages
             )
 
-    async def _generate_with_anthropic_native_tools(
+    # ── Adapter bridge helpers ────────────────────────────────────────────
+
+    def _build_tool_calling_request(
         self,
         prompt: Optional[str],
         tools: List[ToolDefinition],
         model: str,
-        tier: ModelTier,
         temperature: float,
         max_tokens: Optional[int],
         system_prompt: str,
         tool_choice: str,
-        start_time: datetime,
-        user_settings: Optional[UserLLMSettings],
-        messages: Optional[List[Dict[str, Any]]] = None
-    ) -> LLMToolResponse:
-        """Generate using Anthropic/Claude's native tool calling API."""
-        import json
-        import uuid
-        import os
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> 'ToolCallingRequest':
+        """Build a ToolCallingRequest from LLMService parameters."""
+        from adapters.tool_calling import ToolCallingRequest
 
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            logger.warning("ANTHROPIC_API_KEY not set, falling back to text-based")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-        # Convert tools to Anthropic format
-        anthropic_tools = []
-        for tool in tools:
-            anthropic_tool = {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.parameters if tool.parameters else {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-            anthropic_tools.append(anthropic_tool)
-
-        # Build messages — Anthropic uses separate 'system' field
+        # Build messages list
         if messages:
+            api_messages = list(messages)
+        else:
             api_messages = []
-            system_text = system_prompt
-            for msg in messages:
-                if msg["role"] == "system":
-                    system_text = msg["content"]
-                elif msg["role"] == "tool":
-                    # Anthropic format: role=user with tool_result content blocks
-                    api_messages.append({
-                        "role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": msg.get("tool_use_id", ""), "content": msg["content"]}]
-                    })
-                elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                    # Anthropic format: assistant with tool_use content blocks
-                    content = []
-                    if msg.get("content"):
-                        content.append({"type": "text", "text": msg["content"]})
-                    for tc in msg["tool_calls"]:
-                        content.append({"type": "tool_use", "id": tc.get("id", ""), "name": tc["name"], "input": tc["arguments"]})
-                    api_messages.append({"role": "assistant", "content": content})
-                else:
-                    api_messages.append({"role": msg["role"], "content": msg["content"]})
-        else:
-            api_messages = [{"role": "user", "content": prompt}]
-            system_text = system_prompt
+            if system_prompt:
+                api_messages.append({"role": "system", "content": system_prompt})
+            if prompt:
+                api_messages.append({"role": "user", "content": prompt})
 
-        # Build request payload
-        payload = {
-            "model": model,
-            "max_tokens": max_tokens or 4096,
-            "system": system_text,
-            "messages": api_messages,
-            "tools": anthropic_tools if tools else [],
-            "temperature": temperature
-        }
-
-        # Handle tool_choice
-        if tool_choice == "required":
-            payload["tool_choice"] = {"type": "any"}
-        elif tool_choice != "auto":
-            payload["tool_choice"] = {"type": "tool", "name": tool_choice}
-
-        logger.info(f"Calling Anthropic with native tools: {[t['name'] for t in anthropic_tools]}")
-
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": api_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json"
-                    },
-                    json=payload
-                )
-
-                if response.status_code != 200:
-                    logger.error(f"Anthropic error: {response.status_code} - {response.text}")
-                    raise Exception(f"Anthropic API error: {response.status_code}")
-
-                result = response.json()
-
-            # Extract tool calls from response
-            tool_calls = []
-            text_response = ""
-
-            for content_block in result.get("content", []):
-                if content_block.get("type") == "tool_use":
-                    tool_calls.append(ToolCall(
-                        name=content_block.get("name"),
-                        arguments=content_block.get("input", {}),
-                        id=content_block.get("id", str(uuid.uuid4()))
-                    ))
-                    logger.info(f"Anthropic tool call: {content_block.get('name')}")
-                elif content_block.get("type") == "text":
-                    text_response += content_block.get("text", "")
-
-            # Calculate tokens and cost
-            usage = result.get("usage", {})
-            input_tokens = usage.get("input_tokens", 0)
-            output_tokens = usage.get("output_tokens", 0)
-            tokens_used = input_tokens + output_tokens
-
-            # Anthropic pricing (approximate)
-            cost = (input_tokens * 0.003 / 1000) + (output_tokens * 0.015 / 1000)
-
-            tool_response = LLMToolResponse(
-                text=text_response,
-                tool_calls=tool_calls if tool_calls else None,
-                execution_plan=None,
-                model_used=model,
-                provider=ModelProvider.ANTHROPIC,
-                tier=tier,
-                tokens_used=tokens_used,
-                cost=cost,
-                response_time=(datetime.utcnow() - start_time).total_seconds(),
-                metadata={
-                    "tools_provided": len(tools),
-                    "tool_choice": tool_choice,
-                    "native_tools": True,
-                    "tool_calls_count": len(tool_calls),
-                    "stop_reason": result.get("stop_reason")
-                }
-            )
-
-            await self.cost_tracker.track_usage(
-                user_id=user_settings.user_id if user_settings else "anonymous",
-                model=model,
-                provider=ModelProvider.ANTHROPIC,
-                tokens=tokens_used,
-                cost=cost
-            )
-
-            return tool_response
-
-        except Exception as e:
-            logger.error(f"Anthropic native tool calling failed: {e}")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-    async def _generate_with_openai_native_tools(
-        self,
-        prompt: Optional[str],
-        tools: List[ToolDefinition],
-        model: str,
-        tier: ModelTier,
-        temperature: float,
-        max_tokens: Optional[int],
-        system_prompt: str,
-        tool_choice: str,
-        start_time: datetime,
-        user_settings: Optional[UserLLMSettings],
-        messages: Optional[List[Dict[str, Any]]] = None
-    ) -> LLMToolResponse:
-        """Generate using OpenAI's native tool calling API."""
-        import json
-        import uuid
-        import os
-
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            logger.warning("OPENAI_API_KEY not set, falling back to text-based")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-        # Convert tools to OpenAI format
-        openai_tools = []
+        # Convert ToolDefinition objects to JSON Schema dicts
+        tool_dicts = []
         for tool in tools:
-            openai_tool = {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters if tool.parameters else {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            }
-            openai_tools.append(openai_tool)
-
-        # Build messages — use provided or construct from prompt
-        if messages:
-            api_messages = []
-            for msg in messages:
-                if msg["role"] == "tool":
-                    # OpenAI format: role=tool with tool_call_id
-                    api_messages.append({
-                        "role": "tool",
-                        "tool_call_id": msg.get("tool_call_id", msg.get("tool_use_id", "")),
-                        "content": msg["content"]
-                    })
-                elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                    # OpenAI format: assistant with tool_calls array
-                    tc_list = []
-                    for tc in msg["tool_calls"]:
-                        tc_list.append({
-                            "id": tc.get("id", ""),
-                            "type": "function",
-                            "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])}
-                        })
-                    api_messages.append({
-                        "role": "assistant",
-                        "content": msg.get("content"),
-                        "tool_calls": tc_list
-                    })
-                else:
-                    api_messages.append({"role": msg["role"], "content": msg["content"]})
-        else:
-            api_messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ]
-
-        # Build request payload
-        payload = {
-            "model": model,
-            "messages": api_messages,
-            "tools": openai_tools,
-            "temperature": temperature
-        }
-
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
-
-        # Handle tool_choice
-        if tool_choice == "required":
-            payload["tool_choice"] = "required"
-        elif tool_choice == "auto":
-            payload["tool_choice"] = "auto"
-        else:
-            payload["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
-
-        logger.info(f"Calling OpenAI with native tools: {[t['function']['name'] for t in openai_tools]}")
-
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json=payload
-                )
-
-                if response.status_code != 200:
-                    logger.error(f"OpenAI error: {response.status_code} - {response.text}")
-                    raise Exception(f"OpenAI API error: {response.status_code}")
-
-                result = response.json()
-
-            # Extract tool calls from response
-            tool_calls = []
-            text_response = ""
-
-            choice = result.get("choices", [{}])[0]
-            message = choice.get("message", {})
-
-            if "tool_calls" in message and message["tool_calls"]:
-                for tc in message["tool_calls"]:
-                    function = tc.get("function", {})
-                    tool_args = function.get("arguments", "{}")
-                    if isinstance(tool_args, str):
-                        try:
-                            tool_args = json.loads(tool_args)
-                        except json.JSONDecodeError:
-                            tool_args = {}
-
-                    tool_calls.append(ToolCall(
-                        name=function.get("name"),
-                        arguments=tool_args,
-                        id=tc.get("id", str(uuid.uuid4()))
-                    ))
-                    logger.info(f"OpenAI tool call: {function.get('name')}")
-
-            if "content" in message and message["content"]:
-                text_response = message["content"]
-
-            # Calculate tokens and cost
-            usage = result.get("usage", {})
-            prompt_tokens = usage.get("prompt_tokens", 0)
-            completion_tokens = usage.get("completion_tokens", 0)
-            tokens_used = prompt_tokens + completion_tokens
-
-            # OpenAI pricing (approximate for GPT-4)
-            cost = (prompt_tokens * 0.03 / 1000) + (completion_tokens * 0.06 / 1000)
-
-            tool_response = LLMToolResponse(
-                text=text_response,
-                tool_calls=tool_calls if tool_calls else None,
-                execution_plan=None,
-                model_used=model,
-                provider=ModelProvider.OPENAI,
-                tier=tier,
-                tokens_used=tokens_used,
-                cost=cost,
-                response_time=(datetime.utcnow() - start_time).total_seconds(),
-                metadata={
-                    "tools_provided": len(tools),
-                    "tool_choice": tool_choice,
-                    "native_tools": True,
-                    "tool_calls_count": len(tool_calls),
-                    "finish_reason": choice.get("finish_reason")
-                }
-            )
-
-            await self.cost_tracker.track_usage(
-                user_id=user_settings.user_id if user_settings else "anonymous",
-                model=model,
-                provider=ModelProvider.OPENAI,
-                tokens=tokens_used,
-                cost=cost
-            )
-
-            return tool_response
-
-        except Exception as e:
-            logger.error(f"OpenAI native tool calling failed: {e}")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-    async def _generate_with_azure_native_tools(
-        self,
-        prompt: Optional[str],
-        tools: List[ToolDefinition],
-        model: str,
-        tier: ModelTier,
-        temperature: float,
-        max_tokens: Optional[int],
-        system_prompt: str,
-        tool_choice: str,
-        start_time: datetime,
-        user_settings: Optional[UserLLMSettings],
-        messages: Optional[List[Dict[str, Any]]] = None
-    ) -> LLMToolResponse:
-        """Generate using Azure OpenAI's native tool calling API."""
-        import json
-        import uuid
-        import os
-
-        api_key = os.environ.get("AZURE_OPENAI_API_KEY")
-        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT", model)
-        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
-
-        if not api_key or not endpoint:
-            logger.warning("Azure OpenAI credentials not set, falling back to text-based")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-        # Convert tools to OpenAI format (same as OpenAI)
-        azure_tools = []
-        for tool in tools:
-            azure_tool = {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters if tool.parameters else {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            }
-            azure_tools.append(azure_tool)
-
-        # Build messages — use provided or construct from prompt (same format as OpenAI)
-        if messages:
-            api_messages = []
-            for msg in messages:
-                if msg["role"] == "tool":
-                    api_messages.append({
-                        "role": "tool",
-                        "tool_call_id": msg.get("tool_call_id", msg.get("tool_use_id", "")),
-                        "content": msg["content"]
-                    })
-                elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                    tc_list = []
-                    for tc in msg["tool_calls"]:
-                        tc_list.append({
-                            "id": tc.get("id", ""),
-                            "type": "function",
-                            "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])}
-                        })
-                    api_messages.append({
-                        "role": "assistant",
-                        "content": msg.get("content"),
-                        "tool_calls": tc_list
-                    })
-                else:
-                    api_messages.append({"role": msg["role"], "content": msg["content"]})
-        else:
-            api_messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ]
-
-        payload = {
-            "messages": api_messages,
-            "tools": azure_tools,
-            "temperature": temperature
-        }
-
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
-
-        if tool_choice == "required":
-            payload["tool_choice"] = "required"
-        elif tool_choice == "auto":
-            payload["tool_choice"] = "auto"
-        else:
-            payload["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
-
-        url = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
-        logger.info(f"Calling Azure OpenAI with native tools: {[t['function']['name'] for t in azure_tools]}")
-
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    url,
-                    headers={
-                        "api-key": api_key,
-                        "Content-Type": "application/json"
-                    },
-                    json=payload
-                )
-
-                if response.status_code != 200:
-                    logger.error(f"Azure OpenAI error: {response.status_code} - {response.text}")
-                    raise Exception(f"Azure OpenAI API error: {response.status_code}")
-
-                result = response.json()
-
-            tool_calls = []
-            text_response = ""
-
-            choice = result.get("choices", [{}])[0]
-            message = choice.get("message", {})
-
-            if "tool_calls" in message and message["tool_calls"]:
-                for tc in message["tool_calls"]:
-                    function = tc.get("function", {})
-                    tool_args = function.get("arguments", "{}")
-                    if isinstance(tool_args, str):
-                        try:
-                            tool_args = json.loads(tool_args)
-                        except json.JSONDecodeError:
-                            tool_args = {}
-
-                    tool_calls.append(ToolCall(
-                        name=function.get("name"),
-                        arguments=tool_args,
-                        id=tc.get("id", str(uuid.uuid4()))
-                    ))
-                    logger.info(f"Azure tool call: {function.get('name')}")
-
-            if "content" in message and message["content"]:
-                text_response = message["content"]
-
-            usage = result.get("usage", {})
-            tokens_used = usage.get("total_tokens", 0)
-            cost = tokens_used * 0.00003  # Approximate Azure pricing
-
-            tool_response = LLMToolResponse(
-                text=text_response,
-                tool_calls=tool_calls if tool_calls else None,
-                execution_plan=None,
-                model_used=model,
-                provider=ModelProvider.AZURE_OPENAI,
-                tier=tier,
-                tokens_used=tokens_used,
-                cost=cost,
-                response_time=(datetime.utcnow() - start_time).total_seconds(),
-                metadata={
-                    "tools_provided": len(tools),
-                    "tool_choice": tool_choice,
-                    "native_tools": True,
-                    "tool_calls_count": len(tool_calls)
-                }
-            )
-
-            await self.cost_tracker.track_usage(
-                user_id=user_settings.user_id if user_settings else "anonymous",
-                model=model,
-                provider=ModelProvider.AZURE_OPENAI,
-                tokens=tokens_used,
-                cost=cost
-            )
-
-            return tool_response
-
-        except Exception as e:
-            logger.error(f"Azure OpenAI native tool calling failed: {e}")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-    async def _generate_with_gemini_native_tools(
-        self,
-        prompt: str,
-        tools: List[ToolDefinition],
-        model: str,
-        tier: ModelTier,
-        temperature: float,
-        max_tokens: Optional[int],
-        system_prompt: str,
-        tool_choice: str,
-        start_time: datetime,
-        user_settings: Optional[UserLLMSettings],
-        messages: Optional[List[Dict[str, Any]]] = None
-    ) -> LLMToolResponse:
-        """Generate using Google Gemini's native tool calling API."""
-        import json
-        import uuid
-        import os
-
-        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            logger.warning("GOOGLE_API_KEY not set, falling back to text-based")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-        # Convert tools to Gemini format
-        gemini_functions = []
-        for tool in tools:
-            gemini_func = {
+            tool_dicts.append({
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.parameters if tool.parameters else {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
+                    "type": "object", "properties": {}, "required": []
                 }
-            }
-            gemini_functions.append(gemini_func)
+            })
 
-        # Build contents from messages or single prompt
-        effective_system_prompt = system_prompt
-        if messages:
-            contents = []
-            for msg in messages:
-                if msg["role"] == "system":
-                    # System messages handled via systemInstruction
-                    effective_system_prompt = msg["content"]
-                elif msg["role"] == "user":
-                    contents.append({"role": "user", "parts": [{"text": msg["content"]}]})
-                elif msg["role"] == "assistant":
-                    parts = []
-                    if msg.get("content"):
-                        parts.append({"text": msg["content"]})
-                    if msg.get("tool_calls"):
-                        for tc in msg["tool_calls"]:
-                            parts.append({"functionCall": {
-                                "name": tc["name"],
-                                "args": tc.get("arguments", {})
-                            }})
-                    if parts:
-                        contents.append({"role": "model", "parts": parts})
-                elif msg["role"] == "tool":
-                    contents.append({"role": "user", "parts": [{"functionResponse": {
-                        "name": msg.get("name", "tool"),
-                        "response": {"result": msg["content"]}
-                    }}]})
-        else:
-            contents = [{"role": "user", "parts": [{"text": prompt}]}]
+        return ToolCallingRequest(
+            messages=api_messages,
+            tools=tool_dicts,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+            tool_choice=tool_choice,
+        )
 
-        # Build request payload
-        payload = {
-            "contents": contents,
-            "tools": [{"function_declarations": gemini_functions}],
-            "generationConfig": {
-                "temperature": temperature
-            }
-        }
-
-        if effective_system_prompt:
-            payload["systemInstruction"] = {"parts": [{"text": effective_system_prompt}]}
-
-        if max_tokens:
-            payload["generationConfig"]["maxOutputTokens"] = max_tokens
-
-        # Handle tool_choice
-        if tool_choice == "required":
-            payload["toolConfig"] = {"functionCallingConfig": {"mode": "ANY"}}
-        elif tool_choice != "auto":
-            payload["toolConfig"] = {
-                "functionCallingConfig": {
-                    "mode": "ANY",
-                    "allowedFunctionNames": [tool_choice]
-                }
-            }
-
-        # Use environment default model if not a Gemini model
-        # This centralizes model selection via DEFAULT_LLM_MODEL env var
-        default_model = get_environment_default_model()
-        # Strip -vertex suffix for direct Gemini API (it uses model names like gemini-2.0-flash, not gemini-2.0-flash-vertex)
-        gemini_default = default_model.replace('-vertex', '') if 'vertex' in default_model.lower() else default_model
-        gemini_model = model if "gemini" in model.lower() else gemini_default
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={api_key}"
-
-        logger.info(f"Calling Gemini with native tools: {[f['name'] for f in gemini_functions]}")
-
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    url,
-                    headers={"Content-Type": "application/json"},
-                    json=payload
-                )
-
-                if response.status_code != 200:
-                    logger.error(f"Gemini error: {response.status_code} - {response.text}")
-                    raise Exception(f"Gemini API error: {response.status_code}")
-
-                result = response.json()
-
-            tool_calls = []
-            text_response = ""
-
-            candidates = result.get("candidates", [])
-            if candidates:
-                content = candidates[0].get("content", {})
-                for part in content.get("parts", []):
-                    if "functionCall" in part:
-                        fc = part["functionCall"]
-                        tool_calls.append(ToolCall(
-                            name=fc.get("name"),
-                            arguments=fc.get("args", {}),
-                            id=str(uuid.uuid4())
-                        ))
-                        logger.info(f"Gemini tool call: {fc.get('name')}")
-                    elif "text" in part:
-                        text_response += part["text"]
-
-            # Gemini usage metadata
-            usage_metadata = result.get("usageMetadata", {})
-            tokens_used = usage_metadata.get("totalTokenCount", 0)
-            cost = tokens_used * 0.00001  # Approximate Gemini pricing
-
-            tool_response = LLMToolResponse(
-                text=text_response,
-                tool_calls=tool_calls if tool_calls else None,
-                execution_plan=None,
-                model_used=gemini_model,
-                provider=ModelProvider.GEMINI,
-                tier=tier,
-                tokens_used=tokens_used,
-                cost=cost,
-                response_time=(datetime.utcnow() - start_time).total_seconds(),
-                metadata={
-                    "tools_provided": len(tools),
-                    "tool_choice": tool_choice,
-                    "native_tools": True,
-                    "tool_calls_count": len(tool_calls)
-                }
-            )
-
-            await self.cost_tracker.track_usage(
-                user_id=user_settings.user_id if user_settings else "anonymous",
-                model=gemini_model,
-                provider=ModelProvider.GEMINI,
-                tokens=tokens_used,
-                cost=cost
-            )
-
-            return tool_response
-
-        except Exception as e:
-            logger.error(f"Gemini native tool calling failed: {e}")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-    async def _generate_with_vertex_native_tools(
+    async def _to_llm_tool_response(
         self,
-        prompt: str,
-        tools: List[ToolDefinition],
-        model: str,
+        response: 'ToolCallingResponse',
+        provider: ModelProvider,
         tier: ModelTier,
-        temperature: float,
-        max_tokens: Optional[int],
-        system_prompt: str,
-        tool_choice: str,
         start_time: datetime,
-        user_settings: Optional[UserLLMSettings],
-        messages: Optional[List[Dict[str, Any]]] = None
-    ) -> LLMToolResponse:
-        """Generate using Google Vertex AI's native tool calling API."""
-        import json
-        import uuid
-        import os
-
-        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("VERTEX_AI_PROJECT") or os.environ.get("VERTEX_PROJECT_ID")
-        location = os.environ.get("VERTEX_AI_LOCATION") or os.environ.get("VERTEX_LOCATION", "us-central1")
-
-        if not project_id:
-            logger.warning("GOOGLE_CLOUD_PROJECT not set, falling back to text-based")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-        try:
-            from google.cloud import aiplatform
-            from vertexai.generative_models import GenerativeModel, Tool, FunctionDeclaration, Content, Part, ToolConfig
-        except ImportError:
-            logger.warning("google-cloud-aiplatform not installed, falling back to text-based")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-        # Initialize Vertex AI
-        aiplatform.init(project=project_id, location=location)
-
-        # Convert tools to Vertex AI format
-        vertex_functions = []
-        for tool in tools:
-            func_decl = FunctionDeclaration(
-                name=tool.name,
-                description=tool.description,
-                parameters=tool.parameters if tool.parameters else {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            )
-            vertex_functions.append(func_decl)
-
-        vertex_tools = Tool(function_declarations=vertex_functions)
-
-        # Use gemini model on Vertex - get from centralized environment config
-        default_model = get_environment_default_model()
-        # Strip -vertex suffix for Vertex SDK (the SDK uses model names like "gemini-2.0-flash" not "gemini-2.0-flash-vertex")
-        vertex_default = default_model.replace('-vertex', '') if 'vertex' in default_model.lower() else default_model
-        # Also strip -vertex from the provided model name
-        stripped_model = model.replace('-vertex', '') if 'vertex' in model.lower() else model
-        vertex_model = stripped_model if "gemini" in model.lower() else vertex_default
-
-        logger.info(f"Calling Vertex AI with native tools: {[t.name for t in tools]}")
-
-        try:
-            # Extract system prompt from messages if present
-            effective_system_prompt = system_prompt
-            if messages:
-                for msg in messages:
-                    if msg["role"] == "system":
-                        effective_system_prompt = msg["content"]
-                        break
-
-            model_instance = GenerativeModel(
-                vertex_model,
-                tools=[vertex_tools],
-                system_instruction=effective_system_prompt if effective_system_prompt else None
-            )
-
-            generation_config = {
-                "temperature": temperature,
-                "max_output_tokens": max_tokens or 4096
-            }
-
-            # Build tool_config from tool_choice
-            tool_config = None
-            if tool_choice == "required":
-                tool_config = ToolConfig(
-                    function_calling_config=ToolConfig.FunctionCallingConfig(
-                        mode=ToolConfig.FunctionCallingConfig.Mode.ANY
-                    )
-                )
-            elif tool_choice and tool_choice != "auto":
-                # Specific tool name
-                tool_config = ToolConfig(
-                    function_calling_config=ToolConfig.FunctionCallingConfig(
-                        mode=ToolConfig.FunctionCallingConfig.Mode.ANY,
-                        allowed_function_names=[tool_choice]
-                    )
-                )
-
-            # Build contents from messages or single prompt
-            if messages:
-                contents = []
-                for msg in messages:
-                    if msg["role"] == "system":
-                        continue  # Handled via system_instruction
-                    elif msg["role"] == "user":
-                        contents.append(Content(role="user", parts=[Part.from_text(msg["content"])]))
-                    elif msg["role"] == "assistant":
-                        parts = []
-                        if msg.get("content"):
-                            parts.append(Part.from_text(msg["content"]))
-                        if msg.get("tool_calls"):
-                            for tc in msg["tool_calls"]:
-                                parts.append(Part.from_dict({
-                                    "function_call": {
-                                        "name": tc["name"],
-                                        "args": tc.get("arguments", {})
-                                    }
-                                }))
-                        if parts:
-                            contents.append(Content(role="model", parts=parts))
-                    elif msg["role"] == "tool":
-                        contents.append(Content(role="user", parts=[
-                            Part.from_function_response(
-                                name=msg.get("name", "tool"),
-                                response={"result": msg["content"]}
-                            )
-                        ]))
-                response = model_instance.generate_content(
-                    contents, generation_config=generation_config, tool_config=tool_config
-                )
-            else:
-                response = model_instance.generate_content(
-                    prompt, generation_config=generation_config, tool_config=tool_config
-                )
-
-            tool_calls = []
-            text_response = ""
-
-            # Extract tool calls from response
-            for candidate in response.candidates:
-                for part in candidate.content.parts:
-                    if hasattr(part, 'function_call') and part.function_call:
-                        fc = part.function_call
-                        tool_calls.append(ToolCall(
-                            name=fc.name,
-                            arguments=dict(fc.args) if fc.args else {},
-                            id=str(uuid.uuid4())
-                        ))
-                        logger.info(f"Vertex AI tool call: {fc.name}")
-                    elif hasattr(part, 'text') and part.text:
-                        text_response += part.text
-
-            # Get usage metadata
-            usage = response.usage_metadata if hasattr(response, 'usage_metadata') else None
-            tokens_used = 0
-            if usage:
-                tokens_used = (usage.prompt_token_count or 0) + (usage.candidates_token_count or 0)
-
-            cost = tokens_used * 0.000015  # Approximate Vertex AI pricing
-
-            tool_response = LLMToolResponse(
-                text=text_response,
-                tool_calls=tool_calls if tool_calls else None,
-                execution_plan=None,
-                model_used=vertex_model,
-                provider=ModelProvider.VERTEX_AI,
-                tier=tier,
-                tokens_used=tokens_used,
-                cost=cost,
-                response_time=(datetime.utcnow() - start_time).total_seconds(),
-                metadata={
-                    "tools_provided": len(tools),
-                    "tool_choice": tool_choice,
-                    "native_tools": True,
-                    "tool_calls_count": len(tool_calls)
-                }
-            )
-
-            await self.cost_tracker.track_usage(
-                user_id=user_settings.user_id if user_settings else "anonymous",
-                model=vertex_model,
-                provider=ModelProvider.VERTEX_AI,
-                tokens=tokens_used,
-                cost=cost
-            )
-
-            return tool_response
-
-        except Exception as e:
-            logger.error(f"Vertex AI native tool calling failed: {e}")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-    async def _generate_with_bedrock_native_tools(
-        self,
-        prompt: Optional[str],
         tools: List[ToolDefinition],
-        model: str,
-        tier: ModelTier,
-        temperature: float,
-        max_tokens: Optional[int],
-        system_prompt: str,
         tool_choice: str,
-        start_time: datetime,
-        user_settings: Optional[UserLLMSettings],
-        messages: Optional[List[Dict[str, Any]]] = None
-    ) -> LLMToolResponse:
-        """Generate using AWS Bedrock's native tool calling API (Claude on Bedrock)."""
-        import json
-        import uuid
-        import os
-
-        # Check for AWS credentials
-        aws_region = os.environ.get("AWS_REGION", "us-east-1")
-
-        try:
-            import boto3
-        except ImportError:
-            logger.warning("boto3 not installed, falling back to text-based")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-        # Convert tools to Anthropic format (Bedrock uses Claude's format)
-        bedrock_tools = []
-        for tool in tools:
-            bedrock_tool = {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.parameters if tool.parameters else {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-            bedrock_tools.append(bedrock_tool)
-
-        # Build messages — Bedrock uses Anthropic format (separate system field)
-        if messages:
-            api_messages = []
-            system_text = system_prompt
-            for msg in messages:
-                if msg["role"] == "system":
-                    system_text = msg["content"]
-                elif msg["role"] == "tool":
-                    api_messages.append({
-                        "role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": msg.get("tool_use_id", ""), "content": msg["content"]}]
-                    })
-                elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                    content = []
-                    if msg.get("content"):
-                        content.append({"type": "text", "text": msg["content"]})
-                    for tc in msg["tool_calls"]:
-                        content.append({"type": "tool_use", "id": tc.get("id", ""), "name": tc["name"], "input": tc["arguments"]})
-                    api_messages.append({"role": "assistant", "content": content})
-                else:
-                    api_messages.append({"role": msg["role"], "content": msg["content"]})
-        else:
-            api_messages = [{"role": "user", "content": prompt}]
-            system_text = system_prompt
-
-        # Build request body (Anthropic format for Bedrock)
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens or 4096,
-            "system": system_text,
-            "messages": api_messages,
-            "tools": bedrock_tools if tools else [],
-            "temperature": temperature
-        }
-
-        if tool_choice == "required":
-            body["tool_choice"] = {"type": "any"}
-        elif tool_choice != "auto":
-            body["tool_choice"] = {"type": "tool", "name": tool_choice}
-
-        # Use Claude on Bedrock
-        bedrock_model = model if "anthropic" in model.lower() else "anthropic.claude-3-sonnet-20240229-v1:0"
-
-        logger.info(f"Calling Bedrock with native tools: {[t['name'] for t in bedrock_tools]}")
-
-        try:
-            client = boto3.client("bedrock-runtime", region_name=aws_region)
-
-            response = client.invoke_model(
-                modelId=bedrock_model,
-                contentType="application/json",
-                accept="application/json",
-                body=json.dumps(body)
-            )
-
-            result = json.loads(response["body"].read())
-
-            tool_calls = []
-            text_response = ""
-
-            for content_block in result.get("content", []):
-                if content_block.get("type") == "tool_use":
-                    tool_calls.append(ToolCall(
-                        name=content_block.get("name"),
-                        arguments=content_block.get("input", {}),
-                        id=content_block.get("id", str(uuid.uuid4()))
-                    ))
-                    logger.info(f"Bedrock tool call: {content_block.get('name')}")
-                elif content_block.get("type") == "text":
-                    text_response += content_block.get("text", "")
-
-            usage = result.get("usage", {})
-            tokens_used = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
-            cost = tokens_used * 0.00003  # Approximate Bedrock pricing
-
-            tool_response = LLMToolResponse(
-                text=text_response,
-                tool_calls=tool_calls if tool_calls else None,
-                execution_plan=None,
-                model_used=bedrock_model,
-                provider=ModelProvider.AWS_BEDROCK,
-                tier=tier,
-                tokens_used=tokens_used,
-                cost=cost,
-                response_time=(datetime.utcnow() - start_time).total_seconds(),
-                metadata={
-                    "tools_provided": len(tools),
-                    "tool_choice": tool_choice,
-                    "native_tools": True,
-                    "tool_calls_count": len(tool_calls)
-                }
-            )
-
-            await self.cost_tracker.track_usage(
-                user_id=user_settings.user_id if user_settings else "anonymous",
-                model=bedrock_model,
-                provider=ModelProvider.AWS_BEDROCK,
-                tokens=tokens_used,
-                cost=cost
-            )
-
-            return tool_response
-
-        except Exception as e:
-            logger.error(f"Bedrock native tool calling failed: {e}")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-    async def _generate_with_cohere_native_tools(
-        self,
-        prompt: str,
-        tools: List[ToolDefinition],
         model: str,
-        tier: ModelTier,
-        temperature: float,
-        max_tokens: Optional[int],
-        system_prompt: str,
-        tool_choice: str,
-        start_time: datetime,
         user_settings: Optional[UserLLMSettings],
-        messages: Optional[List[Dict[str, Any]]] = None
     ) -> LLMToolResponse:
-        """Generate using Cohere's native tool calling API."""
-        import json
-        import uuid
-        import os
-
-        api_key = os.environ.get("COHERE_API_KEY")
-        if not api_key:
-            logger.warning("COHERE_API_KEY not set, falling back to text-based")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
-
-        # Convert tools to Cohere format
-        cohere_tools = []
-        for tool in tools:
-            # Convert JSON schema to Cohere's parameter_definitions format
-            params = tool.parameters or {"type": "object", "properties": {}, "required": []}
-            parameter_definitions = {}
-
-            for prop_name, prop_schema in params.get("properties", {}).items():
-                parameter_definitions[prop_name] = {
-                    "description": prop_schema.get("description", ""),
-                    "type": prop_schema.get("type", "string"),
-                    "required": prop_name in params.get("required", [])
-                }
-
-            cohere_tool = {
-                "name": tool.name,
-                "description": tool.description,
-                "parameter_definitions": parameter_definitions
-            }
-            cohere_tools.append(cohere_tool)
-
-        # Build request payload
-        payload = {
-            "model": model if model else "command-r-plus",
-            "message": prompt or "",
-            "tools": cohere_tools,
-            "temperature": temperature
-        }
-
-        if system_prompt:
-            payload["preamble"] = system_prompt
-
-        # Build chat_history from messages for multi-turn conversations
-        if messages:
-            chat_history = []
-            last_user_message = prompt or ""
-            for msg in messages:
-                if msg["role"] == "system":
-                    payload["preamble"] = msg["content"]
-                elif msg["role"] == "user":
-                    last_user_message = msg["content"]
-                elif msg["role"] == "assistant":
-                    chat_history.append({
-                        "role": "CHATBOT",
-                        "message": msg.get("content") or ""
-                    })
-                elif msg["role"] == "tool":
-                    chat_history.append({
-                        "role": "TOOL",
-                        "tool_results": [{
-                            "call": {"name": msg.get("name", "tool")},
-                            "outputs": [{"result": msg["content"]}]
-                        }]
-                    })
-            # Cohere uses message for the current turn, chat_history for prior turns
-            payload["message"] = last_user_message
-            if chat_history:
-                payload["chat_history"] = chat_history
-
-        # Reinforce tool use requirement via preamble (Cohere v1 has no tool_choice param)
-        # Applied after messages processing so system message overrides don't erase it
-        if tool_choice == "required":
-            tool_instruction = "\n\nIMPORTANT: You MUST use at least one of the available tools to answer. Do not respond with text alone."
-            payload["preamble"] = (payload.get("preamble") or "") + tool_instruction
-
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
-
-        logger.info(f"Calling Cohere with native tools: {[t['name'] for t in cohere_tools]}")
-
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api.cohere.ai/v1/chat",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json=payload
+        """Convert a ToolCallingResponse to LLMToolResponse and track usage."""
+        # Convert tool_calls dicts to ToolCall objects
+        tool_calls = None
+        if response.tool_calls:
+            tool_calls = [
+                ToolCall(
+                    name=tc["name"],
+                    arguments=tc.get("arguments", {}),
+                    id=tc.get("id")
                 )
+                for tc in response.tool_calls
+            ]
 
-                if response.status_code != 200:
-                    logger.error(f"Cohere error: {response.status_code} - {response.text}")
-                    raise Exception(f"Cohere API error: {response.status_code}")
+        tool_response = LLMToolResponse(
+            text=response.text,
+            tool_calls=tool_calls if tool_calls else None,
+            execution_plan=None,
+            model_used=model,
+            provider=provider,
+            tier=tier,
+            tokens_used=response.tokens_used,
+            cost=response.cost,
+            response_time=(datetime.utcnow() - start_time).total_seconds(),
+            metadata={
+                "tools_provided": len(tools),
+                "tool_choice": tool_choice,
+                "native_tools": True,
+                "tool_calls_count": len(response.tool_calls),
+                "stop_reason": response.stop_reason,
+                "cached_tokens": response.cached_tokens,
+            }
+        )
 
-                result = response.json()
+        await self.cost_tracker.track_usage(
+            user_id=user_settings.user_id if user_settings else "anonymous",
+            model=model,
+            provider=provider,
+            tokens=response.tokens_used,
+            cost=response.cost
+        )
 
-            tool_calls = []
-            text_response = result.get("text", "")
-
-            # Extract tool calls from Cohere response
-            for tc in result.get("tool_calls", []):
-                tool_calls.append(ToolCall(
-                    name=tc.get("name"),
-                    arguments=tc.get("parameters", {}),
-                    id=tc.get("id", str(uuid.uuid4()))
-                ))
-                logger.info(f"Cohere tool call: {tc.get('name')}")
-
-            # Token usage
-            meta = result.get("meta", {})
-            tokens = meta.get("tokens", {})
-            tokens_used = tokens.get("input_tokens", 0) + tokens.get("output_tokens", 0)
-            cost = tokens_used * 0.000015  # Approximate Cohere pricing
-
-            tool_response = LLMToolResponse(
-                text=text_response,
-                tool_calls=tool_calls if tool_calls else None,
-                execution_plan=None,
-                model_used=model or "command-r-plus",
-                provider=ModelProvider.COHERE,
-                tier=tier,
-                tokens_used=tokens_used,
-                cost=cost,
-                response_time=(datetime.utcnow() - start_time).total_seconds(),
-                metadata={
-                    "tools_provided": len(tools),
-                    "tool_choice": tool_choice,
-                    "native_tools": True,
-                    "tool_calls_count": len(tool_calls),
-                    "finish_reason": result.get("finish_reason")
-                }
-            )
-
-            await self.cost_tracker.track_usage(
-                user_id=user_settings.user_id if user_settings else "anonymous",
-                model=model or "command-r-plus",
-                provider=ModelProvider.COHERE,
-                tokens=tokens_used,
-                cost=cost
-            )
-
-            return tool_response
-
-        except Exception as e:
-            logger.error(f"Cohere native tool calling failed: {e}")
-            return await self._generate_with_text_tools(
-                prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model, task_type="tool_use", temperature=temperature,
-                max_tokens=max_tokens, system_prompt=system_prompt,
-                tool_choice=tool_choice, context=None, start_time=start_time
-            )
+        return tool_response
 
     async def _generate_with_text_tools(
         self,

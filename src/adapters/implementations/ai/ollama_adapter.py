@@ -12,13 +12,14 @@ from adapters.models import (
     AdapterCapability, AdapterRequest, AdapterResponse,
     AdapterConfig, AdapterCategory
 )
+from adapters.tool_calling import ToolCallingMixin, ToolCallingRequest, ToolCallingResponse
 from events.event_bus import event_bus
 
 
 logger = logging.getLogger(__name__)
 
 
-class OllamaAdapter(BaseAdapter):
+class OllamaAdapter(BaseAdapter, ToolCallingMixin):
     """Adapter for Ollama local LLM API."""
     
     def __init__(self, config: AdapterConfig):
@@ -676,10 +677,10 @@ class OllamaAdapter(BaseAdapter):
     async def _perform_health_check_response(self, request: AdapterRequest) -> AdapterResponse:
         """Perform health check and return as response."""
         start_time = datetime.utcnow()
-        
+
         health_status = await self._perform_health_check()
         duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-        
+
         return AdapterResponse(
             request_id=request.id,
             capability=request.capability,
@@ -688,3 +689,123 @@ class OllamaAdapter(BaseAdapter):
             duration_ms=duration_ms,
             cost=0.0
         )
+
+    # ── ToolCallingMixin implementation ──────────────────────────────────
+
+    async def chat_with_tools(self, request: ToolCallingRequest) -> ToolCallingResponse:
+        """Execute tool-augmented chat via Ollama's native tool calling API."""
+        import uuid
+
+        # Convert tools to Ollama format (OpenAI-style)
+        ollama_tools = []
+        for tool in request.tools:
+            ollama_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.get("name", tool.get("function", {}).get("name", "")),
+                    "description": tool.get("description", tool.get("function", {}).get("description", "")),
+                    "parameters": tool.get("parameters", tool.get("function", {}).get("parameters", {
+                        "type": "object", "properties": {}, "required": []
+                    }))
+                }
+            })
+
+        # Build messages array
+        api_messages = []
+        for msg in request.messages:
+            if msg["role"] == "tool":
+                api_messages.append({
+                    "role": "tool",
+                    "content": msg["content"]
+                })
+            elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                api_messages.append({
+                    "role": "assistant",
+                    "content": msg.get("content") or "",
+                    "tool_calls": [
+                        {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                        for tc in msg["tool_calls"]
+                    ]
+                })
+            else:
+                api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # If no system message in messages and system_prompt provided, prepend it
+        has_system = any(m["role"] == "system" for m in api_messages)
+        if not has_system and request.system_prompt:
+            api_messages.insert(0, {"role": "system", "content": request.system_prompt})
+
+        payload = {
+            "model": request.model,
+            "messages": api_messages,
+            "tools": ollama_tools,
+            "stream": False,
+            "options": {
+                "temperature": request.temperature,
+                "num_predict": request.max_tokens or 2000
+            }
+        }
+
+        logger.info(f"Ollama chat_with_tools: {[t['function']['name'] for t in ollama_tools]}")
+
+        # Use existing client or create a temporary one
+        client = self.client
+        if client is None:
+            client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+            )
+
+        try:
+            response = await client.post("/api/chat", json=payload)
+
+            if response.status_code != 200:
+                logger.error(f"Ollama tool calling error: {response.status_code} - {response.text}")
+                raise Exception(f"Ollama API error: {response.status_code}")
+
+            result = response.json()
+
+            # Extract tool calls
+            tool_calls = []
+            text_response = ""
+            message = result.get("message", {})
+
+            if "tool_calls" in message and message["tool_calls"]:
+                for tc in message["tool_calls"]:
+                    function = tc.get("function", {})
+                    tool_name = function.get("name")
+                    tool_args = function.get("arguments", {})
+
+                    if isinstance(tool_args, str):
+                        try:
+                            tool_args = json.loads(tool_args)
+                        except json.JSONDecodeError:
+                            tool_args = {}
+
+                    if tool_name:
+                        tool_calls.append({
+                            "name": tool_name,
+                            "arguments": tool_args,
+                            "id": str(uuid.uuid4())
+                        })
+                        logger.info(f"Ollama tool call: {tool_name}")
+
+            if "content" in message:
+                text_response = message["content"] or ""
+
+            input_tokens = result.get("prompt_eval_count", 0)
+            output_tokens = result.get("eval_count", 0)
+
+            return ToolCallingResponse(
+                text=text_response,
+                tool_calls=tool_calls,
+                tokens_used=input_tokens + output_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost=0.0,  # Local models are free
+                stop_reason=result.get("done_reason"),
+            )
+        finally:
+            # Only close if we created a temporary client
+            if client is not self.client:
+                await client.aclose()

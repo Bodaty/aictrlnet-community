@@ -892,116 +892,103 @@ Return ONLY the JSON array, no other text or explanation."""
         """
         Generate using existing adapters from Community/Business/Enterprise editions.
 
-        This method directly imports and uses the adapters that are already
-        implemented in the various editions, avoiding code duplication.
+        Uses _AdapterProvider from service.py for cached adapter instances,
+        avoiding the create/initialize/shutdown cycle on every call.
+        Falls back to direct adapter instantiation for providers not in _AdapterProvider.
         """
-        adapter = None
         try:
-            # Import the appropriate adapter based on provider
-            if provider == ModelProvider.ANTHROPIC:
-                from adapters.implementations.ai.claude_adapter import ClaudeAdapter
-                adapter = ClaudeAdapter()
-            elif provider == ModelProvider.OPENAI:
-                from adapters.implementations.ai.openai_adapter import OpenAIAdapter
-                adapter = OpenAIAdapter()
-            elif provider == ModelProvider.GEMINI:
-                # Business edition adapter
-                from adapters.implementations.ai.gemini_adapter import GeminiAdapter
-                adapter = GeminiAdapter()
-            elif provider == ModelProvider.HUGGINGFACE:
-                from adapters.implementations.ai.huggingface_adapter import HuggingFaceAdapter
-                adapter = HuggingFaceAdapter()
-            elif provider == ModelProvider.BEDROCK:
-                # Business edition adapter
-                from adapters.implementations.ai.bedrock_adapter import BedrockAdapter
-                adapter = BedrockAdapter()
-            elif provider == ModelProvider.AZURE_OPENAI:
-                # Business edition adapter
-                from adapters.implementations.ai.azure_openai_adapter import AzureOpenAIAdapter
-                adapter = AzureOpenAIAdapter()
-            elif provider == ModelProvider.VERTEX_AI:
-                # Business edition adapter - use system_mode for platform operations
-                # This uses GCP default credentials automatically (hidden from customers)
-                # Customers must provide their own credentials for workflow AI nodes
-                from business_adapters.implementations.ai.vertex_ai_adapter import VertexAIAdapter
-                adapter = VertexAIAdapter(system_mode=True)
-            elif provider == ModelProvider.COHERE:
-                # Enterprise edition adapter
-                from adapters.implementations.ai.cohere_adapter import CohereAdapter
-                adapter = CohereAdapter()
+            # Try the cached adapter pool first
+            from llm.service import _AdapterProvider
+            adapter = await _AdapterProvider.get(provider)
+
+            if adapter is None:
+                # For HuggingFace or other providers without ToolCallingMixin,
+                # fall back to direct instantiation
+                adapter = await self._create_direct_adapter(provider)
+                if adapter is None:
+                    raise ValueError(f"No adapter available for {provider.value}")
+
+                # Direct adapters need explicit init and cleanup
+                await adapter.initialize()
+                try:
+                    return await self._execute_adapter_chat(adapter, request, model, provider)
+                finally:
+                    try:
+                        await adapter.shutdown()
+                    except Exception as cleanup_error:
+                        logger.warning(f"Error cleaning up {provider.value} adapter: {cleanup_error}")
             else:
-                raise ValueError(f"Unknown provider: {provider}")
+                # Cached adapter — no init/shutdown needed
+                return await self._execute_adapter_chat(adapter, request, model, provider)
 
-            # CRITICAL: Initialize the adapter before use
-            # This sets up credentials (for Vertex AI), creates HTTP clients, etc.
-            logger.info(f"Initializing {provider.value} adapter...")
-            await adapter.initialize()
-            logger.info(f"{provider.value} adapter initialized successfully")
-            
-            # Build adapter request
-            from adapters.models import AdapterRequest
-            
-            messages = []
-            if request.system_prompt:
-                messages.append({"role": "system", "content": request.system_prompt})
-            messages.append({"role": "user", "content": request.prompt})
-            
-            adapter_request = AdapterRequest(
-                capability="chat",  # Use "chat" - matches adapter capability
-                parameters={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": request.max_tokens or 1024,
-                    "temperature": request.temperature or 0.7,
-                    "stream": request.stream or False
-                }
-            )
-            
-            # Execute request
-            response = await adapter.execute(adapter_request)
-            
-            # Extract text from response - handle different adapter formats
-            text = ""
-            if response.data:
-                if "choices" in response.data:
-                    # OpenAI/Claude format
-                    text = response.data["choices"][0]["message"]["content"]
-                elif "response" in response.data:
-                    # Vertex AI/Gemini format - returns data["response"]
-                    text = response.data["response"]
-                elif "text" in response.data:
-                    # Generic format
-                    text = response.data["text"]
-                elif "content" in response.data:
-                    # Anthropic format
-                    text = response.data["content"]
-
-            logger.info(f"Extracted {len(text)} chars from {provider.value} response")
-            
-            return LLMResponse(
-                text=text,
-                model_used=model,
-                provider=provider,
-                tier=classify_model_tier(model),
-                tokens_used=response.tokens_used or 0,
-                cost=response.cost or 0.0,
-                metadata=response.metadata or {}
-            )
-            
         except ImportError as e:
             logger.error(f"Could not import adapter for {provider.value}: {e}")
-            # Don't fallback to Ollama on import errors - it won't be available on Cloud Run
             raise ValueError(f"Adapter for {provider.value} not available: {e}")
         except Exception as e:
             logger.error(f"{provider.value} generation failed: {e}")
             raise
-        finally:
-            # Clean up adapter if it was initialized
-            if adapter is not None:
-                try:
-                    await adapter.shutdown()
-                except Exception as cleanup_error:
-                    logger.warning(f"Error cleaning up {provider.value} adapter: {cleanup_error}")
+
+    async def _create_direct_adapter(self, provider: ModelProvider):
+        """Create a one-off adapter for providers not in _AdapterProvider."""
+        try:
+            if provider == ModelProvider.HUGGINGFACE:
+                from adapters.implementations.ai.huggingface_adapter import HuggingFaceAdapter
+                from adapters.models import AdapterConfig, AdapterCategory
+                return HuggingFaceAdapter(AdapterConfig(
+                    name="huggingface-gen",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    credentials={},
+                ))
+        except ImportError:
+            pass
+        return None
+
+    async def _execute_adapter_chat(self, adapter, request: LLMRequest, model: str, provider: ModelProvider) -> LLMResponse:
+        """Execute a chat request through an adapter and return LLMResponse."""
+        from adapters.models import AdapterRequest
+
+        messages = []
+        if request.system_prompt:
+            messages.append({"role": "system", "content": request.system_prompt})
+        messages.append({"role": "user", "content": request.prompt})
+
+        adapter_request = AdapterRequest(
+            capability="chat",
+            parameters={
+                "model": model,
+                "messages": messages,
+                "max_tokens": request.max_tokens or 1024,
+                "temperature": request.temperature or 0.7,
+                "stream": request.stream or False
+            }
+        )
+
+        response = await adapter.execute(adapter_request)
+
+        # Extract text from response - handle different adapter formats
+        text = ""
+        if response.data:
+            if "choices" in response.data:
+                text = response.data["choices"][0]["message"]["content"]
+            elif "response" in response.data:
+                text = response.data["response"]
+            elif "text" in response.data:
+                text = response.data["text"]
+            elif "content" in response.data:
+                text = response.data["content"]
+
+        logger.info(f"Extracted {len(text)} chars from {provider.value} response")
+
+        return LLMResponse(
+            text=text,
+            model_used=model,
+            provider=provider,
+            tier=classify_model_tier(model),
+            tokens_used=response.tokens_used or 0,
+            cost=response.cost or 0.0,
+            metadata=response.metadata or {}
+        )
     
     async def get_available_models(self) -> List[ModelInfo]:
         """Get all available models across all providers."""
