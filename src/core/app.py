@@ -130,8 +130,9 @@ class AICtrlNetApp:
                 # These are special adapters that connect to our internal services
                 critical_adapters = []
                 
-                # LLM Service Adapter (only if we have the class registered)
-                if "llm-service" in adapter_registry.get_available_adapter_classes():
+                # LLM Service Adapter (only if URL configured and class registered)
+                llm_service_url = getattr(self.settings, 'LLM_SERVICE_URL', None)
+                if llm_service_url and "llm-service" in adapter_registry.get_available_adapter_classes():
                     try:
                         from adapters.models import AdapterConfig
                         llm_config = AdapterConfig(
@@ -141,7 +142,7 @@ class AICtrlNetApp:
                             description="Internal LLM Service Adapter",
                             required_edition="community",
                             parameters={
-                                "service_url": "http://localhost:8000",
+                                "service_url": llm_service_url,
                                 "timeout": 30,
                                 "api_key": "dev-token-for-testing"
                             }

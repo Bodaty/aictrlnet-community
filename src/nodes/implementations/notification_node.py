@@ -6,7 +6,7 @@ from datetime import datetime
 import json
 
 from ..base_node import BaseNode
-from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from ..models import NodeConfig
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterRequest
@@ -30,74 +30,49 @@ class NotificationNode(BaseNode):
     - In-app notifications
     """
     
-    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> NodeExecutionResult:
-        """Execute the notification node."""
-        start_time = datetime.utcnow()
-        
-        try:
-            # Get notification configuration
-            channel = self.config.parameters.get("channel", "email")
-            recipients = self._get_recipients(input_data)
-            message = self._build_message(input_data, context)
-            
-            # Send notification based on channel
-            if channel == "email":
-                output_data = await self._send_email(recipients, message)
-            elif channel == "sms":
-                output_data = await self._send_sms(recipients, message)
-            elif channel == "slack":
-                output_data = await self._send_slack(recipients, message)
-            elif channel == "discord":
-                output_data = await self._send_discord(recipients, message)
-            elif channel == "whatsapp":
-                output_data = await self._send_whatsapp(recipients, message)
-            elif channel == "telegram":
-                output_data = await self._send_telegram(recipients, message)
-            elif channel == "webhook":
-                output_data = await self._send_webhook(recipients, message)
-            elif channel == "push":
-                output_data = await self._send_push(recipients, message)
-            elif channel == "in_app":
-                output_data = await self._send_in_app(recipients, message)
-            elif channel == "multi":
-                output_data = await self._send_multi_channel(recipients, message)
-            else:
-                raise ValueError(f"Unsupported notification channel: {channel}")
-            
-            # Calculate duration
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            # Publish completion event
-            await event_bus.publish(
-                "node.executed",
-                {
-                    "node_id": self.config.id,
-                    "node_type": "notification",
-                    "channel": channel,
-                    "recipients_count": len(recipients),
-                    "duration_ms": duration_ms
-                }
-            )
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.COMPLETED,
-                output_data=output_data,
-                duration_ms=duration_ms,
-                events_published=1,
-                adapters_called=output_data.get("adapters_used", [])
-            )
-            
-        except Exception as e:
-            logger.error(f"Notification node {self.config.id} failed: {str(e)}")
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.FAILED,
-                error=str(e),
-                duration_ms=duration_ms
-            )
+    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute the notification node. Returns output dict for BaseNode.run() to wrap."""
+        # Get notification configuration
+        channel = self.config.parameters.get("channel", "email")
+        recipients = self._get_recipients(input_data)
+        message = self._build_message(input_data, context)
+
+        # Send notification based on channel
+        if channel == "email":
+            output_data = await self._send_email(recipients, message)
+        elif channel == "sms":
+            output_data = await self._send_sms(recipients, message)
+        elif channel == "slack":
+            output_data = await self._send_slack(recipients, message)
+        elif channel == "discord":
+            output_data = await self._send_discord(recipients, message)
+        elif channel == "whatsapp":
+            output_data = await self._send_whatsapp(recipients, message)
+        elif channel == "telegram":
+            output_data = await self._send_telegram(recipients, message)
+        elif channel == "webhook":
+            output_data = await self._send_webhook(recipients, message)
+        elif channel == "push":
+            output_data = await self._send_push(recipients, message)
+        elif channel == "in_app":
+            output_data = await self._send_in_app(recipients, message)
+        elif channel == "multi":
+            output_data = await self._send_multi_channel(recipients, message)
+        else:
+            raise ValueError(f"Unsupported notification channel: {channel}")
+
+        # Publish completion event
+        await event_bus.publish(
+            "node.executed",
+            {
+                "node_id": self.config.id,
+                "node_type": "notification",
+                "channel": channel,
+                "recipients_count": len(recipients)
+            }
+        )
+
+        return output_data
     
     def _get_recipients(self, input_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Get notification recipients."""

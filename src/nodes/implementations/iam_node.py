@@ -7,7 +7,7 @@ import json
 import uuid
 
 from ..base_node import BaseNode
-from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from ..models import NodeConfig
 from events.event_bus import event_bus
 
 
@@ -25,71 +25,47 @@ class IAMNode(BaseNode):
     - Request-response patterns
     """
     
-    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> NodeExecutionResult:
-        """Execute the IAM node."""
-        start_time = datetime.utcnow()
-        
+    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute the IAM node. Returns output dict for BaseNode.run() to wrap."""
         # Get IAM service from context or create new instance
         from services.iam import IAMService
         db = context.get('db')
         if not db:
             raise ValueError("Database session not provided in context")
         iam_service = IAMService(db)
-        
-        try:
-            # Get IAM operation type
-            operation = self.config.parameters.get("operation", "send_message")
-            
-            # Execute based on operation type
-            if operation == "send_message":
-                output_data = await self._send_message(input_data, context)
-            elif operation == "broadcast":
-                output_data = await self._broadcast_message(input_data, context)
-            elif operation == "request":
-                output_data = await self._send_request(input_data, context)
-            elif operation == "discover_agents":
-                output_data = await self._discover_agents()
-            elif operation == "get_agent_info":
-                output_data = await self._get_agent_info(input_data)
-            elif operation == "subscribe":
-                output_data = await self._subscribe_to_topic(input_data, context)
-            elif operation == "publish":
-                output_data = await self._publish_to_topic(input_data, context)
-            else:
-                raise ValueError(f"Unsupported IAM operation: {operation}")
-            
-            # Calculate duration
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            # Publish completion event
-            await event_bus.publish(
-                "node.executed",
-                {
-                    "node_id": self.config.id,
-                    "node_type": "iam",
-                    "operation": operation,
-                    "duration_ms": duration_ms
-                }
-            )
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.COMPLETED,
-                output_data=output_data,
-                duration_ms=duration_ms,
-                events_published=1
-            )
-            
-        except Exception as e:
-            logger.error(f"IAM node {self.config.id} failed: {str(e)}")
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.FAILED,
-                error=str(e),
-                duration_ms=duration_ms
-            )
+
+        # Get IAM operation type
+        operation = self.config.parameters.get("operation", "send_message")
+
+        # Execute based on operation type
+        if operation == "send_message":
+            output_data = await self._send_message(input_data, context)
+        elif operation == "broadcast":
+            output_data = await self._broadcast_message(input_data, context)
+        elif operation == "request":
+            output_data = await self._send_request(input_data, context)
+        elif operation == "discover_agents":
+            output_data = await self._discover_agents()
+        elif operation == "get_agent_info":
+            output_data = await self._get_agent_info(input_data)
+        elif operation == "subscribe":
+            output_data = await self._subscribe_to_topic(input_data, context)
+        elif operation == "publish":
+            output_data = await self._publish_to_topic(input_data, context)
+        else:
+            raise ValueError(f"Unsupported IAM operation: {operation}")
+
+        # Publish completion event
+        await event_bus.publish(
+            "node.executed",
+            {
+                "node_id": self.config.id,
+                "node_type": "iam",
+                "operation": operation
+            }
+        )
+
+        return output_data
     
     async def _send_message(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Send a message to a specific agent."""

@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 from datetime import datetime
 
 from ..base_node import BaseNode
-from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from ..models import NodeConfig
 from adapters.mcp.dispatcher import MCPDispatcher
 from events.event_bus import event_bus
 
@@ -63,77 +63,34 @@ class MCPClientNode(BaseNode):
             logger.error(f"Failed to initialize MCP Client Node: {str(e)}")
             raise
     
-    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> NodeExecutionResult:
-        """Execute MCP client request."""
-        start_time = datetime.utcnow()
-        
+    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute MCP client request. Returns output dict for BaseNode.run() to wrap."""
         # Ensure initialization
         if not self._initialized:
             await self.initialize(context)
-        
-        try:
-            # Get operation type and timeout
-            operation = self.config.parameters.get("operation", "message")
-            timeout = self.config.parameters.get("timeout", 30)
-            
-            # Build MCP task based on operation
-            mcp_task = self._build_mcp_task(operation, input_data)
-            
-            # Dispatch task to external MCP server
-            result = await self.mcp_dispatcher.dispatch_task(mcp_task, timeout=timeout)
-            
-            # Calculate duration
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            # Publish execution event
-            await event_bus.publish(
-                "node.mcp_client.executed",
-                {
-                    "node_id": self.config.id,
-                    "server_name": self.config.parameters.get("server_name"),
-                    "operation": operation,
-                    "duration_ms": duration_ms,
-                    "success": True
-                }
-            )
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.COMPLETED,
-                output_data=result,
-                metadata={
-                    "mcp_server": self.config.parameters.get("server_name"),
-                    "operation": operation,
-                    "duration_ms": duration_ms
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"MCP Client Node {self.config.id} failed: {str(e)}")
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            # Publish failure event
-            await event_bus.publish(
-                "node.mcp_client.failed",
-                {
-                    "node_id": self.config.id,
-                    "server_name": self.config.parameters.get("server_name"),
-                    "operation": self.config.parameters.get("operation"),
-                    "error": str(e),
-                    "duration_ms": duration_ms
-                }
-            )
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.FAILED,
-                error=str(e),
-                metadata={
-                    "mcp_server": self.config.parameters.get("server_name"),
-                    "operation": self.config.parameters.get("operation"),
-                    "duration_ms": duration_ms
-                }
-            )
+
+        # Get operation type and timeout
+        operation = self.config.parameters.get("operation", "message")
+        timeout = self.config.parameters.get("timeout", 30)
+
+        # Build MCP task based on operation
+        mcp_task = self._build_mcp_task(operation, input_data)
+
+        # Dispatch task to external MCP server
+        result = await self.mcp_dispatcher.dispatch_task(mcp_task, timeout=timeout)
+
+        # Publish execution event
+        await event_bus.publish(
+            "node.mcp_client.executed",
+            {
+                "node_id": self.config.id,
+                "server_name": self.config.parameters.get("server_name"),
+                "operation": operation,
+                "success": True
+            }
+        )
+
+        return result
     
     def _build_mcp_task(self, operation: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Build MCP task structure based on operation type."""

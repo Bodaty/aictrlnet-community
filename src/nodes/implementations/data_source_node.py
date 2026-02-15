@@ -10,7 +10,7 @@ import httpx
 from pathlib import Path
 
 from ..base_node import BaseNode
-from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from ..models import NodeConfig
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 
@@ -28,65 +28,41 @@ class DataSourceNode(BaseNode):
     - Static data
     """
     
-    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> NodeExecutionResult:
-        """Execute the data source node."""
-        start_time = datetime.utcnow()
-        
-        try:
-            # Get source configuration
-            source_type = self.config.parameters.get("source_type", "static")
-            
-            # Load data based on source type
-            if source_type == "file":
-                output_data = await self._load_from_file()
-            elif source_type == "api":
-                output_data = await self._load_from_api()
-            elif source_type == "database":
-                output_data = await self._load_from_database()
-            elif source_type == "static":
-                output_data = await self._load_static_data()
-            elif source_type == "input":
-                output_data = await self._load_from_input(input_data)
-            else:
-                raise ValueError(f"Unsupported source type: {source_type}")
-            
-            # Apply any transformations
-            if self.config.parameters.get("transform"):
-                output_data = await self._apply_transformations(output_data)
-            
-            # Calculate duration
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            # Publish completion event
-            await event_bus.publish(
-                "node.executed",
-                {
-                    "node_id": self.config.id,
-                    "node_type": "dataSource",
-                    "source_type": source_type,
-                    "records_loaded": len(output_data.get("data", [])) if isinstance(output_data.get("data"), list) else 1,
-                    "duration_ms": duration_ms
-                }
-            )
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.COMPLETED,
-                output_data=output_data,
-                duration_ms=duration_ms,
-                events_published=1
-            )
-            
-        except Exception as e:
-            logger.error(f"DataSource node {self.config.id} failed: {str(e)}")
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.FAILED,
-                error=str(e),
-                duration_ms=duration_ms
-            )
+    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute the data source node. Returns output dict for BaseNode.run() to wrap."""
+        # Get source configuration
+        source_type = self.config.parameters.get("source_type", "static")
+
+        # Load data based on source type
+        if source_type == "file":
+            output_data = await self._load_from_file()
+        elif source_type == "api":
+            output_data = await self._load_from_api()
+        elif source_type == "database":
+            output_data = await self._load_from_database()
+        elif source_type == "static":
+            output_data = await self._load_static_data()
+        elif source_type == "input":
+            output_data = await self._load_from_input(input_data)
+        else:
+            raise ValueError(f"Unsupported source type: {source_type}")
+
+        # Apply any transformations
+        if self.config.parameters.get("transform"):
+            output_data = await self._apply_transformations(output_data)
+
+        # Publish completion event
+        await event_bus.publish(
+            "node.executed",
+            {
+                "node_id": self.config.id,
+                "node_type": "dataSource",
+                "source_type": source_type,
+                "records_loaded": len(output_data.get("data", [])) if isinstance(output_data.get("data"), list) else 1
+            }
+        )
+
+        return output_data
     
     async def _load_from_file(self) -> Dict[str, Any]:
         """Load data from a file."""

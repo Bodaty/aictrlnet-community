@@ -8,7 +8,7 @@ import httpx
 from urllib.parse import urljoin
 
 from ..base_node import BaseNode
-from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from ..models import NodeConfig
 from events.event_bus import event_bus
 
 
@@ -26,69 +26,45 @@ class APICallNode(BaseNode):
     - Response validation
     """
     
-    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> NodeExecutionResult:
-        """Execute the API call node."""
-        start_time = datetime.utcnow()
-        
-        try:
-            # Get API configuration
-            url = self._build_url(input_data)
-            method = self.config.parameters.get("method", "GET").upper()
-            headers = self._build_headers(input_data)
-            body = self._build_body(input_data)
-            params = self._build_params(input_data)
-            
-            # Make API call
-            response_data = await self._make_request(
-                method=method,
-                url=url,
-                headers=headers,
-                body=body,
-                params=params
-            )
-            
-            # Transform response if needed
-            if self.config.parameters.get("response_transform"):
-                response_data = await self._transform_response(response_data)
-            
-            # Validate response if schema provided
-            if self.config.parameters.get("response_schema"):
-                await self._validate_response(response_data)
-            
-            # Calculate duration
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            # Publish completion event
-            await event_bus.publish(
-                "node.executed",
-                {
-                    "node_id": self.config.id,
-                    "node_type": "apiCall",
-                    "method": method,
-                    "url": url,
-                    "status_code": response_data.get("status_code", 200),
-                    "duration_ms": duration_ms
-                }
-            )
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.COMPLETED,
-                output_data=response_data,
-                duration_ms=duration_ms,
-                events_published=1
-            )
-            
-        except Exception as e:
-            logger.error(f"API Call node {self.config.id} failed: {str(e)}")
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.FAILED,
-                error=str(e),
-                duration_ms=duration_ms
-            )
+    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute the API call node. Returns output dict for BaseNode.run() to wrap."""
+        # Get API configuration
+        url = self._build_url(input_data)
+        method = self.config.parameters.get("method", "GET").upper()
+        headers = self._build_headers(input_data)
+        body = self._build_body(input_data)
+        params = self._build_params(input_data)
+
+        # Make API call
+        response_data = await self._make_request(
+            method=method,
+            url=url,
+            headers=headers,
+            body=body,
+            params=params
+        )
+
+        # Transform response if needed
+        if self.config.parameters.get("response_transform"):
+            response_data = await self._transform_response(response_data)
+
+        # Validate response if schema provided
+        if self.config.parameters.get("response_schema"):
+            await self._validate_response(response_data)
+
+        # Publish completion event
+        await event_bus.publish(
+            "node.executed",
+            {
+                "node_id": self.config.id,
+                "node_type": "apiCall",
+                "method": method,
+                "url": url,
+                "status_code": response_data.get("status_code", 200)
+            }
+        )
+
+        return response_data
     
     def _build_url(self, input_data: Dict[str, Any]) -> str:
         """Build the request URL."""

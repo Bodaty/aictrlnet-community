@@ -11,6 +11,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import IntegrityError
 
 from models.workflow_templates import (
     WorkflowTemplate,
@@ -1210,10 +1211,15 @@ class WorkflowTemplateService:
                                 usage_count=0
                             )
                             
-                            db.add(template)
-                            count += 1
-                            logger.info(f"Initialized Community template: {template.name}")
-                            
+                            try:
+                                async with db.begin_nested():
+                                    db.add(template)
+                                    await db.flush()
+                                count += 1
+                                logger.info(f"Initialized Community template: {template.name}")
+                            except IntegrityError:
+                                logger.debug(f"Template already exists (constraint): {template_data.get('name')}")
+
                         except json.JSONDecodeError as e:
                             error_msg = f"JSON syntax error in {template_file}: Line {e.lineno}, Col {e.colno}: {e.msg}"
                             logger.error(error_msg)

@@ -90,32 +90,17 @@ class WorkflowService:
         workflow_id: str,
         input_data: Dict[str, Any] = None
     ) -> WorkflowExecution:
-        """Execute a workflow."""
-        workflow = await self.get_workflow(workflow_id)
-        if not workflow:
-            raise NotFoundError(f"Workflow {workflow_id} not found")
-        
-        execution = WorkflowExecution(
-            id=str(uuid.uuid4()),
+        """Execute a workflow via the real execution engine."""
+        from services.workflow_execution import WorkflowExecutionService
+        exec_service = WorkflowExecutionService(self.db)
+        execution = await exec_service.create_execution(
             workflow_id=workflow_id,
-            status="running",
             input_data=input_data or {},
-            started_at=datetime.utcnow()
+            triggered_by="api"
         )
-        
-        self.db.add(execution)
-        await self.db.commit()
-        await self.db.refresh(execution)
-        
-        # Mock execution completion
-        execution.status = "completed"
-        execution.completed_at = datetime.utcnow()
-        execution.output_data = {"result": "Workflow executed successfully"}
-        
-        await self.db.commit()
-        
-        logger.info(f"Executed workflow {workflow_id}, execution {execution.id}")
-        return execution
+        result = await exec_service.start_execution(execution.id)
+        logger.info(f"Executed workflow {workflow_id}, execution {result.id}")
+        return result
     
     async def get_workflow_executions(
         self,

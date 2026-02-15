@@ -6,7 +6,7 @@ from datetime import datetime
 import json
 
 from ..base_node import BaseNode
-from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from ..models import NodeConfig
 from events.event_bus import event_bus
 
 
@@ -24,73 +24,49 @@ class MCPNode(BaseNode):
     - Cross-model communication
     """
     
-    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> NodeExecutionResult:
-        """Execute the MCP node."""
-        start_time = datetime.utcnow()
-        
+    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute the MCP node. Returns output dict for BaseNode.run() to wrap."""
         # Get MCP service from context or create new instance
         from services.mcp_service import MCPService
         db = context.get('db')
         if not db:
             raise ValueError("Database session not provided in context")
         mcp_service = MCPService(db)
-        
-        try:
-            # Get MCP operation type
-            operation = self.config.parameters.get("operation", "execute_tool")
-            
-            # Execute based on operation type
-            if operation == "execute_tool":
-                output_data = await self._execute_tool(input_data)
-            elif operation == "discover_tools":
-                output_data = await self._discover_tools()
-            elif operation == "get_resource":
-                output_data = await self._get_resource(input_data)
-            elif operation == "list_resources":
-                output_data = await self._list_resources()
-            elif operation == "get_prompt":
-                output_data = await self._get_prompt(input_data)
-            elif operation == "list_prompts":
-                output_data = await self._list_prompts()
-            elif operation == "aggregate_context":
-                output_data = await self._aggregate_context(input_data)
-            elif operation == "call_server":
-                output_data = await self._call_server(input_data)
-            else:
-                raise ValueError(f"Unsupported MCP operation: {operation}")
-            
-            # Calculate duration
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            # Publish completion event
-            await event_bus.publish(
-                "node.executed",
-                {
-                    "node_id": self.config.id,
-                    "node_type": "mcp",
-                    "operation": operation,
-                    "duration_ms": duration_ms
-                }
-            )
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.COMPLETED,
-                output_data=output_data,
-                duration_ms=duration_ms,
-                events_published=1
-            )
-            
-        except Exception as e:
-            logger.error(f"MCP node {self.config.id} failed: {str(e)}")
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.FAILED,
-                error=str(e),
-                duration_ms=duration_ms
-            )
+
+        # Get MCP operation type
+        operation = self.config.parameters.get("operation", "execute_tool")
+
+        # Execute based on operation type
+        if operation == "execute_tool":
+            output_data = await self._execute_tool(input_data)
+        elif operation == "discover_tools":
+            output_data = await self._discover_tools()
+        elif operation == "get_resource":
+            output_data = await self._get_resource(input_data)
+        elif operation == "list_resources":
+            output_data = await self._list_resources()
+        elif operation == "get_prompt":
+            output_data = await self._get_prompt(input_data)
+        elif operation == "list_prompts":
+            output_data = await self._list_prompts()
+        elif operation == "aggregate_context":
+            output_data = await self._aggregate_context(input_data)
+        elif operation == "call_server":
+            output_data = await self._call_server(input_data)
+        else:
+            raise ValueError(f"Unsupported MCP operation: {operation}")
+
+        # Publish completion event
+        await event_bus.publish(
+            "node.executed",
+            {
+                "node_id": self.config.id,
+                "node_type": "mcp",
+                "operation": operation
+            }
+        )
+
+        return output_data
     
     async def _execute_tool(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute an MCP tool."""

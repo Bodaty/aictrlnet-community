@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from ..base_node import BaseNode
-from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from ..models import NodeConfig
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterRequest
@@ -28,96 +28,67 @@ class AIProcessNode(BaseNode):
     - Q&A
     """
     
-    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> NodeExecutionResult:
-        """Execute the AI process node."""
-        start_time = datetime.utcnow()
-        
-        try:
-            # Get AI processing parameters
-            ai_task = self.config.parameters.get("ai_task", "generate")
-            adapter_id = self.config.parameters.get("adapter_id")
-            
-            if not adapter_id:
-                # Try to auto-select adapter based on task
-                adapter_id = await self._auto_select_adapter(ai_task)
-            
-            # Get AI adapter class from registry
-            adapter_class = adapter_registry.get_adapter_class(adapter_id)
-            if not adapter_class:
-                raise ValueError(f"AI adapter {adapter_id} not found")
-            
-            # Create adapter instance
-            adapter = adapter_class({})
-            
-            # Process based on task type
-            if ai_task == "generate":
-                output_data = await self._process_generation(adapter, input_data)
-            elif ai_task == "sentiment":
-                output_data = await self._process_sentiment(adapter, input_data)
-            elif ai_task == "classify":
-                output_data = await self._process_classification(adapter, input_data)
-            elif ai_task == "summarize":
-                output_data = await self._process_summarization(adapter, input_data)
-            elif ai_task == "extract_entities":
-                output_data = await self._process_entity_extraction(adapter, input_data)
-            elif ai_task == "embeddings":
-                output_data = await self._process_embeddings(adapter, input_data)
-            elif ai_task == "translate":
-                output_data = await self._process_translation(adapter, input_data)
-            elif ai_task == "qa":
-                output_data = await self._process_qa(adapter, input_data)
-            elif ai_task == "custom":
-                output_data = await self._process_custom(adapter, input_data)
-            else:
-                raise ValueError(f"Unsupported AI task: {ai_task}")
-            
-            # Calculate duration
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            # Publish completion event
-            await event_bus.publish(
-                "node.executed",
-                {
-                    "node_id": self.config.id,
-                    "node_type": "aiProcess",
-                    "ai_task": ai_task,
-                    "adapter_id": adapter_id,
-                    "duration_ms": duration_ms
-                }
-            )
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.COMPLETED,
-                output_data=output_data,
-                duration_ms=duration_ms,
-                events_published=1,
-                adapters_called=[adapter_id]
-            )
-            
-        except Exception as e:
-            logger.error(f"AI Process node {self.config.id} failed: {str(e)}")
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.FAILED,
-                error=str(e),
-                duration_ms=duration_ms
-            )
+    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute the AI process node. Returns output dict for BaseNode.run() to wrap."""
+        # Get AI processing parameters
+        ai_task = self.config.parameters.get("ai_task", "generate")
+        adapter_id = self.config.parameters.get("adapter_id")
+
+        if not adapter_id:
+            # Try to auto-select adapter based on task
+            adapter_id = await self._auto_select_adapter(ai_task)
+
+        # Get AI adapter class from registry
+        adapter_class = adapter_registry.get_adapter_class(adapter_id)
+        if not adapter_class:
+            raise ValueError(f"AI adapter {adapter_id} not found")
+
+        # Create adapter instance
+        adapter = adapter_class({})
+
+        # Process based on task type
+        if ai_task == "generate":
+            output_data = await self._process_generation(adapter, input_data)
+        elif ai_task == "sentiment":
+            output_data = await self._process_sentiment(adapter, input_data)
+        elif ai_task == "classify":
+            output_data = await self._process_classification(adapter, input_data)
+        elif ai_task == "summarize":
+            output_data = await self._process_summarization(adapter, input_data)
+        elif ai_task == "extract_entities":
+            output_data = await self._process_entity_extraction(adapter, input_data)
+        elif ai_task == "embeddings":
+            output_data = await self._process_embeddings(adapter, input_data)
+        elif ai_task == "translate":
+            output_data = await self._process_translation(adapter, input_data)
+        elif ai_task == "qa":
+            output_data = await self._process_qa(adapter, input_data)
+        elif ai_task == "custom":
+            output_data = await self._process_custom(adapter, input_data)
+        else:
+            raise ValueError(f"Unsupported AI task: {ai_task}")
+
+        # Publish completion event
+        await event_bus.publish(
+            "node.executed",
+            {
+                "node_id": self.config.id,
+                "node_type": "aiProcess",
+                "ai_task": ai_task,
+                "adapter_id": adapter_id
+            }
+        )
+
+        return output_data
     
     async def _auto_select_adapter(self, ai_task: str) -> str:
         """Auto-select appropriate adapter based on task."""
-        # Get available AI adapters from registry
-        available_adapters = [
-            adapter_type for adapter_type, adapter_class 
-            in adapter_registry._adapter_classes.items()
-            if adapter_registry._adapter_metadata.get(adapter_type, {}).get('category') == 'ai'
-        ]
-        
+        # Get available adapter types from registry (keyed by type name like "ollama", "openai")
+        available_adapters = list(adapter_registry._adapter_classes.keys())
+
         if not available_adapters:
             raise ValueError("No AI adapters available")
-        
+
         # Prefer certain adapters for specific tasks
         task_preferences = {
             "generate": ["openai", "claude", "gemini", "ollama"],
@@ -129,16 +100,16 @@ class AIProcessNode(BaseNode):
             "translate": ["openai", "gemini", "huggingface"],
             "qa": ["openai", "claude", "gemini"]
         }
-        
+
         preferences = task_preferences.get(ai_task, ["openai", "claude"])
-        
+
         # Find first available preferred adapter
         for pref in preferences:
             if pref in available_adapters:
                 return pref
-        
+
         # Return first available adapter
-        return list(available_adapters.keys())[0]
+        return available_adapters[0]
     
     async def _process_generation(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process text generation task."""

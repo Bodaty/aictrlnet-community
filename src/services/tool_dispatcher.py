@@ -864,10 +864,12 @@ class ToolDispatcher:
             from services.workflow_service import WorkflowService
             from services.task_service import TaskService
             from services.nlp import NLPService
+            from services.workflow_execution import WorkflowExecutionService
 
             self._services['workflow_service'] = WorkflowService(self.db)
             self._services['task_service'] = TaskService(self.db)
             self._services['nlp_service'] = NLPService(self.db)
+            self._services['workflow_execution_service'] = WorkflowExecutionService(self.db)
 
             # Optional services (may not exist in all configurations)
             try:
@@ -1441,25 +1443,27 @@ class ToolDispatcher:
             return ToolResult(success=False, error=str(e))
 
     async def _execute_workflow(self, args: Dict, user_id: str) -> ToolResult:
-        """Execute a workflow."""
-        workflow_service = self._services.get('workflow_service')
-        if not workflow_service:
-            return ToolResult(success=False, error="Workflow service not available")
+        """Execute a workflow using the real execution engine."""
+        workflow_exec_service = self._services.get('workflow_execution_service')
+        if not workflow_exec_service:
+            return ToolResult(success=False, error="Workflow execution service not available")
 
         try:
-            execution = await workflow_service.execute_workflow(
+            execution = await workflow_exec_service.create_execution(
                 workflow_id=args['workflow_id'],
-                user_id=user_id,
-                inputs=args.get('inputs', {}),
-                async_execution=args.get('async_execution', True)
+                input_data=args.get('inputs', {}),
+                triggered_by="conversation",
+                trigger_metadata={"user_id": user_id}
             )
+
+            started = await workflow_exec_service.start_execution(execution.id)
 
             return ToolResult(
                 success=True,
                 data={
-                    "execution_id": str(execution.id),
-                    "status": execution.status,
-                    "message": f"Workflow execution started"
+                    "execution_id": str(started.id),
+                    "status": started.status,
+                    "message": "Workflow execution started"
                 }
             )
         except Exception as e:

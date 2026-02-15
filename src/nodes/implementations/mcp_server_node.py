@@ -7,7 +7,7 @@ from datetime import datetime
 import uuid
 
 from ..base_node import BaseNode
-from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from ..models import NodeConfig
 from events.event_bus import event_bus
 from core.cache import get_cache
 
@@ -102,78 +102,34 @@ class MCPServerNode(BaseNode):
             logger.error(f"Failed to initialize MCP Server Node: {str(e)}")
             raise
     
-    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> NodeExecutionResult:
-        """Execute MCP server node - wait for external requests."""
-        start_time = datetime.utcnow()
-        
+    async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute MCP server node. Returns output dict for BaseNode.run() to wrap."""
         if not self._active:
             await self.initialize(context)
-        
+
+        mode = self.config.parameters.get("mode", "single")
+        timeout = self.config.parameters.get("timeout", 300)
+
         try:
-            mode = self.config.parameters.get("mode", "single")
-            timeout = self.config.parameters.get("timeout", 300)
-            
             if mode == "single":
-                # Wait for a single request
                 result = await self._process_single_request(timeout, context)
-                
             elif mode == "continuous":
-                # Process multiple requests
                 max_requests = self.config.parameters.get("max_requests", 10)
                 result = await self._process_continuous_requests(timeout, max_requests, context)
-                
             elif mode == "webhook":
-                # Register webhook and return immediately
                 result = await self._register_webhook(context)
-                
             else:
                 raise ValueError(f"Invalid mode: {mode}")
-            
-            # Calculate duration
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.COMPLETED,
-                output_data=result,
-                metadata={
-                    "endpoint_id": self.endpoint_id,
-                    "mode": mode,
-                    "duration_ms": duration_ms
-                }
-            )
-            
+
+            return result
+
         except asyncio.TimeoutError:
             # Timeout is not necessarily an error for server nodes
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.COMPLETED,
-                output_data={
-                    "status": "timeout",
-                    "message": "No requests received within timeout period",
-                    "requests_processed": 0
-                },
-                metadata={
-                    "endpoint_id": self.endpoint_id,
-                    "duration_ms": duration_ms
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"MCP Server Node {self.config.id} failed: {str(e)}")
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            return NodeExecutionResult(
-                node_instance_id=self.config.id,
-                status=NodeStatus.FAILED,
-                error=str(e),
-                metadata={
-                    "endpoint_id": self.endpoint_id,
-                    "duration_ms": duration_ms
-                }
-            )
+            return {
+                "status": "timeout",
+                "message": "No requests received within timeout period",
+                "requests_processed": 0
+            }
     
     async def _process_single_request(
         self,
