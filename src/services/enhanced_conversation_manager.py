@@ -1280,6 +1280,58 @@ Response (just the sentence, no quotes):"""
         return cleaned if cleaned else text
 
     # =========================================================================
+    # Tool pruning for Ollama compatibility
+    # =========================================================================
+
+    _ALWAYS_INCLUDE_TOOLS = {
+        'search_api_capabilities', 'get_help', 'get_system_status',
+        'list_api_endpoints', 'list_integrations',
+    }
+
+    def _prune_tools_for_ollama(self, tools: list, user_message: str, max_tools: int = 30) -> list:
+        """Prune tools to stay within Ollama's native tool calling limit (~35).
+
+        Uses keyword overlap scoring to select the most relevant tools.
+        """
+        import re
+
+        if len(tools) <= max_tools:
+            return tools
+
+        cleaned = re.sub(r'[^\w\s]', '', user_message.lower())
+        query_words = set(cleaned.split()) - {'the', 'a', 'an', 'is', 'are', 'to', 'for', 'and', 'or', 'my', 'me', 'i', 'can', 'you', 'what', 'how', 'do', 'this', 'that', 'with', 'in', 'on', 'of'}
+
+        scored = []
+        for tool in tools:
+            if tool.name in self._ALWAYS_INCLUDE_TOOLS:
+                scored.append((tool, 200))
+                continue
+
+            score = 0.0
+            # Category match
+            tool_category = getattr(tool, 'category', None) or ''
+            if tool_category:
+                cat_words = set(tool_category.replace('_', ' ').split())
+                if query_words & cat_words:
+                    score += 50
+
+            # Tool name keyword overlap (3x weight)
+            tool_words = set(tool.name.replace('_', ' ').lower().split()) - {'get', 'list', 'set', 'create', 'update', 'delete'}
+            score += len(query_words & tool_words) * 3
+
+            # Description keyword overlap
+            if tool.description:
+                desc_words = set(tool.description.lower().split())
+                score += len(query_words & desc_words)
+
+            scored.append((tool, score))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        selected = [t for t, _ in scored[:max_tools]]
+        logger.info(f"[community-pruning] {len(tools)} → {len(selected)} tools for query")
+        return selected
+
+    # =========================================================================
     # v5 UNIFIED CONVERSATION FLOW - LLM as Brain
     # =========================================================================
 
@@ -1393,9 +1445,10 @@ Response (just the sentence, no quotes):"""
             user_id=user_id,
         )
 
-        # Get available tools
+        # Get available tools (prune if too many for Ollama's native tool calling)
         tool_dispatcher = ToolDispatcher(self.db, Edition.COMMUNITY)
-        tools = tool_dispatcher.get_available_tools()
+        all_tools = tool_dispatcher.get_available_tools()
+        tools = self._prune_tools_for_ollama(all_tools, content) if len(all_tools) > 35 else all_tools
 
         if stream:
             yield {

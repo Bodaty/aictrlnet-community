@@ -1970,7 +1970,10 @@ class ToolDispatcher:
             call_kwargs['context'] = context
 
         try:
-            result = await method(**call_kwargs)
+            if inspect.iscoroutinefunction(method):
+                result = await method(**call_kwargs)
+            else:
+                result = method(**call_kwargs)
 
             # Normalize result to ToolResult
             if isinstance(result, ToolResult):
