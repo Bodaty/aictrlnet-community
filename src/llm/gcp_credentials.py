@@ -214,8 +214,8 @@ def _get_credentials_from_env() -> Optional[Dict[str, Any]]:
     - GCP_LOCATION: Region (default: us-central1)
     """
     access_token = os.environ.get('GCP_ACCESS_TOKEN')
-    project_id = os.environ.get('GCP_PROJECT_ID') or os.environ.get('GOOGLE_CLOUD_PROJECT')
-    location = os.environ.get('GCP_LOCATION', 'us-central1')
+    project_id = os.environ.get('GCP_PROJECT_ID') or os.environ.get('GOOGLE_CLOUD_PROJECT') or os.environ.get('VERTEX_AI_PROJECT')
+    location = os.environ.get('GCP_LOCATION') or os.environ.get('VERTEX_AI_LOCATION', 'us-central1')
 
     if access_token and project_id:
         logger.info(f"Got credentials from environment: project={project_id}, location={location}")

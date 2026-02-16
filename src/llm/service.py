@@ -155,13 +155,14 @@ class _AdapterProvider:
                 project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("VERTEX_AI_PROJECT")
                 if not project_id:
                     return None
+                location = os.environ.get("VERTEX_AI_LOCATION", "us-central1")
                 return VertexAIAdapter(AdapterConfig(
                     name="vertex-ai-tools",
                     version="1.0.0",
                     category=AdapterCategory.AI,
-                    credentials={"project_id": project_id},
+                    credentials={"project_id": project_id, "location": location},
                     timeout_seconds=120.0,
-                ))
+                ), system_mode=True)
             elif provider == ModelProvider.BEDROCK:
                 try:
                     from business_adapters.implementations.ai.aws_bedrock_adapter import AWSBedrockAdapter
