@@ -312,12 +312,16 @@ class ToolDefinition(BaseModel):
     description: str
     parameters: Dict[str, Any] = {}  # JSON Schema for parameters
     editions: List[str] = ["community", "business", "enterprise"]
-    handler: str = ""  # Service method to invoke
+    handler: str = ""  # Service method to invoke (e.g. "api_key_service.list_keys")
     requires_confirmation: bool = False  # Require user confirmation before execution
     is_destructive: bool = False  # Marks destructive operations
     timeout_seconds: int = 60
     retry_count: int = 3
     fallback_tool: Optional[str] = None
+    # Category-aware pruning fields (for 170+ tool environments)
+    category: Optional[str] = None  # Primary category for pruning (e.g. "workflow", "access_control")
+    subcategory: Optional[str] = None  # Subcategory (e.g. "api_keys", "rbac")
+    tags: List[str] = []  # Searchable tags for keyword matching
 
     def to_openai_format(self) -> Dict[str, Any]:
         """Convert to OpenAI function calling format."""

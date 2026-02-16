@@ -734,7 +734,871 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["url"]
         },
         editions=["community", "business", "enterprise"],
-        handler="browser_tool.extract"
+        handler="browser_tool.extract",
+        category="system",
+        tags=["browser", "scrape", "extract", "web"]
+    ),
+
+    # =========================================================================
+    # NEW TOOLS — Tier 1, 2, 3 (Community Edition)
+    # These use dynamic routing via handler field — no stub methods needed
+    # =========================================================================
+
+    # -------------------------------------------------------------------------
+    # API Key Management (6 tools) — Tier 1
+    # -------------------------------------------------------------------------
+    "create_api_key": ToolDefinition(
+        name="create_api_key",
+        description="Create a new API key with specified permissions and expiration.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Human-readable name for the key"},
+                "permissions": {"type": "array", "items": {"type": "string"}, "description": "Permission scopes"},
+                "expires_in_days": {"type": "integer", "description": "Days until expiration (0=never)", "default": 90}
+            },
+            "required": ["name"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="api_key_service.create_key",
+        requires_confirmation=True,
+        category="access_control",
+        subcategory="api_keys",
+        tags=["api", "key", "create", "token", "authentication", "credentials"]
+    ),
+    "list_api_keys": ToolDefinition(
+        name="list_api_keys",
+        description="List all API keys for the current user/organization.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["active", "expired", "revoked", "all"], "default": "active"},
+                "limit": {"type": "integer", "default": 20}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="api_key_service.list_keys",
+        category="access_control",
+        subcategory="api_keys",
+        tags=["api", "key", "list", "token", "credentials"]
+    ),
+    "revoke_api_key": ToolDefinition(
+        name="revoke_api_key",
+        description="Revoke an API key immediately. The key will stop working.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "key_id": {"type": "string", "description": "API key ID to revoke"}
+            },
+            "required": ["key_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="api_key_service.revoke_key",
+        requires_confirmation=True,
+        is_destructive=True,
+        category="access_control",
+        subcategory="api_keys",
+        tags=["api", "key", "revoke", "delete", "security"]
+    ),
+    "rotate_api_key": ToolDefinition(
+        name="rotate_api_key",
+        description="Rotate an API key — generates a new key and revokes the old one.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "key_id": {"type": "string", "description": "API key ID to rotate"}
+            },
+            "required": ["key_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="api_key_service.rotate_key",
+        requires_confirmation=True,
+        category="access_control",
+        subcategory="api_keys",
+        tags=["api", "key", "rotate", "refresh", "security"]
+    ),
+    "get_api_key_usage": ToolDefinition(
+        name="get_api_key_usage",
+        description="Get usage statistics for a specific API key.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "key_id": {"type": "string", "description": "API key ID"},
+                "time_range": {"type": "string", "enum": ["day", "week", "month"], "default": "week"}
+            },
+            "required": ["key_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="api_key_service.get_usage",
+        category="access_control",
+        subcategory="api_keys",
+        tags=["api", "key", "usage", "statistics", "metrics"]
+    ),
+    "update_api_key": ToolDefinition(
+        name="update_api_key",
+        description="Update an API key's name, permissions, or expiration.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "key_id": {"type": "string", "description": "API key ID to update"},
+                "name": {"type": "string", "description": "New name"},
+                "permissions": {"type": "array", "items": {"type": "string"}, "description": "Updated permissions"},
+                "expires_in_days": {"type": "integer", "description": "New expiration (days from now)"}
+            },
+            "required": ["key_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="api_key_service.update_key",
+        category="access_control",
+        subcategory="api_keys",
+        tags=["api", "key", "update", "permissions"]
+    ),
+
+    # -------------------------------------------------------------------------
+    # Webhook Management (8 tools) — Tier 1
+    # -------------------------------------------------------------------------
+    "create_webhook": ToolDefinition(
+        name="create_webhook",
+        description="Create a webhook to receive notifications for specific events.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Webhook endpoint URL"},
+                "events": {"type": "array", "items": {"type": "string"}, "description": "Events to subscribe to"},
+                "name": {"type": "string", "description": "Human-readable name"},
+                "secret": {"type": "string", "description": "Shared secret for signature verification"}
+            },
+            "required": ["url", "events"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="webhook_service.create_webhook",
+        requires_confirmation=True,
+        category="integration",
+        subcategory="webhooks",
+        tags=["webhook", "create", "notification", "event", "callback"]
+    ),
+    "list_webhooks": ToolDefinition(
+        name="list_webhooks",
+        description="List all configured webhooks.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["active", "paused", "failed", "all"], "default": "all"},
+                "limit": {"type": "integer", "default": 20}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="webhook_service.list_webhooks",
+        category="integration",
+        subcategory="webhooks",
+        tags=["webhook", "list", "notification"]
+    ),
+    "update_webhook": ToolDefinition(
+        name="update_webhook",
+        description="Update a webhook's URL, events, or settings.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "webhook_id": {"type": "string", "description": "Webhook ID to update"},
+                "url": {"type": "string", "description": "New URL"},
+                "events": {"type": "array", "items": {"type": "string"}, "description": "Updated events"},
+                "enabled": {"type": "boolean", "description": "Enable/disable the webhook"}
+            },
+            "required": ["webhook_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="webhook_service.update_webhook",
+        category="integration",
+        subcategory="webhooks",
+        tags=["webhook", "update", "modify"]
+    ),
+    "delete_webhook": ToolDefinition(
+        name="delete_webhook",
+        description="Delete a webhook permanently.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "webhook_id": {"type": "string", "description": "Webhook ID to delete"}
+            },
+            "required": ["webhook_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="webhook_service.delete_webhook",
+        requires_confirmation=True,
+        is_destructive=True,
+        category="integration",
+        subcategory="webhooks",
+        tags=["webhook", "delete", "remove"]
+    ),
+    "test_webhook": ToolDefinition(
+        name="test_webhook",
+        description="Send a test payload to a webhook endpoint.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "webhook_id": {"type": "string", "description": "Webhook ID to test"},
+                "payload": {"type": "object", "description": "Custom test payload (optional)"}
+            },
+            "required": ["webhook_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="webhook_service.test_webhook",
+        category="integration",
+        subcategory="webhooks",
+        tags=["webhook", "test", "ping", "verify"]
+    ),
+    "get_webhook_deliveries": ToolDefinition(
+        name="get_webhook_deliveries",
+        description="Get recent delivery attempts for a webhook (successes and failures).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "webhook_id": {"type": "string", "description": "Webhook ID"},
+                "status": {"type": "string", "enum": ["success", "failed", "all"], "default": "all"},
+                "limit": {"type": "integer", "default": 20}
+            },
+            "required": ["webhook_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="webhook_service.get_deliveries",
+        category="integration",
+        subcategory="webhooks",
+        tags=["webhook", "delivery", "history", "log"]
+    ),
+    "retry_webhook_delivery": ToolDefinition(
+        name="retry_webhook_delivery",
+        description="Retry a failed webhook delivery.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "delivery_id": {"type": "string", "description": "Delivery ID to retry"}
+            },
+            "required": ["delivery_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="webhook_service.retry_delivery",
+        category="integration",
+        subcategory="webhooks",
+        tags=["webhook", "retry", "delivery"]
+    ),
+    "list_webhook_events": ToolDefinition(
+        name="list_webhook_events",
+        description="List all available webhook event types that can be subscribed to.",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="webhook_service.list_events",
+        category="integration",
+        subcategory="webhooks",
+        tags=["webhook", "events", "subscribe"]
+    ),
+
+    # -------------------------------------------------------------------------
+    # Usage & Quota Management (5 tools) — Tier 1
+    # -------------------------------------------------------------------------
+    "get_usage_summary": ToolDefinition(
+        name="get_usage_summary",
+        description="Get usage summary for the current billing period (API calls, storage, compute).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "time_range": {"type": "string", "enum": ["day", "week", "month", "quarter"], "default": "month"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="usage_service.get_summary",
+        category="monitoring",
+        subcategory="usage",
+        tags=["usage", "quota", "billing", "limits", "consumption"]
+    ),
+    "get_quota_status": ToolDefinition(
+        name="get_quota_status",
+        description="Check current quota usage and limits for all resource types.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "resource_type": {"type": "string", "description": "Filter by resource type (api_calls, storage, workflows, agents)"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="usage_service.get_quotas",
+        category="monitoring",
+        subcategory="usage",
+        tags=["quota", "limit", "usage", "resources", "plan"]
+    ),
+    "get_usage_breakdown": ToolDefinition(
+        name="get_usage_breakdown",
+        description="Get detailed usage breakdown by service, endpoint, or user.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "group_by": {"type": "string", "enum": ["service", "endpoint", "user", "day"], "default": "service"},
+                "time_range": {"type": "string", "enum": ["day", "week", "month"], "default": "week"},
+                "limit": {"type": "integer", "default": 20}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="usage_service.get_breakdown",
+        category="monitoring",
+        subcategory="usage",
+        tags=["usage", "breakdown", "analytics", "detail"]
+    ),
+    "set_usage_alert": ToolDefinition(
+        name="set_usage_alert",
+        description="Set an alert when usage exceeds a threshold percentage.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "resource_type": {"type": "string", "description": "Resource to monitor"},
+                "threshold_percent": {"type": "integer", "description": "Alert at this % of quota (e.g. 80)", "default": 80},
+                "notification_channel": {"type": "string", "enum": ["email", "webhook", "both"], "default": "email"}
+            },
+            "required": ["resource_type"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="usage_service.set_alert",
+        category="monitoring",
+        subcategory="usage",
+        tags=["usage", "alert", "notification", "threshold", "quota"]
+    ),
+    "get_rate_limit_status": ToolDefinition(
+        name="get_rate_limit_status",
+        description="Check current rate limiting status and remaining request allowance.",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="usage_service.get_rate_limits",
+        category="monitoring",
+        subcategory="usage",
+        tags=["rate", "limit", "throttle", "requests"]
+    ),
+
+    # -------------------------------------------------------------------------
+    # Data Quality Tools (5 tools) — Tier 2
+    # -------------------------------------------------------------------------
+    "assess_data_quality": ToolDefinition(
+        name="assess_data_quality",
+        description="Run a data quality assessment on a dataset or workflow output.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "data_source": {"type": "string", "description": "Data source identifier (workflow_id, file_id, or table name)"},
+                "dimensions": {"type": "array", "items": {"type": "string"}, "description": "Quality dimensions to check (completeness, accuracy, consistency, timeliness)"}
+            },
+            "required": ["data_source"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="data_quality_service.assess_quality",
+        category="monitoring",
+        subcategory="data_quality",
+        tags=["data", "quality", "assessment", "validation", "completeness"]
+    ),
+    "get_quality_history": ToolDefinition(
+        name="get_quality_history",
+        description="Get historical data quality scores for a data source.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "data_source": {"type": "string", "description": "Data source identifier"},
+                "time_range": {"type": "string", "enum": ["day", "week", "month"], "default": "week"}
+            },
+            "required": ["data_source"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="data_quality_service.get_history",
+        category="monitoring",
+        subcategory="data_quality",
+        tags=["data", "quality", "history", "trend"]
+    ),
+    "set_quality_rule": ToolDefinition(
+        name="set_quality_rule",
+        description="Create a data quality rule that triggers alerts on violations.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "data_source": {"type": "string", "description": "Data source to monitor"},
+                "rule_type": {"type": "string", "enum": ["null_check", "range_check", "format_check", "uniqueness", "custom"]},
+                "field": {"type": "string", "description": "Field to validate"},
+                "threshold": {"type": "number", "description": "Acceptable violation rate (0.0-1.0)", "default": 0.05}
+            },
+            "required": ["data_source", "rule_type", "field"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="data_quality_service.create_rule",
+        category="monitoring",
+        subcategory="data_quality",
+        tags=["data", "quality", "rule", "validation", "alert"]
+    ),
+    "list_quality_rules": ToolDefinition(
+        name="list_quality_rules",
+        description="List active data quality rules and their current status.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "data_source": {"type": "string", "description": "Filter by data source"},
+                "status": {"type": "string", "enum": ["passing", "failing", "all"], "default": "all"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="data_quality_service.list_rules",
+        category="monitoring",
+        subcategory="data_quality",
+        tags=["data", "quality", "rules", "list"]
+    ),
+    "get_quality_report": ToolDefinition(
+        name="get_quality_report",
+        description="Generate a comprehensive data quality report.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "data_source": {"type": "string", "description": "Data source identifier"},
+                "include_recommendations": {"type": "boolean", "default": True}
+            },
+            "required": ["data_source"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="data_quality_service.generate_report",
+        category="monitoring",
+        subcategory="data_quality",
+        tags=["data", "quality", "report"]
+    ),
+
+    # -------------------------------------------------------------------------
+    # Marketplace Tools (6 tools) — Tier 2
+    # -------------------------------------------------------------------------
+    "search_marketplace": ToolDefinition(
+        name="search_marketplace",
+        description="Search the marketplace for templates, agents, and adapters.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "type": {"type": "string", "enum": ["template", "agent", "adapter", "all"], "default": "all"},
+                "sort_by": {"type": "string", "enum": ["relevance", "popular", "recent", "rating"], "default": "relevance"},
+                "limit": {"type": "integer", "default": 10}
+            },
+            "required": ["query"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="marketplace_service.search",
+        category="marketplace",
+        tags=["marketplace", "search", "template", "agent", "adapter", "discover"]
+    ),
+    "get_marketplace_item": ToolDefinition(
+        name="get_marketplace_item",
+        description="Get detailed information about a marketplace item.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "description": "Marketplace item ID"}
+            },
+            "required": ["item_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="marketplace_service.get_item",
+        category="marketplace",
+        tags=["marketplace", "detail", "info"]
+    ),
+    "install_marketplace_item": ToolDefinition(
+        name="install_marketplace_item",
+        description="Install a template, agent, or adapter from the marketplace.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "description": "Marketplace item ID to install"},
+                "configuration": {"type": "object", "description": "Installation configuration"}
+            },
+            "required": ["item_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="marketplace_service.install_item",
+        requires_confirmation=True,
+        category="marketplace",
+        tags=["marketplace", "install", "add"]
+    ),
+    "rate_marketplace_item": ToolDefinition(
+        name="rate_marketplace_item",
+        description="Rate and review a marketplace item.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "description": "Item ID to rate"},
+                "rating": {"type": "integer", "description": "Rating 1-5"},
+                "review": {"type": "string", "description": "Written review (optional)"}
+            },
+            "required": ["item_id", "rating"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="marketplace_service.rate_item",
+        category="marketplace",
+        tags=["marketplace", "rate", "review", "feedback"]
+    ),
+    "list_marketplace_categories": ToolDefinition(
+        name="list_marketplace_categories",
+        description="List all marketplace categories with item counts.",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="marketplace_service.list_categories",
+        category="marketplace",
+        tags=["marketplace", "categories", "browse"]
+    ),
+    "get_marketplace_trending": ToolDefinition(
+        name="get_marketplace_trending",
+        description="Get trending and featured marketplace items.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "enum": ["template", "agent", "adapter", "all"], "default": "all"},
+                "limit": {"type": "integer", "default": 10}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="marketplace_service.get_trending",
+        category="marketplace",
+        tags=["marketplace", "trending", "popular", "featured"]
+    ),
+
+    # -------------------------------------------------------------------------
+    # IAM / Session Tools (11 tools) — Tier 2
+    # -------------------------------------------------------------------------
+    "list_users": ToolDefinition(
+        name="list_users",
+        description="List users in the organization.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "role": {"type": "string", "description": "Filter by role"},
+                "status": {"type": "string", "enum": ["active", "suspended", "all"], "default": "active"},
+                "limit": {"type": "integer", "default": 20}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.list_users",
+        category="iam",
+        tags=["user", "list", "organization", "team"]
+    ),
+    "get_user_profile": ToolDefinition(
+        name="get_user_profile",
+        description="Get profile information for a specific user.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "User ID (omit for self)"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.get_profile",
+        category="iam",
+        tags=["user", "profile", "account", "info"]
+    ),
+    "update_user_profile": ToolDefinition(
+        name="update_user_profile",
+        description="Update user profile settings.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "display_name": {"type": "string"},
+                "email": {"type": "string"},
+                "timezone": {"type": "string"},
+                "notification_preferences": {"type": "object"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.update_profile",
+        category="iam",
+        tags=["user", "profile", "update", "settings"]
+    ),
+    "invite_user": ToolDefinition(
+        name="invite_user",
+        description="Invite a new user to the organization.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "Email address to invite"},
+                "role": {"type": "string", "description": "Role to assign", "default": "member"},
+                "message": {"type": "string", "description": "Custom invitation message"}
+            },
+            "required": ["email"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.invite_user",
+        requires_confirmation=True,
+        category="iam",
+        tags=["user", "invite", "add", "onboard", "email"]
+    ),
+    "suspend_user": ToolDefinition(
+        name="suspend_user",
+        description="Suspend a user's access (reversible).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "User ID to suspend"},
+                "reason": {"type": "string", "description": "Reason for suspension"}
+            },
+            "required": ["user_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.suspend_user",
+        requires_confirmation=True,
+        is_destructive=True,
+        category="iam",
+        tags=["user", "suspend", "disable", "security"]
+    ),
+    "list_active_sessions": ToolDefinition(
+        name="list_active_sessions",
+        description="List currently active user sessions.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "Filter by user (admin only)"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.list_sessions",
+        category="iam",
+        subcategory="sessions",
+        tags=["session", "active", "login", "security"]
+    ),
+    "revoke_session": ToolDefinition(
+        name="revoke_session",
+        description="Revoke a specific user session (force logout).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "Session ID to revoke"}
+            },
+            "required": ["session_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.revoke_session",
+        requires_confirmation=True,
+        category="iam",
+        subcategory="sessions",
+        tags=["session", "revoke", "logout", "security"]
+    ),
+    "get_login_history": ToolDefinition(
+        name="get_login_history",
+        description="Get login history for the current user or a specific user.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "User ID (omit for self)"},
+                "limit": {"type": "integer", "default": 20}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.get_login_history",
+        category="iam",
+        subcategory="sessions",
+        tags=["login", "history", "audit", "security"]
+    ),
+    "change_password": ToolDefinition(
+        name="change_password",
+        description="Change the current user's password.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "current_password": {"type": "string", "description": "Current password"},
+                "new_password": {"type": "string", "description": "New password"}
+            },
+            "required": ["current_password", "new_password"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.change_password",
+        requires_confirmation=True,
+        category="iam",
+        tags=["password", "change", "security", "account"]
+    ),
+    "assign_role": ToolDefinition(
+        name="assign_role",
+        description="Assign a role to a user.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "User ID"},
+                "role": {"type": "string", "description": "Role to assign"}
+            },
+            "required": ["user_id", "role"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.assign_role",
+        requires_confirmation=True,
+        category="iam",
+        tags=["role", "assign", "permissions", "access"]
+    ),
+    "list_roles": ToolDefinition(
+        name="list_roles",
+        description="List all available roles and their permissions.",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="iam_service.list_roles",
+        category="iam",
+        tags=["role", "list", "permissions"]
+    ),
+
+    # -------------------------------------------------------------------------
+    # MFA Tools (4 tools) — Tier 3
+    # -------------------------------------------------------------------------
+    "get_mfa_status": ToolDefinition(
+        name="get_mfa_status",
+        description="Check MFA enrollment status for the current user.",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="mfa_service.get_status",
+        category="iam",
+        subcategory="mfa",
+        tags=["mfa", "2fa", "authentication", "security"]
+    ),
+    "enable_mfa": ToolDefinition(
+        name="enable_mfa",
+        description="Enable multi-factor authentication. Returns setup QR code or instructions.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "method": {"type": "string", "enum": ["totp", "sms", "email"], "default": "totp"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="mfa_service.enable",
+        requires_confirmation=True,
+        category="iam",
+        subcategory="mfa",
+        tags=["mfa", "enable", "setup", "security"]
+    ),
+    "disable_mfa": ToolDefinition(
+        name="disable_mfa",
+        description="Disable multi-factor authentication (requires current MFA code).",
+        parameters={
+            "type": "object",
+            "properties": {
+                "verification_code": {"type": "string", "description": "Current MFA code to verify identity"}
+            },
+            "required": ["verification_code"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="mfa_service.disable",
+        requires_confirmation=True,
+        is_destructive=True,
+        category="iam",
+        subcategory="mfa",
+        tags=["mfa", "disable", "remove", "security"]
+    ),
+    "generate_mfa_recovery_codes": ToolDefinition(
+        name="generate_mfa_recovery_codes",
+        description="Generate new MFA recovery codes (invalidates old ones).",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="mfa_service.generate_recovery_codes",
+        requires_confirmation=True,
+        category="iam",
+        subcategory="mfa",
+        tags=["mfa", "recovery", "backup", "codes"]
+    ),
+
+    # -------------------------------------------------------------------------
+    # Billing Tools (4 tools) — Tier 3
+    # -------------------------------------------------------------------------
+    "get_billing_summary": ToolDefinition(
+        name="get_billing_summary",
+        description="Get current billing period summary and upcoming charges.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "period": {"type": "string", "enum": ["current", "previous", "next"], "default": "current"}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="billing_service.get_summary",
+        category="subscription",
+        subcategory="billing",
+        tags=["billing", "invoice", "cost", "payment", "charges"]
+    ),
+    "list_invoices": ToolDefinition(
+        name="list_invoices",
+        description="List past invoices and their payment status.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["paid", "pending", "overdue", "all"], "default": "all"},
+                "limit": {"type": "integer", "default": 12}
+            },
+            "required": []
+        },
+        editions=["community", "business", "enterprise"],
+        handler="billing_service.list_invoices",
+        category="subscription",
+        subcategory="billing",
+        tags=["billing", "invoice", "list", "payment"]
+    ),
+    "get_invoice_detail": ToolDefinition(
+        name="get_invoice_detail",
+        description="Get detailed breakdown of a specific invoice.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "invoice_id": {"type": "string", "description": "Invoice ID"}
+            },
+            "required": ["invoice_id"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="billing_service.get_invoice",
+        category="subscription",
+        subcategory="billing",
+        tags=["billing", "invoice", "detail", "breakdown"]
+    ),
+    "update_payment_method": ToolDefinition(
+        name="update_payment_method",
+        description="Update the organization's payment method.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "payment_type": {"type": "string", "enum": ["card", "bank_transfer", "invoice"]},
+                "details": {"type": "object", "description": "Payment method details"}
+            },
+            "required": ["payment_type"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="billing_service.update_payment_method",
+        requires_confirmation=True,
+        category="subscription",
+        subcategory="billing",
+        tags=["billing", "payment", "card", "update"]
     ),
 }
 
@@ -904,15 +1768,23 @@ class ToolDispatcher:
 
         This runs at startup to catch missing handler methods early, preventing
         runtime AttributeError when tools are invoked.
+
+        Tools with a dotted handler field (e.g. "service.method") are
+        dynamically routed at runtime and don't need a TOOL_HANDLER_MAP entry.
         """
         missing_handlers = []
+        dynamic_count = 0
         tools_registry = self._get_tools_registry()
 
-        for tool_name in tools_registry.keys():
+        for tool_name, tool_def in tools_registry.items():
+            # Tools with dotted handler fields use dynamic routing — no stub needed
+            if tool_def.handler and '.' in tool_def.handler:
+                dynamic_count += 1
+                continue
+
             handler_name = self.TOOL_HANDLER_MAP.get(tool_name)
 
             if not handler_name:
-                # Tool exists but no handler mapping
                 missing_handlers.append({
                     "tool": tool_name,
                     "issue": "no_handler_mapping",
@@ -934,14 +1806,15 @@ class ToolDispatcher:
             for item in missing_handlers:
                 logger.error(f"[v4]   - {item['message']}")
 
-            # In development, we want this to be very visible
-            # Log a summary that will stand out
             logger.error(
                 f"[v4] ⚠️ CRITICAL: {len(missing_handlers)} tools have no handler implementation! "
                 f"Tools will fail at runtime. Missing: {[m['tool'] for m in missing_handlers]}"
             )
         else:
-            logger.info(f"[v4] ✓ All {len(tools_registry)} tool handlers validated successfully")
+            logger.info(
+                f"[v4] ✓ All {len(tools_registry)} tool handlers validated "
+                f"({dynamic_count} dynamic, {len(tools_registry) - dynamic_count} legacy)"
+            )
 
     def _get_tools_registry(self) -> Dict[str, Any]:
         """Get the tools registry for this dispatcher.
@@ -1036,6 +1909,85 @@ class ToolDispatcher:
                 execution_time_ms=int((time.time() - start_time) * 1000)
             )
 
+    async def _dynamic_route(
+        self,
+        tool: ToolDefinition,
+        arguments: Dict[str, Any],
+        user_id: str,
+        context: Optional[Dict[str, Any]]
+    ) -> Optional[ToolResult]:
+        """Route tool call via handler field (service_name.method_name).
+
+        Returns None if handler field is empty or service/method not found,
+        allowing fallback to legacy routing.
+        """
+        handler = tool.handler
+        if not handler or '.' not in handler:
+            return None
+
+        service_name, method_name = handler.split('.', 1)
+
+        # Look up service in both Community and (if available) Business service maps
+        service = self._services.get(service_name)
+        if service is None and hasattr(self, '_business_services'):
+            service = self._business_services.get(service_name)
+
+        if service is None:
+            return None  # Fall back to legacy routing
+
+        method = getattr(service, method_name, None)
+        if method is None:
+            logger.warning(f"[v4] Dynamic route: method '{method_name}' not found on service '{service_name}'")
+            return None
+
+        # Introspect signature to pass appropriate kwargs
+        import inspect
+        sig = inspect.signature(method)
+        params = sig.parameters
+        call_kwargs = {}
+
+        # Always pass the tool arguments as the primary data
+        # Check common parameter patterns used across services
+        param_names = set(params.keys())
+
+        if 'args' in param_names or 'arguments' in param_names:
+            key = 'args' if 'args' in param_names else 'arguments'
+            call_kwargs[key] = arguments
+        elif 'kwargs' in param_names:
+            call_kwargs['kwargs'] = arguments
+        else:
+            # Pass arguments as individual keyword args
+            for key, value in arguments.items():
+                if key in param_names:
+                    call_kwargs[key] = value
+
+        # Pass common context parameters if the method accepts them
+        if 'user_id' in param_names:
+            call_kwargs['user_id'] = user_id
+        if 'db' in param_names:
+            call_kwargs['db'] = self.db
+        if 'context' in param_names:
+            call_kwargs['context'] = context
+
+        try:
+            result = await method(**call_kwargs)
+
+            # Normalize result to ToolResult
+            if isinstance(result, ToolResult):
+                return result
+            elif isinstance(result, dict):
+                return ToolResult(success=True, data=result)
+            else:
+                return ToolResult(success=True, data={"result": result})
+        except Exception as e:
+            logger.error(f"[v4] Dynamic route failed for {tool.name}: {e}")
+            return ToolResult(
+                success=False,
+                error=str(e),
+                error_type="execution_error",
+                recovery_strategy=ToolRecoveryStrategy.RETRY
+            )
+
     async def _route_tool_call(
         self,
         tool_name: str,
@@ -1045,8 +1997,17 @@ class ToolDispatcher:
     ) -> ToolResult:
         """Route tool call to appropriate service method.
 
-        This follows the ActionOrchestrator pattern of explicit routing.
+        First attempts dynamic routing via the handler field on ToolDefinition.
+        Falls back to legacy explicit if/elif routing for existing tools.
         """
+        # Try dynamic routing first for tools with handler fields
+        tool = CORE_TOOLS.get(tool_name)
+        if tool:
+            result = await self._dynamic_route(tool, arguments, user_id, context)
+            if result is not None:
+                return result
+
+        # Legacy routing — explicit if/elif for existing tools
         # Workflow tools
         if tool_name == "create_workflow":
             return await self._create_workflow(arguments, user_id, context)
@@ -2168,11 +3129,18 @@ class ToolDispatcher:
             return ToolResult(success=False, error=str(e))
 
     async def _execute_integration(self, args: Dict, user_id: str) -> ToolResult:
-        """Execute an action via an integration."""
+        """Execute an action via an integration with prerequisite validation."""
         adapter_service = self._services.get('adapter_service')
         adapter_name = args.get('adapter_name', '').lower()
         action = args.get('action', '')
         params = args.get('params', {})
+
+        if not adapter_name or not action:
+            return ToolResult(
+                success=False,
+                error="Both 'adapter_name' and 'action' are required.",
+                recovery_strategy=ToolRecoveryStrategy.CLARIFY,
+            )
 
         try:
             if adapter_service:
@@ -2182,17 +3150,25 @@ class ToolDispatcher:
                     params=params,
                     user_id=user_id
                 )
+                # Propagate the success/failure from execute_action
+                if result.get("success") is False:
+                    return ToolResult(
+                        success=False,
+                        error=result.get("error", "Unknown error"),
+                        data=result,
+                        recovery_strategy=ToolRecoveryStrategy.CLARIFY,
+                    )
                 return ToolResult(
                     success=True,
                     data={
                         "adapter_name": adapter_name,
                         "action": action,
                         "result": result,
+                        "status": result.get("status", "unknown"),
                         "message": f"Action '{action}' executed on '{adapter_name}'"
                     }
                 )
             else:
-                # Fallback: Acknowledge the request
                 return ToolResult(
                     success=False,
                     error=f"Adapter service not available. Cannot execute '{action}' on '{adapter_name}'.",

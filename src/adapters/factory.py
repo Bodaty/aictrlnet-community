@@ -57,6 +57,9 @@ class AdapterFactory:
         "autogen": "adapters.implementations.ai_agents.autogen_adapter.AutoGenAdapter",
         "semantic-kernel": "adapters.implementations.ai_agents.semantic_kernel_adapter.SemanticKernelAdapter",
         "openclaw": "adapters.implementations.ai_agents.openclaw_adapter.OpenClawAdapter",
+
+        # Utility Adapters
+        "declarative-http": "adapters.implementations.utility.declarative_http_adapter.DeclarativeHTTPAdapter",
     }
     
     @classmethod
@@ -180,12 +183,13 @@ class AdapterFactory:
         
         # Determine from adapter type
         ai_adapters = ["openai", "claude", "anthropic", "ollama", "huggingface", "hf", "deepseek"]
-        communication_adapters = ["slack", "email", "webhook", "discord", "telegram", "whatsapp"]
+        communication_adapters = ["slack", "email", "webhook", "discord", "telegram", "whatsapp", "twilio", "sms"]
         human_adapters = ["upwork", "fiverr", "taskrabbit", "mechanical_turk", "scale"]
         payment_adapters = ["stripe", "paypal", "square"]
         database_adapters = ["sqlite"]  # Community only has basic database support
         cloud_storage_adapters = []  # No cloud storage in Community Edition
-        
+        utility_adapters = ["declarative-http"]
+
         if adapter_type in ai_adapters:
             return AdapterCategory.AI
         elif adapter_type in communication_adapters:
@@ -198,6 +202,8 @@ class AdapterFactory:
             return AdapterCategory.DATA
         elif adapter_type in cloud_storage_adapters:
             return AdapterCategory.INTEGRATION  # Cloud storage uses INTEGRATION category
+        elif adapter_type in utility_adapters:
+            return AdapterCategory.UTILITY
         else:
             return AdapterCategory.INTEGRATION
     
