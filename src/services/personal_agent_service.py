@@ -131,7 +131,7 @@ class PersonalAgentService:
         return PersonalAgentConfigResponse.model_validate(config)
 
     # ------------------------------------------------------------------
-    # Ask — routes through NLP
+    # Ask — DEPRECATED (use conversation system instead)
     # ------------------------------------------------------------------
 
     async def ask(
@@ -139,66 +139,32 @@ class PersonalAgentService:
         user_id: str,
         request: PersonalAgentAskRequest,
     ) -> PersonalAgentAskResponse:
-        """Route *question* through the NLP service and store the interaction as memory."""
-        from services.nlp import NLPService
+        """DEPRECATED: Use the conversation system instead.
 
-        start_time = datetime.utcnow()
+        The personal agent chat has been unified with the main conversation
+        pipeline.  PersonalAgent personality now feeds into
+        SystemPromptAssembler, and all conversations route through
+        EnhancedConversationService with full tool access.
 
-        # Ensure config exists so we can record memory
-        config_resp = await self.get_or_create_config(user_id)
-
-        # Build context including personality
-        nlp = NLPService(self.db)
-        nlp_context: Dict[str, Any] = {
-            "personal_agent": True,
-            "personality": config_resp.personality,
-            "user_id": user_id,
-        }
-        if request.context:
-            nlp_context.update(request.context)
-
-        # Use NLP service to generate a response
-        try:
-            nlp_result = await nlp.generate_from_prompt(
-                prompt=request.message,
-                user_id=user_id,
-                context=nlp_context,
-            )
-            answer = nlp_result.get("response", nlp_result.get("text", "I'm not sure how to help with that yet."))
-            model_used = nlp_result.get("model_used", "llama3.2:1b")
-        except Exception as exc:
-            logger.warning("NLP service unavailable, falling back: %s", exc)
-            answer = (
-                "I'm currently unable to process your question because the NLP "
-                "service is unavailable. Please try again shortly."
-            )
-            model_used = "none"
-
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
-
-        # Store interaction as memory
-        memory = PersonalAgentMemory(
-            id=str(uuid.uuid4()),
-            config_id=config_resp.id,
-            memory_type="interaction",
-            content={
-                "question": request.message,
-                "answer": answer,
-                "context": request.context,
-                "model_used": model_used,
-            },
-            importance_score=0.5,
+        This method is kept only for backward compatibility and raises
+        a deprecation warning.  The /ask endpoint returns 410 Gone.
+        """
+        import warnings
+        warnings.warn(
+            "PersonalAgentService.ask() is deprecated. "
+            "Use the conversation system (POST /api/v1/conversation/message) instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
-        self.db.add(memory)
-        await self.db.commit()
-        await self.db.refresh(memory)
-
         return PersonalAgentAskResponse(
             message=request.message,
-            response=answer,
-            model_used=model_used,
-            memory_id=memory.id,
-            processing_time=processing_time,
+            response=(
+                "This endpoint has been deprecated. Please use the main conversation "
+                "interface, which now includes your personality settings automatically."
+            ),
+            model_used="none",
+            memory_id="",
+            processing_time=0.0,
             timestamp=datetime.utcnow(),
         )
 

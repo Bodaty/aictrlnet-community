@@ -10,7 +10,6 @@ from schemas.personal_agent import (
     PersonalAgentConfigResponse,
     PersonalAgentConfigUpdate,
     PersonalAgentAskRequest,
-    PersonalAgentAskResponse,
     ActivityFeedResponse,
     WorkflowAddResponse,
     WorkflowRemoveResponse,
@@ -58,21 +57,33 @@ async def update_personal_agent_config(
 # Ask endpoint
 # ---------------------------------------------------------------------------
 
-@router.post("/ask", response_model=PersonalAgentAskResponse)
+@router.post("/ask")
 async def ask_personal_agent(
     request: PersonalAgentAskRequest,
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_user_safe),
 ):
     """
-    Ask the personal agent a question.
+    DEPRECATED: Use the conversation system instead.
 
-    Routes the question through the NLP service, taking the user's
-    personality and preference configuration into account. The
-    interaction is stored as a memory entry for future context.
+    The personal agent chat has been unified with the main conversation
+    pipeline, which provides full tool access (89-171 tools), streaming
+    SSE responses, and multi-turn context.  PersonalAgent personality
+    configuration now feeds into the conversation system prompt.
+
+    Use POST /api/v1/conversation/message to chat with personality applied.
+    Use PUT /api/v1/personal-agent/config to update personality settings.
     """
-    service = PersonalAgentService(db)
-    return await service.ask(current_user["id"], request)
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "message": "The /personal-agent/ask endpoint has been deprecated. "
+                       "All conversations now go through the main conversation system, "
+                       "which includes your personality settings automatically.",
+            "use_instead": "/api/v1/conversation/message",
+            "configure_personality": "/api/v1/personal-agent/config",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -5,13 +5,27 @@ scattered prompt builders (build_tool_system_prompt, _build_knowledge_aware_prom
 _build_v5_system_prompt) with a single service.
 
 Community layer provides: identity + tool rules + knowledge items + industry
-detection + session params + response instructions.
+detection + session params + response instructions.  Text content is loaded
+from .md files via PromptTemplateLoader; assembly logic stays in Python.
 """
 
 import logging
 from typing import Optional, List, Dict, Any
 
+from services.prompt_template_loader import PromptTemplateLoader
+
 logger = logging.getLogger(__name__)
+
+# Module-level singleton — shared across all assembler instances.
+_template_loader: Optional[PromptTemplateLoader] = None
+
+
+def _get_template_loader() -> PromptTemplateLoader:
+    """Lazy-init the shared PromptTemplateLoader singleton."""
+    global _template_loader
+    if _template_loader is None:
+        _template_loader = PromptTemplateLoader()
+    return _template_loader
 
 
 class SystemPromptAssembler:
@@ -25,6 +39,7 @@ class SystemPromptAssembler:
 
     def __init__(self, db):
         self.db = db
+        self.template_loader = _get_template_loader()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -40,15 +55,23 @@ class SystemPromptAssembler:
         user_id=None,
         organization_id=None,
         tool_definitions=None,
+        personal_agent_config=None,
     ) -> str:
         """Build the full system prompt.
 
-        Joins: identity -> tool_rules -> knowledge -> industry ->
+        Joins: identity -> personality -> tool_rules -> knowledge -> industry ->
                session_params -> context -> turn_count -> instructions
         """
         sections: List[str] = []
 
-        sections.append(self._build_identity())
+        sections.append(self._build_identity(edition))
+
+        # PersonalAgent personality injection (sandboxed position —
+        # after identity, before tool rules / dynamic context)
+        personality_section = self._build_personality_section(personal_agent_config)
+        if personality_section:
+            sections.append(personality_section)
+
         sections.append(self._build_tool_rules())
 
         if knowledge_items:
@@ -60,8 +83,12 @@ class SystemPromptAssembler:
         if conversation_history:
             industry = self._detect_industry_from_history(conversation_history)
         if industry:
+            # Try to load industry guidance from .md file first
+            industry_key = self._industry_name_to_key(industry["name"])
+            md_guidance = self.template_loader.get_section(f"industries/{industry_key}")
+            guidance = md_guidance if md_guidance else industry.get("guidance", "")
             sections.append(
-                f"## Industry Context: {industry['name']}\n\n{industry.get('guidance', '')}"
+                f"## Industry Context: {industry['name']}\n\n{guidance}"
             )
 
         # Session parameters (v5)
@@ -87,17 +114,69 @@ class SystemPromptAssembler:
     # Identity
     # ------------------------------------------------------------------
 
-    def _build_identity(self) -> str:
+    def _build_identity(self, edition: str = "community") -> str:
+        text = self.template_loader.get_section("identity", {"edition": edition})
+        if text:
+            return text
+        # Hardcoded fallback
         return (
             "You are an intelligent assistant for AICtrlNet. "
             "You help users with workflows, agents, templates, and integrations."
         )
 
     # ------------------------------------------------------------------
+    # PersonalAgent personality section
+    # ------------------------------------------------------------------
+
+    def _build_personality_section(self, personal_agent_config) -> str:
+        """Inject a personality section from PersonalAgentConfig if available.
+
+        The personality data is injected in a sandboxed position — after
+        identity/safety but before dynamic context and tool rules output.
+        At Community tier, no content validation is applied (self-hosted =
+        self-responsible).
+        """
+        if personal_agent_config is None:
+            return ""
+
+        # Accept both dict and ORM object
+        if hasattr(personal_agent_config, "personality"):
+            personality = personal_agent_config.personality
+        elif isinstance(personal_agent_config, dict):
+            personality = personal_agent_config.get("personality")
+        else:
+            return ""
+
+        if not personality or not isinstance(personality, dict):
+            return ""
+
+        tone = personality.get("tone", "")
+        style = personality.get("style", "")
+        expertise_areas = personality.get("expertise_areas", [])
+
+        if not (tone or style or expertise_areas):
+            return ""
+
+        lines = ["## Your Personality\n"]
+        if tone:
+            lines.append(f"- Tone: {tone}")
+        if style:
+            lines.append(f"- Style: {style}")
+        if expertise_areas:
+            areas_str = ", ".join(str(a) for a in expertise_areas[:10])
+            lines.append(f"- Expertise areas: {areas_str}")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
     # Tool decision rules (Community)
     # ------------------------------------------------------------------
 
     def _build_tool_rules(self) -> str:
+        text = self.template_loader.get_section("tool_rules")
+        if text:
+            return text
+        # Hardcoded fallback
         return """## Tool Selection Rules
 
 **#1 Rule: "create/generate/build [X] workflow" → create_workflow**
@@ -159,6 +238,18 @@ class SystemPromptAssembler:
     # Industry detection
     # ------------------------------------------------------------------
 
+    # Maps from display names to .md file keys
+    _INDUSTRY_KEY_MAP = {
+        "Legal/E-Discovery": "legal",
+        "Healthcare": "healthcare",
+        "Finance/Banking": "finance",
+        "Retail/E-Commerce": "retail",
+    }
+
+    def _industry_name_to_key(self, name: str) -> str:
+        """Convert an industry display name to its .md file key."""
+        return self._INDUSTRY_KEY_MAP.get(name, name.lower().split("/")[0])
+
     def _detect_industry_from_history(
         self, conversation_history: List[Dict[str, str]]
     ) -> Optional[Dict[str, Any]]:
@@ -173,14 +264,6 @@ class SystemPromptAssembler:
                     "matter", "case", "court",
                 ],
                 "name": "Legal/E-Discovery",
-                "guidance": (
-                    "Legal industry considerations:\n"
-                    "- FRCP compliance may be required for litigation workflows\n"
-                    "- Privilege detection and logging should be enabled\n"
-                    "- Chain of custody tracking for documents\n"
-                    "- Audit logging for all operations\n"
-                    "- Consider document hold and preservation requirements"
-                ),
             },
             "healthcare": {
                 "keywords": [
@@ -188,13 +271,6 @@ class SystemPromptAssembler:
                     "hospital", "doctor", "nurse", "diagnosis", "treatment",
                 ],
                 "name": "Healthcare",
-                "guidance": (
-                    "Healthcare industry considerations:\n"
-                    "- HIPAA compliance is critical\n"
-                    "- Patient data must be protected\n"
-                    "- Audit trails required for PHI access\n"
-                    "- Consider consent management workflows"
-                ),
             },
             "finance": {
                 "keywords": [
@@ -202,13 +278,6 @@ class SystemPromptAssembler:
                     "audit", "regulatory", "sox", "kyc", "aml",
                 ],
                 "name": "Finance/Banking",
-                "guidance": (
-                    "Financial industry considerations:\n"
-                    "- SOX compliance for relevant workflows\n"
-                    "- KYC/AML requirements for customer processes\n"
-                    "- Regulatory reporting needs\n"
-                    "- Strict audit requirements"
-                ),
             },
             "retail": {
                 "keywords": [
@@ -216,13 +285,6 @@ class SystemPromptAssembler:
                     "order", "shipping", "product", "store",
                 ],
                 "name": "Retail/E-Commerce",
-                "guidance": (
-                    "Retail industry considerations:\n"
-                    "- Inventory management integration\n"
-                    "- Order processing automation\n"
-                    "- Customer communication workflows\n"
-                    "- Returns and refunds handling"
-                ),
             },
         }
 
@@ -231,7 +293,6 @@ class SystemPromptAssembler:
             if matches >= 2:
                 return {
                     "name": config["name"],
-                    "guidance": config["guidance"],
                     "confidence": min(matches / 5, 1.0),
                 }
 
@@ -278,6 +339,10 @@ class SystemPromptAssembler:
     # ------------------------------------------------------------------
 
     def _build_response_instructions(self) -> str:
+        text = self.template_loader.get_section("response_format")
+        if text:
+            return text
+        # Hardcoded fallback
         return """**CRITICAL Response Format Rules:**
 - NEVER output JSON in any form - not raw, not in code blocks, not anywhere
 - NEVER include code blocks with action objects like ```{"action": ...}```
