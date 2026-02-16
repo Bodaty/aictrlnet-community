@@ -33,7 +33,13 @@ from services.workflow import WorkflowService
 from services.workflow_template_service import create_workflow_template_service
 from services.workflow_execution import WorkflowExecutionService
 from services.node_catalog import DynamicNodeCatalogService
-from services.workflow_scheduler import WorkflowScheduler, TriggerType
+from services.workflow_scheduler import WorkflowScheduler as _CommunityScheduler, TriggerType
+
+# Edition-aware scheduler: use Business scheduler if available (has cron/webhook/event support)
+try:
+    from aictrlnet_business.services.workflow_scheduler_business import WorkflowScheduler, TriggerType
+except ImportError:
+    WorkflowScheduler = _CommunityScheduler
 from nodes.registry import node_registry
 from schemas.workflow_execution import (
     WorkflowExecuteRequest,
@@ -900,10 +906,10 @@ async def create_workflow_schedule(
     # Try to create schedule - will fail with upgrade message if Community
     result = await scheduler.create_schedule(
         workflow_id=workflow_id,
-        name=schedule_data.name,
-        cron_expression=schedule_data.cron_expression,
+        name=schedule_data.name or f"Schedule for {workflow_id}",
+        cron_expression=schedule_data.schedule_expression,
         timezone=schedule_data.timezone,
-        config=schedule_data.config
+        config=schedule_data.execution_config or {}
     )
     
     # Check if it's an error (Community edition)

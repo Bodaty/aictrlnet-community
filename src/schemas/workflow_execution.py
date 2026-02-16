@@ -157,7 +157,8 @@ class WorkflowTriggerResponse(BaseModel):
 # Schedule schemas
 class WorkflowScheduleCreate(BaseModel):
     """Schema for creating a workflow schedule."""
-    schedule_expression: str = Field(..., description="Cron expression")
+    name: str = Field(default="", description="Schedule name")
+    schedule_expression: str = Field(..., description="Cron expression (e.g. '0 9 * * 5' for Friday 9am)")
     timezone: str = Field(default="UTC")
     is_active: bool = True
     input_parameters: Optional[Dict[str, Any]] = None
