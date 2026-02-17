@@ -83,6 +83,7 @@ class PersonalAgentConfigResponse(BaseModel):
     personality: Dict[str, Any] = {}
     preferences: Dict[str, Any] = {}
     active_workflows: List[str] = []
+    workflow_details: Optional[List[Dict[str, Any]]] = []
     max_workflows: int = 5
     status: str = "active"
     onboarding_state: Optional[Dict[str, Any]] = {}

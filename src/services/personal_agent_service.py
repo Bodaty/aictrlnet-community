@@ -15,6 +15,7 @@ from models.personal_agent import (
     COMMUNITY_MAX_WORKFLOWS,
     ALLOWED_MEMORY_TYPES,
 )
+from models.workflow_templates import WorkflowTemplate
 from schemas.personal_agent import (
     PersonalAgentConfigResponse,
     PersonalAgentConfigUpdate,
@@ -39,6 +40,24 @@ class PersonalAgentService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _enrich_with_workflow_details(
+        self, response: PersonalAgentConfigResponse
+    ) -> PersonalAgentConfigResponse:
+        """Resolve workflow IDs to names and attach as workflow_details."""
+        workflow_ids = response.active_workflows or []
+        if not workflow_ids:
+            response.workflow_details = []
+            return response
+        result = await self.db.execute(
+            select(WorkflowTemplate.id, WorkflowTemplate.name)
+            .where(WorkflowTemplate.id.in_(workflow_ids))
+        )
+        wf_map = {str(row.id): row.name for row in result.all()}
+        response.workflow_details = [
+            {"id": wid, "name": wf_map.get(wid, wid)} for wid in workflow_ids
+        ]
+        return response
+
     # ------------------------------------------------------------------
     # Config management
     # ------------------------------------------------------------------
@@ -53,7 +72,8 @@ class PersonalAgentService:
         config = result.scalar_one_or_none()
 
         if config is not None:
-            return PersonalAgentConfigResponse.model_validate(config)
+            resp = PersonalAgentConfigResponse.model_validate(config)
+            return await self._enrich_with_workflow_details(resp)
 
         # Create default config
         config = PersonalAgentConfig(
@@ -88,7 +108,8 @@ class PersonalAgentService:
             )
             config = result.scalar_one()
 
-        return PersonalAgentConfigResponse.model_validate(config)
+        resp = PersonalAgentConfigResponse.model_validate(config)
+        return await self._enrich_with_workflow_details(resp)
 
     async def update_config(
         self, user_id: str, updates: PersonalAgentConfigUpdate
@@ -128,7 +149,8 @@ class PersonalAgentService:
         await self.db.commit()
         await self.db.refresh(config)
         logger.info("Updated personal agent config for user %s", user_id)
-        return PersonalAgentConfigResponse.model_validate(config)
+        resp = PersonalAgentConfigResponse.model_validate(config)
+        return await self._enrich_with_workflow_details(resp)
 
     # ------------------------------------------------------------------
     # Ask — DEPRECATED (use conversation system instead)
