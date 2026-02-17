@@ -256,6 +256,17 @@ class WorkflowExecutionService:
                 execution.duration_ms = int((execution.completed_at - execution.started_at).total_seconds() * 1000)
                 execution.output_data = workflow_instance.output_data
 
+                # Count intercepted nodes for dry-run summary
+                if is_dry_run and workflow_instance.output_data:
+                    intercepted = sum(
+                        1 for node_output in (workflow_instance.output_data or {}).values()
+                        if isinstance(node_output, dict) and node_output.get("_dry_run")
+                    )
+                    execution.execution_metadata = {
+                        **(execution.execution_metadata or {}),
+                        "nodes_intercepted": intercepted
+                    }
+
                 await db.commit()
 
                 # Publish completion event

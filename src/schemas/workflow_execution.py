@@ -59,12 +59,16 @@ class WorkflowExecutionResponse(BaseModel):
 
     @model_validator(mode="after")
     def extract_dry_run_from_context(self):
-        """Extract dry_run from execution context or trigger_metadata if not explicitly set."""
+        """Extract dry_run and nodes_intercepted from execution context/metadata."""
         if not self.dry_run:
             ctx = self.context or {}
             tm = self.trigger_metadata or {}
             if ctx.get("is_dry_run", False) or tm.get("is_dry_run", False):
                 self.dry_run = True
+        if self.nodes_intercepted is None:
+            em = self.execution_metadata or {}
+            if "nodes_intercepted" in em:
+                self.nodes_intercepted = em["nodes_intercepted"]
         return self
 
 
