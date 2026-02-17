@@ -33,8 +33,10 @@ def get_engine():
             echo=False,
             future=True,
             pool_size=settings.MAX_CONNECTIONS_COUNT,
-            max_overflow=0,
+            max_overflow=10,
             pool_pre_ping=True,
+            pool_recycle=300,
+            pool_timeout=10,
         )
     return _engine
 

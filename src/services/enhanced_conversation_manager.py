@@ -1497,6 +1497,10 @@ Response (just the sentence, no quotes):"""
                     preferredQualityModel=user_preferences.get('preferredQualityModel'),
                 )
 
+            # Release DB connection before LLM call (30-120s idle wait).
+            # Session will lazily re-acquire a connection on the next DB operation.
+            await self.db.close()
+
             llm_response = await self._enhanced_llm_service.generate_with_tools(
                 prompt=full_prompt,
                 tools=tools,
