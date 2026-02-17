@@ -293,7 +293,7 @@ class AdapterService:
         # 3. Try to execute via adapter registry
         try:
             from adapters.registry import adapter_registry
-            adapter_instance = adapter_registry.get_adapter(adapter_name.lower())
+            adapter_instance = await adapter_registry.get_adapter(adapter_name.lower())
             if adapter_instance:
                 from adapters.models import AdapterRequest
                 request = AdapterRequest(

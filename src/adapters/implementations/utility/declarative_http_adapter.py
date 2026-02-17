@@ -64,6 +64,15 @@ class DeclarativeHTTPAdapter(BaseAdapter):
         super().__init__(config)
         self.client: Optional[httpx.AsyncClient] = None
         self._spec: Dict[str, Any] = config.custom_config.get("declarative_spec", {})
+        # Fallback: check module-level store for specs registered via activate_adapter()
+        if not self._spec:
+            try:
+                from aictrlnet_business.services.generated_adapter_service import get_declarative_spec
+                stored = get_declarative_spec(config.name)
+                if stored:
+                    self._spec = stored
+            except ImportError:
+                pass
         self._base_url: str = self._spec.get("base_url", config.base_url or "")
         self._auth_type: str = self._spec.get("auth_type", "none")
         self._auth_config: Dict[str, Any] = self._spec.get("auth_config", {})

@@ -73,8 +73,7 @@ class AdapterConfig(BaseModel):
     version: str = "1.0.0"
     description: Optional[str] = None
     category: AdapterCategory
-    required_edition: Edition = Edition.COMMUNITY
-    
+
     # Authentication
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
