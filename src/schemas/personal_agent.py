@@ -17,14 +17,14 @@ class PersonalityConfig(BaseModel):
 
     @validator("tone")
     def validate_tone(cls, v):
-        allowed = ["friendly", "formal", "casual", "technical"]
+        allowed = ["friendly", "professional", "casual", "formal", "technical", "supportive"]
         if v not in allowed:
             raise ValueError(f"Tone must be one of: {', '.join(allowed)}")
         return v
 
     @validator("style")
     def validate_style(cls, v):
-        allowed = ["concise", "detailed", "conversational"]
+        allowed = ["concise", "detailed", "balanced", "step-by-step", "conversational"]
         if v not in allowed:
             raise ValueError(f"Style must be one of: {', '.join(allowed)}")
         return v
