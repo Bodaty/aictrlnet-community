@@ -21,6 +21,9 @@ _ALLOWED_VARIABLES = frozenset({
     "user_name",
     "organization_name",
     "industry",
+    "current_chapter",
+    "chapter_title",
+    "next_question_text",
 })
 
 # Resolve prompts directory relative to this file.

@@ -1285,7 +1285,7 @@ Response (just the sentence, no quotes):"""
 
     _ALWAYS_INCLUDE_TOOLS = {
         'search_api_capabilities', 'get_help', 'get_system_status',
-        'list_api_endpoints', 'list_integrations',
+        'list_api_endpoints', 'list_integrations', 'update_onboarding',
     }
 
     def _prune_tools_for_ollama(self, tools: list, user_message: str, max_tools: int = 30) -> list:
@@ -1437,12 +1437,25 @@ Response (just the sentence, no quotes):"""
         # =====================================================================
         # Step 4: Build comprehensive LLM context (the key to v5)
         # =====================================================================
+        # Load PersonalAgentConfig for personality + onboarding injection
+        personal_agent_config = None
+        try:
+            from sqlalchemy import select as sa_select
+            from models.personal_agent import PersonalAgentConfig
+            pa_result = await self.db.execute(
+                sa_select(PersonalAgentConfig).where(PersonalAgentConfig.user_id == user_id)
+            )
+            personal_agent_config = pa_result.scalar_one_or_none()
+        except Exception:
+            logger.debug("[v5] Could not load PersonalAgentConfig for prompt")
+
         system_prompt = await self.prompt_assembler.assemble(
             edition="community",
             session=session,
             knowledge_items=knowledge_items,
             conversation_history=conversation_history,
             user_id=user_id,
+            personal_agent_config=personal_agent_config,
         )
 
         # Get available tools (prune if too many for Ollama's native tool calling)

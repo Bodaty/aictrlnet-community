@@ -72,6 +72,11 @@ class SystemPromptAssembler:
         if personality_section:
             sections.append(personality_section)
 
+        # Onboarding interview injection (when active)
+        onboarding_section = self._build_onboarding_section(personal_agent_config)
+        if onboarding_section:
+            sections.append(onboarding_section)
+
         sections.append(self._build_tool_rules())
 
         if knowledge_items:
@@ -167,6 +172,75 @@ class SystemPromptAssembler:
             lines.append(f"- Expertise areas: {areas_str}")
 
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Onboarding interview prompt injection
+    # ------------------------------------------------------------------
+
+    def _build_onboarding_section(self, personal_agent_config) -> str:
+        """Inject the onboarding interview prompt when the interview is active.
+
+        Loaded from onboarding_interview.md with variable substitution for
+        the current chapter and question text.
+        """
+        if personal_agent_config is None:
+            return ""
+
+        # Accept both dict and ORM object
+        if hasattr(personal_agent_config, "onboarding_state"):
+            state = personal_agent_config.onboarding_state
+        elif isinstance(personal_agent_config, dict):
+            state = personal_agent_config.get("onboarding_state")
+        else:
+            return ""
+
+        if not state or not isinstance(state, dict):
+            return ""
+
+        status = state.get("status", "not_started")
+        if status not in ("not_started", "in_progress"):
+            return ""
+
+        # Import here to avoid circular deps at module level
+        from services.onboarding_service import (
+            INTERVIEW_QUESTIONS, CHAPTER_TITLES, QUESTIONS_PER_CHAPTER
+        )
+
+        chapter = state.get("current_chapter", 1)
+        completed = state.get("completed_chapters", [])
+
+        # Determine current question — use tracked current_question if available
+        if "current_question" in state:
+            question = state["current_question"]
+        elif chapter in completed:
+            question = QUESTIONS_PER_CHAPTER.get(chapter, 1)
+        else:
+            question = 1
+
+        q_def = INTERVIEW_QUESTIONS.get((chapter, question))
+        if not q_def:
+            return ""
+
+        chapter_title = CHAPTER_TITLES.get(chapter, "")
+        question_text = q_def.get("text", "")
+
+        text = self.template_loader.get_section("onboarding_interview", {
+            "current_chapter": str(chapter),
+            "chapter_title": chapter_title,
+            "next_question_text": question_text,
+        })
+
+        if text:
+            return text
+
+        # Hardcoded fallback
+        return (
+            f"## Onboarding Interview — Active\n\n"
+            f"You are conducting a brief onboarding interview (Chapter {chapter}/5 — {chapter_title}).\n"
+            f"Next question to ask naturally: \"{question_text}\"\n"
+            f"When the user answers, call `update_onboarding(chapter={chapter}, question={question}, value=\"...\")` "
+            f"to record their answer, then move to the next question."
+        )
 
     # ------------------------------------------------------------------
     # Tool decision rules (Community)

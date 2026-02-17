@@ -85,6 +85,16 @@ class PersonalAgentConfigResponse(BaseModel):
     active_workflows: List[str] = []
     max_workflows: int = 5
     status: str = "active"
+    onboarding_state: Optional[Dict[str, Any]] = {}
+    user_context: Optional[Dict[str, Any]] = {}
+
+    @validator("onboarding_state", pre=True, always=True)
+    def coerce_onboarding_state(cls, v):
+        return v if v is not None else {}
+
+    @validator("user_context", pre=True, always=True)
+    def coerce_user_context(cls, v):
+        return v if v is not None else {}
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -159,3 +169,60 @@ class WorkflowLimitResponse(BaseModel):
     max_allowed: int
     can_add: bool
     upgrade_message: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Onboarding Interview schemas
+# ---------------------------------------------------------------------------
+
+class OnboardingStateResponse(BaseModel):
+    """Current state of the onboarding interview."""
+    status: str = "not_started"
+    current_chapter: int = 1
+    current_question: int = 1
+    completed_chapters: List[int] = Field(default_factory=list)
+    personality_type: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+class OnboardingStartResponse(BaseModel):
+    """Response when starting or resuming the onboarding interview."""
+    status: str
+    current_chapter: int
+    current_question: int
+    question_text: str
+    question_type: str = "choice"
+    options: List[Dict[str, Any]] = Field(default_factory=list)
+    total_chapters: int = 5
+    completed_chapters: List[int] = Field(default_factory=list)
+    message: str = ""
+
+
+class OnboardingAnswerRequest(BaseModel):
+    """Request to submit an answer for an onboarding question."""
+    chapter: int = Field(..., ge=1, le=5, description="Chapter number (1-5)")
+    question: int = Field(..., ge=1, le=2, description="Question number within chapter (1-2)")
+    answer: Dict[str, Any] = Field(..., description="Answer data (varies by question)")
+
+
+class OnboardingAnswerResponse(BaseModel):
+    """Response after submitting an onboarding answer."""
+    chapter: int
+    question: int
+    applied: bool
+    next_chapter: Optional[int] = None
+    next_question: Optional[int] = None
+    next_question_text: Optional[str] = None
+    next_question_type: Optional[str] = None
+    next_options: List[Dict[str, Any]] = Field(default_factory=list)
+    personality_preview: Dict[str, Any] = Field(default_factory=dict)
+    message: str
+    suggested_action: Optional[Dict[str, Any]] = None
+
+
+class OnboardingSkipRequest(BaseModel):
+    """Request to skip a question or the entire interview."""
+    skip_all: bool = Field(False, description="If true, skip the entire interview")
+    chapter: Optional[int] = Field(None, ge=1, le=5, description="Chapter to skip (if not skip_all)")
+    question: Optional[int] = Field(None, ge=1, le=2, description="Question to skip")

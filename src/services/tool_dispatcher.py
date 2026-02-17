@@ -1600,6 +1600,32 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
         subcategory="billing",
         tags=["billing", "payment", "card", "update"]
     ),
+
+    # -------------------------------------------------------------------------
+    # Onboarding Interview (1 tool) — for conversational interview mode
+    # -------------------------------------------------------------------------
+    "update_onboarding": ToolDefinition(
+        name="update_onboarding",
+        description=(
+            "Record a user's answer to an onboarding interview question. "
+            "Call this when the user answers an onboarding/personality setup question during conversation. "
+            "The chapter and question numbers are provided in the system prompt when the interview is active."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "chapter": {"type": "integer", "description": "Chapter number (1-5)"},
+                "question": {"type": "integer", "description": "Question number within chapter (1-2)"},
+                "value": {"type": "string", "description": "The user's answer value"},
+            },
+            "required": ["chapter", "question", "value"]
+        },
+        editions=["community", "business", "enterprise"],
+        handler="onboarding_service.update_from_conversation",
+        category="personalization",
+        subcategory="onboarding",
+        tags=["onboarding", "personality", "setup", "interview", "personal", "agent", "configure"]
+    ),
 }
 
 
@@ -1755,6 +1781,13 @@ class ToolDispatcher:
                 self._services['api_introspection_service'] = ApiIntrospectionService()
             except ImportError:
                 logger.warning("[v4] API Introspection service not available")
+
+            # Onboarding service (personal agent interview)
+            try:
+                from services.onboarding_service import OnboardingService
+                self._services['onboarding_service'] = OnboardingService(self.db)
+            except ImportError:
+                logger.warning("[v4] Onboarding service not available")
 
             self._initialized = True
             logger.info(f"[v4] Services loaded: {list(self._services.keys())}")

@@ -39,6 +39,7 @@ try:
     import models.workflow_templates
     import models.knowledge  # NEW: Knowledge system for intelligent assistant
     import models.staged_file  # NEW: File upload staging for workflows
+    import models.personal_agent  # Personal agent config + memories
     # Note: base.py is excluded as it contains the Base class itself
     print("✅ Successfully imported all Community models")
 except Exception as e:
@@ -160,6 +161,9 @@ COMMUNITY_TABLES = {
     'learned_patterns',
     # File staging
     'staged_files',
+    # Personal agent
+    'personal_agent_configs',
+    'personal_agent_memories',
 }
 
 def include_object(object, name, type_, reflected, compare_to):

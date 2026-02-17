@@ -13,8 +13,14 @@ from schemas.personal_agent import (
     ActivityFeedResponse,
     WorkflowAddResponse,
     WorkflowRemoveResponse,
+    OnboardingAnswerRequest,
+    OnboardingSkipRequest,
+    OnboardingStateResponse,
+    OnboardingStartResponse,
+    OnboardingAnswerResponse,
 )
 from services.personal_agent_service import PersonalAgentService
+from services.onboarding_service import OnboardingService
 
 router = APIRouter()
 
@@ -143,3 +149,97 @@ async def remove_personal_workflow(
         return await service.remove_workflow(current_user["id"], workflow_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Onboarding Interview
+# ---------------------------------------------------------------------------
+
+@router.get("/onboarding")
+async def get_onboarding_state(
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Get the current onboarding interview state."""
+    try:
+        service = OnboardingService(db)
+        return await service.get_state(current_user["id"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to get onboarding state: {exc}")
+
+
+@router.post("/onboarding/start")
+async def start_onboarding(
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Start or resume the onboarding interview.
+
+    Returns the current/next question with options.
+    If already completed, returns the summary.
+    """
+    try:
+        service = OnboardingService(db)
+        return await service.start_or_resume(current_user["id"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to start onboarding: {exc}")
+
+
+@router.post("/onboarding/answer")
+async def submit_onboarding_answer(
+    request: OnboardingAnswerRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Submit an answer for an onboarding question.
+
+    Applies the answer to the personal agent config immediately
+    and returns the next question or completion summary.
+    """
+    try:
+        service = OnboardingService(db)
+        result = await service.process_answer(
+            current_user["id"],
+            request.chapter,
+            request.question,
+            request.answer,
+        )
+        if not result.get("applied", True):
+            raise HTTPException(status_code=400, detail=result.get("message", "Invalid answer"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to submit answer: {exc}")
+
+
+@router.post("/onboarding/skip")
+async def skip_onboarding(
+    request: OnboardingSkipRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Skip a question or the entire onboarding interview."""
+    try:
+        service = OnboardingService(db)
+        return await service.skip(
+            current_user["id"],
+            skip_all=request.skip_all,
+            chapter=request.chapter,
+            question=request.question,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to skip: {exc}")
+
+
+@router.post("/onboarding/reset")
+async def reset_onboarding(
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Reset the onboarding interview to start over."""
+    try:
+        service = OnboardingService(db)
+        return await service.reset(current_user["id"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to reset onboarding: {exc}")

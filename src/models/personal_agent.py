@@ -63,6 +63,16 @@ class PersonalAgentConfig(Base):
     # Status: active, paused, disabled
     status = Column(String(20), nullable=False, default="active")
 
+    # Onboarding interview state tracking
+    onboarding_state = Column(JSON, default=lambda: {
+        "status": "not_started",
+        "current_chapter": 1,
+        "completed_chapters": [],
+    })
+
+    # User context gathered during onboarding (role, intent, comfort level)
+    user_context = Column(JSON, default=dict)
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -86,6 +96,8 @@ class PersonalAgentConfig(Base):
             "active_workflows": self.active_workflows or [],
             "max_workflows": self.max_workflows,
             "status": self.status,
+            "onboarding_state": self.onboarding_state or {},
+            "user_context": self.user_context or {},
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
