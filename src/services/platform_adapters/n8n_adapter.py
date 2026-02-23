@@ -409,10 +409,10 @@ class N8nAdapter(BasePlatformAdapter):
         
         try:
             async with httpx.AsyncClient() as client:
-                # n8n API doesn't support direct filtering, we'll filter client-side
+                # n8n API caps limit at 250, use cursor pagination for larger sets
                 response = await client.get(
                     f"{base_url}/api/v1/workflows",
-                    params={"limit": 1000},  # Get more to filter
+                    params={"limit": min(limit, 250)},
                     headers=self._get_headers(creds),
                     auth=self._get_auth(creds),
                     timeout=30.0
@@ -513,7 +513,7 @@ class N8nAdapter(BasePlatformAdapter):
     ) -> int:
         """Get total count of workflows matching criteria"""
         workflows = await self.list_workflows(
-            limit=10000,  # Get all for counting
+            limit=250,  # n8n API max
             offset=0,
             search_term=search_term,
             status_filter=status_filter
