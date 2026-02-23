@@ -213,8 +213,24 @@ class AICtrlNetApp:
         return descriptions.get(self.settings.EDITION, "AI Workflow Orchestration")
     
     def _add_middleware(self):
-        """Add middleware to the application."""
-        # CORS: include FRONTEND_URL so non-localhost deployments work
+        """Add middleware to the application.
+
+        Starlette middleware order: the LAST add_middleware() call wraps
+        outermost and executes FIRST on every request/response.  CORS must
+        be outermost so that even error responses from inner middleware
+        (Tenant, Enforcement) carry CORS headers back to the browser.
+        """
+        # Enforcement middleware (innermost — runs last)
+        from middleware.enforcement import EnforcementMiddleware, UpgradePromptMiddleware
+        self.app.add_middleware(UpgradePromptMiddleware)
+        self.app.add_middleware(EnforcementMiddleware)
+
+        # Tenant middleware (middle — sets tenant context)
+        from middleware.tenant import TenantMiddleware
+        self.app.add_middleware(TenantMiddleware)
+
+        # CORS MUST be added LAST so it wraps outermost — ALL responses
+        # (including errors from Tenant/Enforcement) get CORS headers.
         cors_origins = list(self.settings.BACKEND_CORS_ORIGINS)
         frontend = self.settings.FRONTEND_URL.rstrip("/")
         if frontend and frontend not in cors_origins:
@@ -227,15 +243,6 @@ class AICtrlNetApp:
             allow_methods=["*"],
             allow_headers=["*"],
         )
-        
-        # Add tenant middleware FIRST (sets tenant context for all other middleware)
-        from middleware.tenant import TenantMiddleware
-        self.app.add_middleware(TenantMiddleware)
-
-        # Add enforcement middleware (order matters - add after CORS and Tenant)
-        from middleware.enforcement import EnforcementMiddleware, UpgradePromptMiddleware
-        self.app.add_middleware(EnforcementMiddleware)
-        self.app.add_middleware(UpgradePromptMiddleware)
         
         # Request timing and rate limit headers middleware
         @self.app.middleware("http")
