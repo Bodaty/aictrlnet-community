@@ -217,11 +217,21 @@ class WorkflowExecutionService:
                     if not isinstance(parameters, dict):
                         parameters = {}
 
-                    # Resolve node type — "custom" nodes use custom_node_type param
+                    # Resolve node type — preserve raw_type as custom_node_type
+                    # so the registry can route to custom node implementations
+                    # (e.g., WebhookNode, CodeNode, AIProcessNode) instead of
+                    # falling back to generic TaskNode.
                     try:
                         node_type = NodeType(raw_type)
                     except ValueError:
-                        node_type = NodeType.TASK  # fallback for unknown types
+                        node_type = NodeType.TASK  # fallback for unknown enum values
+
+                    # Always set custom_node_type so the registry checks custom
+                    # implementations first — handles both enum misses (code,
+                    # ai_process, notification) and enum hits that have custom
+                    # registrations (webhook, approval, loop, parallel).
+                    if "custom_node_type" not in parameters:
+                        parameters["custom_node_type"] = raw_type
 
                     node_config = NodeConfig(
                         id=node_id,
