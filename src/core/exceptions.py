@@ -88,6 +88,20 @@ class AdapterError(BaseAPIException):
         super().__init__(message, 500, details)
 
 
+class CredentialNotFoundError(NotFoundError):
+    """Raised when requested credentials are not found."""
+
+    def __init__(self, message: str = "Credentials not found", details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, details)
+
+
+class CredentialDecryptionError(BaseAPIException):
+    """Raised when credential decryption fails."""
+
+    def __init__(self, message: str = "Credential decryption failed", details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, 500, details)
+
+
 class ToolExecutionError(BaseAPIException):
     """Raised when a tool execution fails.
 

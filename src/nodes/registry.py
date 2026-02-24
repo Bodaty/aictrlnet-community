@@ -235,3 +235,17 @@ class NodeRegistry:
 
 # Global node registry
 node_registry = NodeRegistry()
+
+
+def get_node_registry() -> NodeRegistry:
+    """Get the global node registry."""
+    return node_registry
+
+
+# Plugin hook: allow higher editions to register additional node types.
+# Editions provide a nodes/edition_nodes.py with register_edition_nodes(registry).
+try:
+    from nodes.edition_nodes import register_edition_nodes
+    register_edition_nodes(node_registry)
+except ImportError:
+    pass  # No edition extensions available (pure Community)
