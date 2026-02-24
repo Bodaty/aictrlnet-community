@@ -6,7 +6,7 @@ from datetime import datetime
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
-from ..template_utils import resolve_templates
+from ..template_utils import resolve_templates, get_adapter_credentials
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest
@@ -33,7 +33,11 @@ class AIProcessNode(BaseNode):
         """Execute the AI process node. Returns output dict for BaseNode.run() to wrap."""
         # Get AI processing parameters
         ai_task = self.config.parameters.get("ai_task", "generate")
-        adapter_id = self.config.parameters.get("adapter_id")
+        # UI saves as "adapter", setup scripts use "adapter_id" — accept both
+        adapter_id = (
+            self.config.parameters.get("adapter_id")
+            or self.config.parameters.get("adapter")
+        )
 
         if not adapter_id:
             # Try to auto-select adapter based on task
@@ -44,12 +48,17 @@ class AIProcessNode(BaseNode):
         if not adapter_class:
             raise ValueError(f"AI adapter {adapter_id} not found")
 
-        # Create adapter instance with proper config
+        # Look up UI-configured credentials for this adapter
+        credentials = await get_adapter_credentials(adapter_id) or {}
+
+        # Create adapter instance with proper config + credentials
         adapter_config = AdapterConfig(
             name=adapter_id,
             category=AdapterCategory.AI,
             version="1.0.0",
             description=f"AI adapter for {ai_task}",
+            api_key=credentials.get("api_key"),
+            credentials=credentials,
         )
         adapter = adapter_class(adapter_config)
 

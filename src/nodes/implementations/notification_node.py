@@ -7,7 +7,7 @@ import json
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
-from ..template_utils import resolve_templates
+from ..template_utils import resolve_templates, get_adapter_credentials
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest
@@ -95,13 +95,17 @@ class NotificationNode(BaseNode):
         return output_data
     
     @staticmethod
-    def _create_adapter(adapter_class, adapter_id: str):
-        """Create adapter instance with proper AdapterConfig."""
+    async def _create_adapter(adapter_class, adapter_id: str, credentials: dict = None):
+        """Create adapter instance with proper AdapterConfig + credentials."""
+        if credentials is None:
+            credentials = await get_adapter_credentials(adapter_id) or {}
         config = AdapterConfig(
             name=adapter_id,
             category=AdapterCategory.COMMUNICATION,
             version="1.0.0",
             description=f"Notification adapter: {adapter_id}",
+            api_key=credentials.get("api_key"),
+            credentials=credentials,
         )
         return adapter_class(config)
 
@@ -189,7 +193,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Email adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = self._create_adapter(adapter_class, adapter_id)
+        adapter = await self._create_adapter(adapter_class, adapter_id)
         
         # Prepare email addresses
         to_addresses = [r.get("address") or r.get("email") for r in recipients]
@@ -232,7 +236,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"SMS adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = self._create_adapter(adapter_class, adapter_id)
+        adapter = await self._create_adapter(adapter_class, adapter_id)
         
         # Prepare phone numbers
         phone_numbers = [r.get("address") or r.get("phone") for r in recipients]
@@ -286,7 +290,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Slack adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = self._create_adapter(adapter_class, adapter_id)
+        adapter = await self._create_adapter(adapter_class, adapter_id)
         
         # Prepare channels/users
         targets = []
@@ -341,7 +345,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Discord adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = self._create_adapter(adapter_class, adapter_id)
+        adapter = await self._create_adapter(adapter_class, adapter_id)
         
         # Prepare channels
         channels = []
@@ -388,7 +392,7 @@ class NotificationNode(BaseNode):
         if not adapter_class:
             raise ValueError(f"WhatsApp adapter '{adapter_id}' not found")
 
-        adapter = self._create_adapter(adapter_class, adapter_id)
+        adapter = await self._create_adapter(adapter_class, adapter_id)
 
         phone_numbers = [r.get("address") or r.get("phone") for r in recipients]
         phone_numbers = [p for p in phone_numbers if p]
@@ -442,7 +446,7 @@ class NotificationNode(BaseNode):
         if not adapter_class:
             raise ValueError(f"Telegram adapter '{adapter_id}' not found")
 
-        adapter = self._create_adapter(adapter_class, adapter_id)
+        adapter = await self._create_adapter(adapter_class, adapter_id)
 
         chat_ids = [r.get("address") or r.get("chat_id") for r in recipients]
         chat_ids = [c for c in chat_ids if c]
@@ -488,7 +492,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Webhook adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = self._create_adapter(adapter_class, adapter_id)
+        adapter = await self._create_adapter(adapter_class, adapter_id)
         
         # Prepare webhook URLs
         urls = []
@@ -561,7 +565,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Push adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = self._create_adapter(adapter_class, adapter_id)
+        adapter = await self._create_adapter(adapter_class, adapter_id)
         
         # Prepare device tokens
         tokens = []

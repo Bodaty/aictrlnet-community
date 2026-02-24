@@ -15,6 +15,7 @@ from core.dependencies import get_edition
 from core.security import get_current_active_user
 from core.database import get_db
 from models.community_complete import Adapter
+from adapters.registry import adapter_registry
 
 router = APIRouter()
 
@@ -91,6 +92,9 @@ async def list_available_adapters(
     result = await db.execute(stmt)
     adapters_db = result.scalars().all()
     
+    # Build a set of known runtime adapter type names for lookups
+    runtime_types = set(adapter_registry._adapter_classes.keys())
+
     # Convert to response format
     adapters = []
     for adapter in adapters_db:
@@ -104,10 +108,20 @@ async def list_available_adapters(
                     "description": cap.replace("_", " ").title(),
                     "category": adapter.category
                 })
-        
+
+        # Derive the registry type key from the DB name.
+        # "Claude" → "claude", "OpenAI" → "openai", etc.
+        # Fall back to UUID if the lowercased name isn't in the runtime registry.
+        registry_type = adapter.name.lower().replace(" ", "-")
+        if registry_type not in runtime_types:
+            # Try exact lowercase
+            registry_type = adapter.name.lower().replace(" ", "")
+        if registry_type not in runtime_types:
+            registry_type = str(adapter.id)
+
         adapter_info = AdapterInfo(
             id=adapter.id,
-            type=adapter.id,  # Use id as type for compatibility
+            type=registry_type,
             name=adapter.name,
             category=adapter.category,
             description=adapter.description,
