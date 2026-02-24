@@ -61,6 +61,7 @@ class AIProcessNode(BaseNode):
             credentials=credentials,
         )
         adapter = adapter_class(adapter_config)
+        await adapter.start()
 
         # Build template context: input_data keys available both at top level
         # and under "input_data" prefix so {{key}} and {{input_data.key}} work.
@@ -136,80 +137,87 @@ class AIProcessNode(BaseNode):
         # Return first available adapter
         return available_adapters[0]
     
+    async def _call_adapter(self, adapter: Any, capability: str, parameters: dict) -> "AdapterResponse":
+        """Call adapter with fallback from generic capabilities to chat_completion."""
+        from adapters.models import AdapterRequest
+
+        request = AdapterRequest(capability=capability, parameters=parameters)
+        try:
+            response = await adapter.execute(request)
+            if response.status != "error":
+                return response
+        except Exception:
+            pass
+
+        # Fallback: convert to chat_completion (works with Claude, OpenAI, etc.)
+        prompt = parameters.get("prompt") or parameters.get("text", "")
+        messages = [{"role": "user", "content": prompt}]
+        chat_request = AdapterRequest(
+            capability="chat_completion",
+            parameters={
+                "messages": messages,
+                "model": parameters.get("model"),
+                "max_tokens": parameters.get("max_tokens", 1000),
+                "temperature": parameters.get("temperature", 0.7),
+            }
+        )
+        response = await adapter.execute(chat_request)
+        # Normalise chat response so callers can read response.data["text"]
+        if response.status != "error" and "text" not in response.data:
+            content = response.data.get("content", "")
+            if isinstance(content, list):
+                content = "".join(
+                    b.get("text", "") for b in content if isinstance(b, dict)
+                )
+            response.data["text"] = content
+        return response
+
     async def _process_generation(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process text generation task."""
-        # Get prompt from input or parameters
         prompt = input_data.get("prompt") or self.config.parameters.get("prompt")
         if not prompt:
             raise ValueError("Prompt is required for generation task")
-        
-        # Build request
-        request = AdapterRequest(
-            capability="generate",
-            parameters={
-                "prompt": prompt,
-                "max_tokens": self.config.parameters.get("max_tokens", 1000),
-                "temperature": self.config.parameters.get("temperature", 0.7),
-                "top_p": self.config.parameters.get("top_p", 1.0),
-                "model": self.config.parameters.get("model")
-            }
-        )
-        
-        # Execute request
-        response = await adapter.execute(request)
-        
+
+        response = await self._call_adapter(adapter, "generate", {
+            "prompt": prompt,
+            "max_tokens": self.config.parameters.get("max_tokens", 1000),
+            "temperature": self.config.parameters.get("temperature", 0.7),
+            "top_p": self.config.parameters.get("top_p", 1.0),
+            "model": self.config.parameters.get("model"),
+        })
+
         if response.status == "error":
             raise Exception(f"Generation failed: {response.error}")
-        
+
         return {
             "generated_text": response.data.get("text", ""),
             "usage": response.data.get("usage", {}),
-            "model": response.data.get("model")
+            "model": response.data.get("model"),
         }
     
     async def _process_sentiment(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process sentiment analysis task."""
-        # Get text to analyze
         text = input_data.get("text") or self.config.parameters.get("text")
         if not text:
             raise ValueError("Text is required for sentiment analysis")
-        
-        # Build request - use classification or custom sentiment
-        request = AdapterRequest(
-            capability="classify",
-            parameters={
-                "text": text,
-                "categories": ["positive", "negative", "neutral"],
-                "model": self.config.parameters.get("model")
-            }
-        )
-        
-        # Execute request
-        response = await adapter.execute(request)
-        
+
+        response = await self._call_adapter(adapter, "generate", {
+            "prompt": f"Analyze the sentiment of the following text and respond with only 'positive', 'negative', or 'neutral':\n\n{text}",
+            "max_tokens": 10,
+            "temperature": 0,
+            "model": self.config.parameters.get("model"),
+        })
+
         if response.status == "error":
-            # Fallback to generation-based sentiment
-            request = AdapterRequest(
-                capability="generate",
-                parameters={
-                    "prompt": f"Analyze the sentiment of the following text and respond with only 'positive', 'negative', or 'neutral':\n\n{text}",
-                    "max_tokens": 10,
-                    "temperature": 0,
-                    "model": self.config.parameters.get("model")
-                }
-            )
-            response = await adapter.execute(request)
-            
-            if response.status == "error":
-                raise Exception(f"Sentiment analysis failed: {response.error}")
-            
-            sentiment = response.data.get("text", "").strip().lower()
-            return {
-                "sentiment": sentiment,
-                "confidence": 0.8  # Default confidence for generation-based
-            }
-        
-        # Extract classification result
+            raise Exception(f"Sentiment analysis failed: {response.error}")
+
+        sentiment = response.data.get("text", "").strip().lower()
+        return {
+            "sentiment": sentiment,
+            "confidence": 0.8
+        }
+
+        # Extract classification result (unreachable but kept for native support)
         classifications = response.data.get("classifications", [])
         if classifications:
             top_class = max(classifications, key=lambda x: x.get("confidence", 0))
@@ -249,27 +257,22 @@ class AIProcessNode(BaseNode):
             }
         )
         
-        # Execute request
-        response = await adapter.execute(request)
-        
+        # Most adapters don't support native "classify" — go straight to
+        # generation-based classification via _call_adapter (which falls back
+        # to chat_completion automatically).
+        categories_str = ", ".join(categories)
+        response = await self._call_adapter(adapter, "generate", {
+            "prompt": f"Classify the following text into one of these categories [{categories_str}]. Respond with only the category name:\n\n{text}",
+            "max_tokens": 50,
+            "temperature": 0,
+            "model": self.config.parameters.get("model"),
+        })
+
         if response.status == "error":
-            # Fallback to generation-based classification
-            categories_str = ", ".join(categories)
-            request = AdapterRequest(
-                capability="generate",
-                parameters={
-                    "prompt": f"Classify the following text into one of these categories [{categories_str}]. Respond with only the category name:\n\n{text}",
-                    "max_tokens": 50,
-                    "temperature": 0,
-                    "model": self.config.parameters.get("model")
-                }
-            )
-            response = await adapter.execute(request)
-            
-            if response.status == "error":
-                raise Exception(f"Classification failed: {response.error}")
-            
-            category = response.data.get("text", "").strip()
+            raise Exception(f"Classification failed: {response.error}")
+
+        category = response.data.get("text", "").strip()
+        if category:
             return {
                 "category": category,
                 "confidence": 0.8,
@@ -329,33 +332,19 @@ class AIProcessNode(BaseNode):
             }
         )
         
-        # Execute request
-        response = await adapter.execute(request)
-        
+        response = await self._call_adapter(adapter, "generate", {
+            "prompt": prompt,
+            "max_tokens": max_length * 2,
+            "temperature": 0.3,
+            "model": self.config.parameters.get("model"),
+        })
+
         if response.status == "error":
-            # Fallback to generation-based summarization
-            request = AdapterRequest(
-                capability="generate",
-                parameters={
-                    "prompt": prompt,
-                    "max_tokens": max_length * 2,  # Rough estimate
-                    "temperature": 0.3,
-                    "model": self.config.parameters.get("model")
-                }
-            )
-            response = await adapter.execute(request)
-            
-            if response.status == "error":
-                raise Exception(f"Summarization failed: {response.error}")
-            
-            return {
-                "summary": response.data.get("text", ""),
-                "method": "generation"
-            }
-        
+            raise Exception(f"Summarization failed: {response.error}")
+
         return {
-            "summary": response.data.get("summary", ""),
-            "method": "native"
+            "summary": response.data.get("text", ""),
+            "method": "generation"
         }
     
     async def _process_entity_extraction(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
