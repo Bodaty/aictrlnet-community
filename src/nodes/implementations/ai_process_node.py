@@ -6,9 +6,10 @@ from datetime import datetime
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
+from ..template_utils import resolve_templates
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
-from adapters.models import AdapterRequest
+from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest
 
 
 logger = logging.getLogger(__name__)
@@ -43,8 +44,23 @@ class AIProcessNode(BaseNode):
         if not adapter_class:
             raise ValueError(f"AI adapter {adapter_id} not found")
 
-        # Create adapter instance
-        adapter = adapter_class({})
+        # Create adapter instance with proper config
+        adapter_config = AdapterConfig(
+            name=adapter_id,
+            category=AdapterCategory.AI,
+            version="1.0.0",
+            description=f"AI adapter for {ai_task}",
+        )
+        adapter = adapter_class(adapter_config)
+
+        # Build template context: input_data keys available both at top level
+        # and under "input_data" prefix so {{key}} and {{input_data.key}} work.
+        tmpl_ctx = {"input_data": input_data, **input_data}
+
+        # Resolve templates in parameters that may contain {{...}} placeholders
+        resolved_params = resolve_templates(dict(self.config.parameters), tmpl_ctx)
+        # Patch self.config.parameters so downstream helpers see resolved values
+        self.config.parameters.update(resolved_params)
 
         # Process based on task type
         if ai_task == "generate":
@@ -201,9 +217,15 @@ class AIProcessNode(BaseNode):
         # Get text and categories
         text = input_data.get("text") or self.config.parameters.get("text")
         categories = input_data.get("categories") or self.config.parameters.get("categories")
-        
+
         if not text:
-            raise ValueError("Text is required for classification")
+            # Fall back to the resolved prompt as the text to classify
+            prompt = self.config.parameters.get("prompt")
+            if prompt:
+                text = prompt
+                logger.info("Classification: using resolved prompt as text input")
+            else:
+                raise ValueError("Text is required for classification")
         if not categories:
             raise ValueError("Categories are required for classification")
         

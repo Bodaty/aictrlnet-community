@@ -295,17 +295,23 @@ class NodeExecutor:
                 if isinstance(result, Exception):
                     logger.error(f"Node {node_instance.id} failed with exception: {result}")
                     continue
-                
+
                 # Mark as completed
                 completed_nodes.add(node_instance.id)
-                
+
                 # Add next nodes to queue
                 if result.status == NodeStatus.COMPLETED:
                     for next_node_id in result.next_node_ids:
                         if next_node_id not in completed_nodes:
-                            # Pass output data as input to next node
+                            # Accumulate data: merge input with output so
+                            # downstream nodes see all upstream data.
+                            # Output keys take priority over input keys.
+                            accumulated = {
+                                **node_instance.input_data,
+                                **node_instance.output_data,
+                            }
                             await execution_queue.put(
-                                (next_node_id, node_instance.output_data)
+                                (next_node_id, accumulated)
                             )
                 
                 # Handle retry

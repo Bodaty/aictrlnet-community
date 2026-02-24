@@ -7,9 +7,10 @@ import json
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
+from ..template_utils import resolve_templates
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
-from adapters.models import AdapterRequest
+from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest
 
 
 logger = logging.getLogger(__name__)
@@ -32,10 +33,29 @@ class NotificationNode(BaseNode):
     
     async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the notification node. Returns output dict for BaseNode.run() to wrap."""
+        # Build template context and resolve templates in parameters
+        tmpl_ctx = {"input_data": input_data, **input_data}
+        resolved_params = resolve_templates(dict(self.config.parameters), tmpl_ctx)
+        self.config.parameters.update(resolved_params)
+
         # Get notification configuration
         channel = self.config.parameters.get("channel", "email")
         recipients = self._get_recipients(input_data)
         message = self._build_message(input_data, context)
+
+        # For channels that can work without explicit recipients, allow empty list
+        if not recipients and channel in ("in_app", "webhook"):
+            logger.warning(
+                f"Notification node {self.config.id}: no recipients for "
+                f"channel={channel} — logging message and skipping send."
+            )
+            return {
+                "channel": channel,
+                "sent_to": [],
+                "skipped": True,
+                "message_subject": message.get("subject"),
+                "message_body": message.get("body"),
+            }
 
         # Send notification based on channel
         if channel == "email":
@@ -74,6 +94,17 @@ class NotificationNode(BaseNode):
 
         return output_data
     
+    @staticmethod
+    def _create_adapter(adapter_class, adapter_id: str):
+        """Create adapter instance with proper AdapterConfig."""
+        config = AdapterConfig(
+            name=adapter_id,
+            category=AdapterCategory.COMMUNICATION,
+            version="1.0.0",
+            description=f"Notification adapter: {adapter_id}",
+        )
+        return adapter_class(config)
+
     def _get_recipients(self, input_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Get notification recipients."""
         # Get from configuration or input
@@ -96,8 +127,8 @@ class NotificationNode(BaseNode):
                 normalized.append(recipient)
         
         if not normalized:
-            raise ValueError("No recipients specified for notification")
-        
+            logger.warning(f"Notification node {self.config.id}: no recipients resolved")
+
         return normalized
     
     def _build_message(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -158,7 +189,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Email adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = adapter_class({})
+        adapter = self._create_adapter(adapter_class, adapter_id)
         
         # Prepare email addresses
         to_addresses = [r.get("address") or r.get("email") for r in recipients]
@@ -201,7 +232,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"SMS adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = adapter_class({})
+        adapter = self._create_adapter(adapter_class, adapter_id)
         
         # Prepare phone numbers
         phone_numbers = [r.get("address") or r.get("phone") for r in recipients]
@@ -255,7 +286,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Slack adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = adapter_class({})
+        adapter = self._create_adapter(adapter_class, adapter_id)
         
         # Prepare channels/users
         targets = []
@@ -310,7 +341,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Discord adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = adapter_class({})
+        adapter = self._create_adapter(adapter_class, adapter_id)
         
         # Prepare channels
         channels = []
@@ -357,7 +388,7 @@ class NotificationNode(BaseNode):
         if not adapter_class:
             raise ValueError(f"WhatsApp adapter '{adapter_id}' not found")
 
-        adapter = adapter_class({})
+        adapter = self._create_adapter(adapter_class, adapter_id)
 
         phone_numbers = [r.get("address") or r.get("phone") for r in recipients]
         phone_numbers = [p for p in phone_numbers if p]
@@ -411,7 +442,7 @@ class NotificationNode(BaseNode):
         if not adapter_class:
             raise ValueError(f"Telegram adapter '{adapter_id}' not found")
 
-        adapter = adapter_class({})
+        adapter = self._create_adapter(adapter_class, adapter_id)
 
         chat_ids = [r.get("address") or r.get("chat_id") for r in recipients]
         chat_ids = [c for c in chat_ids if c]
@@ -457,7 +488,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Webhook adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = adapter_class({})
+        adapter = self._create_adapter(adapter_class, adapter_id)
         
         # Prepare webhook URLs
         urls = []
@@ -530,7 +561,7 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Push adapter '{adapter_id}' not found")
         
         # Create adapter instance
-        adapter = adapter_class({})
+        adapter = self._create_adapter(adapter_class, adapter_id)
         
         # Prepare device tokens
         tokens = []
