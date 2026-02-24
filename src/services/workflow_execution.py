@@ -540,7 +540,7 @@ class WorkflowExecutionService:
     
     async def list_executions(
         self,
-        workflow_id: Optional[uuid.UUID] = None,
+        workflow_id: Optional[str] = None,
         status: Optional[WorkflowExecutionStatus] = None,
         skip: int = 0,
         limit: int = 100

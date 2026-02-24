@@ -1,6 +1,7 @@
 """Workflow-related endpoints."""
 
 import logging
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,7 @@ from core.tenant_context import get_current_tenant_id
 from middleware.enforcement import require_feature
 from core.upgrade_hints import attach_upgrade_hints
 from models.community import WorkflowDefinition, WorkflowInstance
+from models.workflow_execution import WorkflowExecution, WorkflowExecutionStatus
 from models.community_complete import Adapter, MCPTool
 from models.iam import IAMAgent
 from schemas.workflow import (
@@ -393,23 +395,46 @@ async def get_workflow_status(
     )
     instance = instance_result.scalar_one_or_none()
     
-    if not instance:
-        # No instance found, workflow has never been executed
+    if instance:
+        # Return the status of the latest instance
         return {
             "workflow_id": workflow_id,
-            "status": "not_started",
-            "message": "Workflow has not been executed yet"
+            "instance_id": instance.id,
+            "status": instance.status,
+            "started_at": instance.started_at,
+            "completed_at": instance.completed_at,
+            "context": instance.context or {},
+            "outputs": instance.outputs or {}
         }
-    
-    # Return the status of the latest instance
+
+    # Fallback: check WorkflowExecution table (execute endpoint creates these)
+    exec_result = await db.execute(
+        select(WorkflowExecution)
+        .filter(WorkflowExecution.workflow_id == workflow_id)
+        .order_by(WorkflowExecution.created_at.desc())
+        .limit(1)
+    )
+    execution = exec_result.scalar_one_or_none()
+
+    if execution:
+        return {
+            "workflow_id": workflow_id,
+            "execution_id": str(execution.id),
+            "status": execution.status.value if hasattr(execution.status, 'value') else execution.status,
+            "started_at": execution.started_at,
+            "completed_at": execution.completed_at,
+            "outputs": execution.output_data or {},
+            "context": execution.context or {},
+            "dry_run": (execution.context or {}).get("is_dry_run", False),
+            "nodes_intercepted": (execution.execution_metadata or {}).get("nodes_intercepted", 0) if hasattr(execution, 'execution_metadata') else 0,
+            "error": (execution.error_details or {}).get("error") if execution.error_details else None
+        }
+
+    # No instance or execution found
     return {
         "workflow_id": workflow_id,
-        "instance_id": instance.id,
-        "status": instance.status,
-        "started_at": instance.started_at,
-        "completed_at": instance.completed_at,
-        "context": instance.context or {},
-        "outputs": instance.outputs or {}
+        "status": "not_started",
+        "message": "Workflow has not been executed yet"
     }
 
 
@@ -715,15 +740,36 @@ async def cancel_workflow(
         .limit(1)
     )
     instance = result.scalar_one_or_none()
-    
-    if not instance:
-        raise HTTPException(status_code=404, detail="No active workflow instance found")
-    
-    # Cancel the instance
-    instance.status = "cancelled"
-    await db.commit()
-    
-    return {"message": f"Workflow {workflow_id} cancelled successfully"}
+
+    if instance:
+        instance.status = "cancelled"
+        await db.commit()
+        return {"message": f"Workflow {workflow_id} cancelled successfully"}
+
+    # Fallback: check WorkflowExecution table (execute endpoint creates these)
+    exec_result = await db.execute(
+        select(WorkflowExecution)
+        .filter(
+            WorkflowExecution.workflow_id == workflow_id,
+            WorkflowExecution.status.in_([
+                WorkflowExecutionStatus.RUNNING,
+                WorkflowExecutionStatus.PENDING,
+                WorkflowExecutionStatus.PAUSED,
+                WorkflowExecutionStatus.RESUMING
+            ])
+        )
+        .order_by(WorkflowExecution.created_at.desc())
+        .limit(1)
+    )
+    execution = exec_result.scalar_one_or_none()
+
+    if execution:
+        execution.status = WorkflowExecutionStatus.CANCELLED
+        execution.completed_at = datetime.utcnow()
+        await db.commit()
+        return {"message": f"Workflow {workflow_id} cancelled successfully"}
+
+    raise HTTPException(status_code=404, detail="No active workflow instance found")
 
 
 @router.get("/{workflow_id}/executions", response_model=List[WorkflowExecutionResponse])
@@ -735,10 +781,9 @@ async def list_workflow_executions(
     current_user: dict = Depends(get_current_active_user),
 ):
     """List executions of a workflow."""
-    import uuid
     execution_service = WorkflowExecutionService(db)
     executions = await execution_service.list_executions(
-        workflow_id=uuid.UUID(workflow_id),
+        workflow_id=workflow_id,
         skip=skip,
         limit=limit
     )
