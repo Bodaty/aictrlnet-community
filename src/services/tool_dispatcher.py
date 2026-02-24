@@ -230,7 +230,6 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["query"]
         },
         editions=["community", "business", "enterprise"],
-        handler="template_service.search_templates"
     ),
     "list_templates": ToolDefinition(
         name="list_templates",
@@ -245,7 +244,6 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": []
         },
         editions=["community", "business", "enterprise"],
-        handler="template_service.list_templates"
     ),
     "get_template_detail": ToolDefinition(
         name="get_template_detail",
@@ -258,7 +256,6 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["template_id"]
         },
         editions=["community", "business", "enterprise"],
-        handler="template_service.get_template"
     ),
     "list_template_categories": ToolDefinition(
         name="list_template_categories",
@@ -269,7 +266,6 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": []
         },
         editions=["community", "business", "enterprise"],
-        handler="template_service.list_categories"
     ),
 
     # -------------------------------------------------------------------------
@@ -1789,6 +1785,13 @@ class ToolDispatcher:
             except ImportError:
                 logger.warning("[v4] Onboarding service not available")
 
+            # Workflow template service
+            try:
+                from services.workflow_template_service import WorkflowTemplateService
+                self._services['template_service'] = WorkflowTemplateService()
+            except ImportError:
+                logger.warning("[v4] Template service not available")
+
             self._initialized = True
             logger.info(f"[v4] Services loaded: {list(self._services.keys())}")
 
@@ -2072,11 +2075,11 @@ class ToolDispatcher:
 
         # Template tools
         elif tool_name == "search_templates":
-            return await self._search_templates(arguments)
+            return await self._search_templates(arguments, user_id)
         elif tool_name == "list_templates":
-            return await self._list_templates(arguments)
+            return await self._list_templates(arguments, user_id)
         elif tool_name == "get_template_detail":
-            return await self._get_template_detail(arguments)
+            return await self._get_template_detail(arguments, user_id)
         elif tool_name == "list_template_categories":
             return await self._list_template_categories()
 
@@ -2628,48 +2631,179 @@ class ToolDispatcher:
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
-    async def _search_templates(self, args: Dict) -> ToolResult:
-        """Search templates."""
-        # TODO: Connect to actual template service
-        return ToolResult(
-            success=True,
-            data={
-                "templates": [],
-                "message": f"Template search for '{args.get('query')}' would return results here",
-                "count": 0
-            }
-        )
+    async def _query_templates(self, args: Dict, user_id: str = None, search: str = None) -> ToolResult:
+        """Query templates directly from DB (shared by list and search handlers)."""
+        try:
+            from sqlalchemy import select, func, or_
+            from models.workflow_templates import WorkflowTemplate
 
-    async def _list_templates(self, args: Dict) -> ToolResult:
-        """List templates."""
-        return ToolResult(
-            success=True,
-            data={
-                "templates": [],
-                "message": "Template listing would return results here",
-                "count": 0
-            }
-        )
+            edition = self.edition.value if self.edition else 'community'
+            category = args.get('category')
+            limit = args.get('limit', 20)
 
-    async def _get_template_detail(self, args: Dict) -> ToolResult:
-        """Get template detail."""
-        return ToolResult(
-            success=True,
-            data={
-                "template_id": args.get('template_id'),
-                "message": "Template details would be returned here"
+            query = select(
+                WorkflowTemplate.id,
+                WorkflowTemplate.name,
+                WorkflowTemplate.category,
+                WorkflowTemplate.complexity,
+                WorkflowTemplate.description,
+                WorkflowTemplate.edition,
+                WorkflowTemplate.tags,
+            ).where(
+                or_(
+                    WorkflowTemplate.is_public == True,
+                    WorkflowTemplate.is_system == True,
+                )
+            ).where(
+                WorkflowTemplate.edition == edition
+            )
+
+            if category:
+                query = query.where(WorkflowTemplate.category == category)
+
+            if search:
+                search_term = f"%{search}%"
+                query = query.where(
+                    or_(
+                        WorkflowTemplate.name.ilike(search_term),
+                        WorkflowTemplate.description.ilike(search_term),
+                    )
+                )
+
+            # Count
+            count_query = select(func.count()).select_from(query.subquery())
+            count_result = await self.db.execute(count_query)
+            total = count_result.scalar() or 0
+
+            # Fetch rows
+            query = query.order_by(WorkflowTemplate.name).limit(limit)
+            result = await self.db.execute(query)
+            rows = result.all()
+
+            template_dicts = [
+                {
+                    "id": str(row.id),
+                    "name": row.name,
+                    "category": row.category,
+                    "complexity": row.complexity.value if hasattr(row.complexity, 'value') else row.complexity,
+                    "description": row.description,
+                    "edition": row.edition,
+                    "tags": row.tags or [],
+                }
+                for row in rows
+            ]
+
+            data = {
+                "templates": template_dicts,
+                "count": total,
             }
-        )
+            if search:
+                data["query"] = search
+                data["tool_name"] = "search_templates"
+            else:
+                data["tool_name"] = "list_templates"
+
+            return ToolResult(success=True, data=data)
+        except Exception as e:
+            tool = "search_templates" if search else "list_templates"
+            logger.warning(f"[v4] {tool} failed: {e}")
+            return ToolResult(success=False, error=str(e))
+
+    async def _search_templates(self, args: Dict, user_id: str = None) -> ToolResult:
+        """Search templates by query string."""
+        return await self._query_templates(args, user_id, search=args.get('query', ''))
+
+    async def _list_templates(self, args: Dict, user_id: str = None) -> ToolResult:
+        """List available workflow templates."""
+        return await self._query_templates(args, user_id)
+
+    async def _get_template_detail(self, args: Dict, user_id: str = None) -> ToolResult:
+        """Get detailed information about a specific template."""
+        template_id = args.get('template_id')
+        if not template_id:
+            return ToolResult(success=False, error="template_id is required")
+
+        try:
+            from sqlalchemy import select
+            from models.workflow_templates import WorkflowTemplate
+            from uuid import UUID as _UUID
+
+            stmt = select(
+                WorkflowTemplate.id,
+                WorkflowTemplate.name,
+                WorkflowTemplate.description,
+                WorkflowTemplate.category,
+                WorkflowTemplate.complexity,
+                WorkflowTemplate.edition,
+                WorkflowTemplate.tags,
+                WorkflowTemplate.usage_count,
+                WorkflowTemplate.rating,
+            ).where(WorkflowTemplate.id == _UUID(template_id))
+
+            result = await self.db.execute(stmt)
+            row = result.first()
+
+            if not row:
+                return ToolResult(success=False, error=f"Template {template_id} not found")
+
+            return ToolResult(
+                success=True,
+                data={
+                    "id": str(row.id),
+                    "name": row.name,
+                    "description": row.description,
+                    "category": row.category,
+                    "complexity": row.complexity.value if hasattr(row.complexity, 'value') else row.complexity,
+                    "edition": row.edition,
+                    "tags": row.tags or [],
+                    "usage_count": row.usage_count,
+                    "rating": row.rating,
+                    "tool_name": "get_template_detail"
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[v4] get_template_detail failed: {e}")
+            return ToolResult(success=False, error=str(e))
 
     async def _list_template_categories(self) -> ToolResult:
-        """List template categories."""
-        return ToolResult(
-            success=True,
-            data={
-                "categories": ["automation", "integration", "analytics", "communication"],
-                "industries": ["healthcare", "finance", "legal", "technology", "retail"]
-            }
-        )
+        """List template categories with counts from the database."""
+        try:
+            from sqlalchemy import select, func
+            from models.workflow_templates import WorkflowTemplate
+
+            edition = self.edition.value if self.edition else 'community'
+
+            stmt = (
+                select(
+                    WorkflowTemplate.category,
+                    func.count(WorkflowTemplate.id).label('count')
+                )
+                .where(WorkflowTemplate.edition == edition)
+                .where(WorkflowTemplate.category.isnot(None))
+                .group_by(WorkflowTemplate.category)
+                .order_by(func.count(WorkflowTemplate.id).desc())
+            )
+
+            result = await self.db.execute(stmt)
+            rows = result.all()
+
+            categories = [
+                {"name": row[0], "count": row[1]}
+                for row in rows
+            ]
+
+            return ToolResult(
+                success=True,
+                data={
+                    "categories": categories,
+                    "total_categories": len(categories),
+                    "edition": edition,
+                    "tool_name": "list_template_categories"
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[v4] list_template_categories failed: {e}")
+            return ToolResult(success=False, error=str(e))
 
     async def _create_agent(self, args: Dict, user_id: str) -> ToolResult:
         """Create an agent."""
@@ -2812,21 +2946,67 @@ class ToolDispatcher:
             return ToolResult(success=False, error=str(e))
 
     async def _get_help(self, args: Dict) -> ToolResult:
-        """Get help."""
+        """Get help with edition-aware, rich content."""
         topic = args.get('topic', 'general')
+        edition = self.edition.value if self.edition else 'community'
+
+        # Build edition-aware general help
+        edition_label = edition.capitalize()
+        general_help = (
+            f"Welcome to AICtrlNet ({edition_label} Edition) — an AI-powered workflow automation platform. "
+            f"Here's what you can do:\n\n"
+            f"- **Workflow Templates**: Browse ready-made automation templates across categories like sales, marketing, HR, finance, and IT. "
+            f"Ask me to list or search templates to get started.\n"
+            f"- **20+ Integrations**: Connect to AI models (OpenAI, Claude, Ollama), communication tools (Slack, Discord, Email), "
+            f"CRMs (Salesforce, HubSpot), payment processors (Stripe), and more.\n"
+            f"- **Personal AI Agent**: Your agent learns your preferences through an onboarding interview and adapts to your work style.\n"
+            f"- **Task Management**: Create, track, and manage tasks with priority and status tracking.\n"
+            f"- **AI Governance**: Monitor AI model risk, bias, and compliance across your organization.\n\n"
+            f"Try asking: \"Show me workflow templates\", \"What integrations are available?\", or \"Start onboarding\"."
+        )
 
         help_content = {
-            "general": "I can help you with workflows, tasks, agents, and MCP integrations. What would you like to do?",
-            "workflows": "Workflows automate your business processes. You can create, list, execute, and monitor them.",
-            "tasks": "Tasks help you track work items. You can create, update, and manage task status.",
-            "agents": "AI agents perform specialized tasks. You can create custom agents or use pre-built specialists.",
-            "mcp": "MCP (Model Context Protocol) connects to external AI tools. You can list servers, discover tools, and execute them."
+            "general": general_help,
+            "workflows": (
+                "Workflows automate your business processes end-to-end. You can create custom workflows from scratch, "
+                "use pre-built templates, or fork and customize existing ones. Workflows support conditional logic, "
+                "parallel execution, and integration with 20+ external services. "
+                "Try: \"List my workflow templates\" or \"Search templates for marketing automation\"."
+            ),
+            "templates": (
+                "Workflow templates are pre-built automations you can use immediately or customize. "
+                "Templates span categories like sales, marketing, HR, finance, IT, compliance, and more. "
+                "Each template includes defined nodes, connections, and configurable parameters. "
+                "Try: \"List templates\", \"Search templates for onboarding\", or \"Show template categories\"."
+            ),
+            "tasks": (
+                "Tasks help you track work items with priorities and statuses. You can create tasks, "
+                "assign priorities (low/medium/high/critical), update progress, and query status. "
+                "Try: \"Create a task to review Q1 reports\" or \"List my tasks\"."
+            ),
+            "agents": (
+                "AI agents perform specialized tasks autonomously. Your personal agent learns your preferences "
+                "through onboarding and adapts its communication style. You can configure its personality, "
+                "tone, and expertise areas. Try: \"Start onboarding\" or \"Update my agent settings\"."
+            ),
+            "integrations": (
+                "AICtrlNet connects to 20+ services across AI models, communication, CRM, payments, and databases. "
+                "Integrations include OpenAI, Anthropic, Ollama, Slack, Discord, Email, Salesforce, HubSpot, Stripe, "
+                "PostgreSQL, MongoDB, and freelancer platforms like Upwork and Fiverr. "
+                "Try: \"List integrations\" or \"What AI models are available?\"."
+            ),
+            "mcp": (
+                "MCP (Model Context Protocol) extends the platform with external AI tool servers. "
+                "You can discover available MCP servers, list their tools, and execute them directly from conversations. "
+                "Try: \"List MCP servers\" or \"Discover MCP tools\"."
+            ),
         }
 
         return ToolResult(
             success=True,
             data={
                 "topic": topic,
+                "edition": edition,
                 "help": help_content.get(topic, help_content["general"])
             }
         )

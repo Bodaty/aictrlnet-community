@@ -5,7 +5,7 @@ This module maintains a registry of which features belong to which edition,
 allowing the conversation system and other components to provide edition-aware responses.
 """
 
-from typing import Dict, List, Set, Optional
+from typing import Any, Dict, List, Set, Optional
 from enum import Enum
 
 
