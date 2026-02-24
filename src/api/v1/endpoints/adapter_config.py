@@ -183,11 +183,18 @@ async def update_adapter_config(
         user_id=current_user.get('id'),
         update_data=update_data
     )
-    
+
     if not config:
         raise HTTPException(status_code=404, detail="Configuration not found")
-    
-    return config
+
+    # Convert to response model (same as create endpoint)
+    config_dict = config.to_dict()
+    config_dict.pop('credentials', None)
+    config_dict['settings'] = config.settings
+    config_dict['credentials'] = None
+    config_dict['metadata'] = config_dict.pop('metadata', {})
+
+    return AdapterConfigResponse(**config_dict)
 
 
 @router.delete("/config/{config_id}")
