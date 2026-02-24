@@ -483,69 +483,69 @@ class NotificationNode(BaseNode):
         }
 
     async def _send_webhook(self, recipients: List[Dict[str, Any]], message: Dict[str, Any]) -> Dict[str, Any]:
-        """Send webhook notification."""
-        # Get webhook adapter
-        adapter_id = self.config.parameters.get("webhook_adapter", "webhook")
-        # Get adapter class from registry
-        adapter_class = adapter_registry.get_adapter_class(adapter_id)
-        if not adapter_class:
-            raise ValueError(f"Webhook adapter '{adapter_id}' not found")
-        
-        # Create adapter instance
-        adapter = await self._create_adapter(adapter_class, adapter_id)
-        
-        # Prepare webhook URLs
+        """Send webhook notification via direct HTTP POST."""
+        import httpx
+
+        # Collect webhook URLs from recipients
         urls = []
         for r in recipients:
             url = r.get("address") or r.get("url") or r.get("webhook")
             if url:
                 urls.append(url)
-        
-        # Send to each webhook
-        results = []
-        for url in urls:
-            # Build webhook payload
-            payload = {
-                "notification": {
-                    "subject": message["subject"],
-                    "body": message["body"],
-                    "type": message["type"],
-                    "priority": message["priority"],
-                    "metadata": message["metadata"]
-                }
+
+        if not urls:
+            logger.warning(f"Webhook notification {self.config.id}: no valid URLs found, logging payload only")
+            return {
+                "channel": "webhook",
+                "sent_to": [],
+                "skipped": True,
+                "message_subject": message.get("subject"),
+                "message_body": message.get("body"),
+                "webhook_fields": self.config.parameters.get("webhook_fields", {}),
             }
-            
-            # Add custom fields
-            if self.config.parameters.get("webhook_fields"):
-                payload.update(self.config.parameters["webhook_fields"])
-            
-            request = AdapterRequest(
-                capability="webhook",
-                parameters={
-                    "url": url,
-                    "method": "POST",
-                    "body": payload,
-                    "headers": self.config.parameters.get("webhook_headers", {})
+
+        # Send to each webhook URL
+        results = []
+        headers = {"Content-Type": "application/json"}
+        headers.update(self.config.parameters.get("webhook_headers", {}))
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            for url in urls:
+                payload = {
+                    "notification": {
+                        "subject": message.get("subject"),
+                        "body": message.get("body"),
+                        "type": message.get("type"),
+                        "priority": message.get("priority"),
+                    }
                 }
-            )
-            
-            response = await adapter.execute(request)
-            results.append({
-                "url": url,
-                "success": response.status != "error",
-                "error": response.error if response.status == "error" else None,
-                "status_code": response.data.get("status_code") if response.status != "error" else None
-            })
-        
+                if self.config.parameters.get("webhook_fields"):
+                    payload.update(self.config.parameters["webhook_fields"])
+
+                try:
+                    resp = await client.post(url, json=payload, headers=headers)
+                    results.append({
+                        "url": url,
+                        "success": resp.is_success,
+                        "status_code": resp.status_code,
+                        "error": None if resp.is_success else resp.text[:200],
+                    })
+                except Exception as exc:
+                    results.append({
+                        "url": url,
+                        "success": False,
+                        "status_code": None,
+                        "error": str(exc),
+                    })
+
         successful = sum(1 for r in results if r["success"])
-        
+
         return {
             "channel": "webhook",
             "sent_to": urls,
             "results": results,
             "successful": successful,
             "failed": len(results) - successful,
-            "adapters_used": [adapter_id]
         }
     
     async def _send_push(self, recipients: List[Dict[str, Any]], message: Dict[str, Any]) -> Dict[str, Any]:

@@ -9,7 +9,7 @@ from ..models import NodeConfig
 from ..template_utils import resolve_templates, get_adapter_credentials
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
-from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest
+from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest, AdapterStatus
 
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,16 @@ class AIProcessNode(BaseNode):
             credentials=credentials,
         )
         adapter = adapter_class(adapter_config)
-        await adapter.start()
+        try:
+            await adapter.start()
+        except Exception as start_err:
+            # Adapter may already be registered from a prior execution — that's OK
+            if "already registered" in str(start_err):
+                await adapter.initialize()
+                adapter.status = AdapterStatus.READY
+                adapter._initialized = True
+            else:
+                raise
 
         # Build template context: input_data keys available both at top level
         # and under "input_data" prefix so {{key}} and {{input_data.key}} work.
