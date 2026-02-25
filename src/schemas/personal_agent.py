@@ -42,10 +42,21 @@ class AutoActionSettings(BaseModel):
     require_confirmation: bool = True
 
 
+class CommunicationChannelPreference(BaseModel):
+    """A preferred communication channel for agent notifications."""
+    channel_type: str = Field(..., description="Channel type: whatsapp, telegram, slack, email, etc.")
+    adapter_type: str = Field(..., description="Adapter registry type for credential lookup")
+    enabled: bool = True
+
+
 class PreferencesConfig(BaseModel):
     """User preference settings for the personal agent."""
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)
     auto_actions: AutoActionSettings = Field(default_factory=AutoActionSettings)
+    communication_channels: List[CommunicationChannelPreference] = Field(
+        default_factory=list,
+        description="Preferred communication channels for agent notifications"
+    )
 
 
 # ---------------------------------------------------------------------------

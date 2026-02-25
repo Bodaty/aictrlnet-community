@@ -52,6 +52,7 @@ class PersonalAgentConfig(Base):
     preferences = Column(JSON, default=lambda: {
         "notifications": {"enabled": True, "frequency": "daily"},
         "auto_actions": {"enabled": False, "require_confirmation": True},
+        "communication_channels": [],
     })
 
     # Personal workflows (list of workflow IDs)

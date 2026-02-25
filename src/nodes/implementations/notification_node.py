@@ -40,6 +40,25 @@ class NotificationNode(BaseNode):
 
         # Get notification configuration
         channel = self.config.parameters.get("channel", "email")
+
+        # Resolve adapter from config (UI sets this) or use channel-specific default.
+        # The frontend stores a unified "adapter" parameter; map it to the
+        # per-channel parameter name that each _send_* method already reads.
+        adapter_override = self.config.parameters.get("adapter")
+        if adapter_override:
+            channel_adapter_keys = {
+                "email": "email_adapter",
+                "sms": "sms_adapter",
+                "slack": "slack_adapter",
+                "discord": "discord_adapter",
+                "whatsapp": "whatsapp_adapter",
+                "telegram": "telegram_adapter",
+                "push": "push_adapter",
+            }
+            key = channel_adapter_keys.get(channel)
+            if key:
+                self.config.parameters[key] = adapter_override
+
         recipients = self._get_recipients(input_data)
         message = self._build_message(input_data, context)
 
