@@ -37,10 +37,13 @@ COMMUNITY_ADAPTERS = {
         {"name": "MCP Client", "type": "mcp-client", "category": "ai", "provider": "AICtrlNet", "required_edition": "community"},
         
         # Communication Adapters
+        {"name": "WhatsApp", "type": "whatsapp", "category": "communication", "provider": "Meta", "required_edition": "community"},
+        {"name": "Telegram", "type": "telegram", "category": "communication", "provider": "Telegram", "required_edition": "community"},
         {"name": "Slack", "type": "slack", "category": "communication", "provider": "Slack", "required_edition": "community"},
         {"name": "Discord", "type": "discord", "category": "communication", "provider": "Discord", "required_edition": "community"},
         {"name": "Email", "type": "email", "category": "communication", "provider": "SMTP", "required_edition": "community"},
         {"name": "Webhook", "type": "webhook", "category": "communication", "provider": "HTTP", "required_edition": "community"},
+        {"name": "Twilio SMS", "type": "twilio", "category": "communication", "provider": "Twilio", "required_edition": "community"},
         
         # Human Service Adapters
         {"name": "Upwork", "type": "upwork", "category": "human", "provider": "Upwork", "required_edition": "community"},
