@@ -126,7 +126,10 @@ class NotificationNode(BaseNode):
             api_key=credentials.get("api_key"),
             credentials=credentials,
         )
-        return adapter_class(config)
+        adapter = adapter_class(config)
+        # Initialize the adapter (creates HTTP client, verifies credentials, etc.)
+        await adapter.initialize()
+        return adapter
 
     def _get_recipients(self, input_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Get notification recipients."""
@@ -159,26 +162,12 @@ class NotificationNode(BaseNode):
         # Get message components
         subject = self.config.parameters.get("subject") or input_data.get("subject", "Notification")
         body = self.config.parameters.get("body") or input_data.get("body", "")
-        template = self.config.parameters.get("template")
-        
-        # Apply template if specified
-        if template:
-            template_data = {
-                **self.config.parameters,
-                **input_data,
-                **context,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            
-            # Replace template variables
-            if isinstance(template, str):
-                body = template.format(**template_data)
-            elif isinstance(template, dict):
-                if "subject" in template:
-                    subject = template["subject"].format(**template_data)
-                if "body" in template:
-                    body = template["body"].format(**template_data)
-        
+
+        # Resolve {{dotted.path}} template variables in subject and body
+        tmpl_ctx = {"input_data": input_data, **input_data, **context}
+        subject = resolve_templates(subject, tmpl_ctx)
+        body = resolve_templates(body, tmpl_ctx)
+
         # Build message structure
         message = {
             "subject": subject,

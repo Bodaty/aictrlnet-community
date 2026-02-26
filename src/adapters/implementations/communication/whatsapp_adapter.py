@@ -323,7 +323,10 @@ class WhatsAppAdapter(BaseAdapter):
                 f"/{self.phone_number_id}/messages",
                 json=payload,
             )
-            response.raise_for_status()
+            if not response.is_success:
+                error_body = response.json() if "application/json" in response.headers.get("content-type", "") else response.text
+                logger.error(f"WhatsApp send_message error {response.status_code} to={to}: {error_body}")
+                response.raise_for_status()
             result = response.json()
 
             duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000

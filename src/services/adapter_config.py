@@ -131,7 +131,20 @@ class AdapterConfigService:
             config.display_name = update_data.display_name
         
         if update_data.credentials is not None:
-            config.credentials = encrypt_data(update_data.credentials)
+            # Merge new credentials with existing ones so partial updates
+            # (e.g. only access_token) don't wipe other fields like phone_number_id
+            existing_creds = {}
+            if config.credentials:
+                try:
+                    existing_creds = decrypt_data(config.credentials)
+                except Exception:
+                    pass
+            # Only overwrite keys that have non-empty values
+            merged = {**existing_creds}
+            for key, value in update_data.credentials.items():
+                if value not in (None, ""):
+                    merged[key] = value
+            config.credentials = encrypt_data(merged)
             config.test_status = "untested"  # Reset test status
         
         if update_data.settings is not None:

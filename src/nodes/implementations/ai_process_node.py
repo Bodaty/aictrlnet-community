@@ -103,6 +103,8 @@ class AIProcessNode(BaseNode):
         else:
             raise ValueError(f"Unsupported AI task: {ai_task}")
 
+        logger.debug(f"AI node {self.config.id} output keys: {list(output_data.keys())}, task={ai_task}")
+
         # Publish completion event
         await event_bus.publish(
             "node.executed",
@@ -174,6 +176,11 @@ class AIProcessNode(BaseNode):
         # Normalise chat response so callers can read response.data["text"]
         if response.status != "error" and "text" not in response.data:
             content = response.data.get("content", "")
+            # Extract from OpenAI-compatible choices format (used by Claude adapter)
+            if not content and "choices" in response.data:
+                choices = response.data["choices"]
+                if choices and isinstance(choices, list):
+                    content = choices[0].get("message", {}).get("content", "")
             if isinstance(content, list):
                 content = "".join(
                     b.get("text", "") for b in content if isinstance(b, dict)
@@ -198,8 +205,9 @@ class AIProcessNode(BaseNode):
         if response.status == "error":
             raise Exception(f"Generation failed: {response.error}")
 
+        gen_text = response.data.get("text", "")
         return {
-            "generated_text": response.data.get("text", ""),
+            "generated_text": gen_text,
             "usage": response.data.get("usage", {}),
             "model": response.data.get("model"),
         }
