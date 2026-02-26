@@ -2172,7 +2172,19 @@ class ToolDispatcher:
 
         nlp_service = self._services.get('nlp_service')
         if not nlp_service:
-            return ToolResult(success=False, error="NLP service not available")
+            return ToolResult(
+                success=False,
+                error="workflow_creation_unavailable",
+                data={
+                    "message": "The workflow generation service is currently unavailable. "
+                               "You can still create workflows manually using the visual editor "
+                               "at /workflows/new or by using a template from /templates.",
+                    "alternatives": [
+                        {"label": "Visual Editor", "path": "/workflows/new"},
+                        {"label": "Templates", "path": "/templates"}
+                    ]
+                }
+            )
 
         try:
             # Clean up the name in case LLM passed verbose instructions
@@ -2234,7 +2246,23 @@ class ToolDispatcher:
                 }
             )
         except Exception as e:
-            return ToolResult(success=False, error=str(e))
+            error_msg = str(e)
+            # Check for common LLM/connection errors and provide user-friendly messages
+            if "Connection refused" in error_msg or "ConnectError" in error_msg:
+                return ToolResult(
+                    success=False,
+                    error="llm_unavailable",
+                    data={
+                        "message": "The AI model service is temporarily unavailable. "
+                                   "You can create workflows manually using the visual editor "
+                                   "or by choosing from templates.",
+                        "alternatives": [
+                            {"label": "Visual Editor", "path": "/workflows/new"},
+                            {"label": "Templates", "path": "/templates"}
+                        ]
+                    }
+                )
+            return ToolResult(success=False, error=f"Failed to create workflow: {error_msg}")
 
     async def _discover_workflows(self, args: Dict, user_id: str) -> ToolResult:
         """Search workflows."""
