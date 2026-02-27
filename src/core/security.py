@@ -114,17 +114,11 @@ async def get_current_user(
                 tenant_id=DEFAULT_TENANT_ID,
                 is_active=True,
                 is_superuser=True,
-                edition=settings.EDITION,
+                edition="enterprise",
             )
             db.add(dev_user)
             await db.commit()
             await db.refresh(dev_user)
-        else:
-            # Update edition if it doesn't match current system edition
-            if dev_user.edition != settings.EDITION:
-                dev_user.edition = settings.EDITION
-                await db.commit()
-                await db.refresh(dev_user)
 
         return dev_user
     # DEV_ONLY_END
@@ -211,7 +205,7 @@ def verify_token(token: str) -> Optional[dict]:
             "username": "dev_user",
             "email": "dev@aictrlnet.com",
             "is_active": True,
-            "edition": settings.EDITION,
+            "edition": "enterprise",
             "role": "admin",
             "roles": ["user", "admin"],
             "tenant_id": DEFAULT_TENANT_ID,

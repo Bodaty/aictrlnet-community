@@ -28,49 +28,64 @@ async def get_current_license(
     current_user: dict = Depends(get_current_user_safe),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get current license status and subscription details."""
-    
-    tenant_id = current_user.get("tenant_id") or get_current_tenant_id()
-    enforcer = LicenseEnforcer(db)
-    
-    # Get tenant info
-    tenant_info = await enforcer._get_tenant_info(tenant_id)
-    edition = Edition(tenant_info["edition"])
-    
-    # Get edition limits and features
-    limits = enforcer.EDITION_LIMITS.get(edition, {})
-    features = enforcer.EDITION_FEATURES.get(edition, set())
-    
-    # Build feature flags
-    feature_flags = {
-        "max_users": limits.get("USERS", 1),
-        "max_workflows": limits.get("WORKFLOWS", 10),
-        "max_executions_per_month": limits.get("EXECUTIONS", 1000),
-        "ai_governance": "advanced_analytics" in features,
-        "advanced_analytics": "advanced_analytics" in features,
-        "custom_integrations": "business_adapters" in features,
-        "mfa_enabled": edition.value != "community",
-        "sso_enabled": "enterprise_adapters" in features,
-        "platform_integration_nodes": 5 if "business_adapters" in features else 0
-    }
-    
-    # Calculate billing period (mock for now, will integrate with Stripe later)
+    """Get current license status and subscription details.
+
+    Queries real subscription data from the database.
+    Falls back to Community (Free) when no active subscription exists.
+    """
+    from sqlalchemy import select
+    from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus
+
+    user_id = current_user.get("sub") or current_user.get("id")
+    user_edition = current_user.get("edition", "community")
+
+    # Try to find the user's active subscription
+    sub_result = None
+    try:
+        stmt = (
+            select(Subscription, SubscriptionPlan)
+            .join(SubscriptionPlan, Subscription.plan_id == SubscriptionPlan.id)
+            .where(Subscription.user_id == user_id)
+            .where(Subscription.status.in_([SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING]))
+            .order_by(Subscription.current_period_end.desc())
+            .limit(1)
+        )
+        result = await db.execute(stmt)
+        sub_result = result.first()
+    except Exception as e:
+        logger.warning(f"Could not query subscription for user {user_id}: {e}")
+
+    if sub_result:
+        subscription, plan = sub_result
+        return LicenseStatusResponse(
+            subscription={
+                "id": subscription.id,
+                "plan": user_edition or "community",
+                "plan_name": plan.display_name,
+                "status": subscription.status.value if hasattr(subscription.status, 'value') else str(subscription.status),
+                "current_period_start": subscription.current_period_start.isoformat() + "Z",
+                "current_period_end": subscription.current_period_end.isoformat() + "Z",
+                "features": plan.features or {}
+            }
+        )
+
+    # No active subscription — return Community (Free) defaults
     now = datetime.utcnow()
     period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    
     if now.month == 12:
         period_end = datetime(now.year + 1, 1, 1) - timedelta(seconds=1)
     else:
         period_end = datetime(now.year, now.month + 1, 1) - timedelta(seconds=1)
-    
+
     return LicenseStatusResponse(
         subscription={
-            "id": f"sub_{tenant_id}",
-            "plan": edition.value,
-            "status": "active",
+            "id": f"free_{user_id}",
+            "plan": user_edition or "community",
+            "plan_name": "Community (Free)",
+            "status": "free",
             "current_period_start": period_start.isoformat() + "Z",
             "current_period_end": period_end.isoformat() + "Z",
-            "features": feature_flags
+            "features": {}
         }
     )
 

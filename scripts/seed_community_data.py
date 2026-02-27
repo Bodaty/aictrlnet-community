@@ -88,7 +88,7 @@ async def seed_users(session):
             "is_active": True,
             "is_superuser": True,
             "tenant_id": "default-tenant",
-            "edition": "community",
+            "edition": "enterprise",
             "preferences": default_tier_preferences
         },
         {

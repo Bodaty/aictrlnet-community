@@ -215,6 +215,7 @@ class SubscriptionInfo(BaseModel):
     """Subscription information matching frontend expectations."""
     id: str
     plan: str
+    plan_name: Optional[str] = None
     status: str
     current_period_start: str
     current_period_end: str
