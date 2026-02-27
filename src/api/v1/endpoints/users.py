@@ -10,6 +10,7 @@ from core.database import get_db
 from core.security import get_current_active_user, get_password_hash
 from core.dependencies import get_current_user_safe, require_superuser
 from models.user import User
+from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus
 from schemas.user import UserCreate, UserUpdate, UserResponse
 
 # Import sub-routers
@@ -23,6 +24,31 @@ router.include_router(api_keys_router)
 router.include_router(webhooks_router)
 
 
+async def _get_edition_from_subscription(db: AsyncSession, user_id: str) -> Optional[str]:
+    """Derive user's edition from their active subscription plan."""
+    try:
+        result = await db.execute(
+            select(SubscriptionPlan.name)
+            .join(Subscription, Subscription.plan_id == SubscriptionPlan.id)
+            .where(
+                Subscription.user_id == user_id,
+                Subscription.status == SubscriptionStatus.ACTIVE,
+            )
+            .limit(1)
+        )
+        plan_name = result.scalar_one_or_none()
+        if not plan_name:
+            return None
+        plan_lower = plan_name.lower()
+        if "enterprise" in plan_lower:
+            return "enterprise"
+        elif "business" in plan_lower:
+            return "business"
+        return "community"
+    except Exception:
+        return None
+
+
 @router.get("/me")
 async def get_current_user(
     current_user = Depends(get_current_active_user),
@@ -31,12 +57,17 @@ async def get_current_user(
     """Get current user information."""
     # Handle both User object and dict
     if hasattr(current_user, 'id'):
+        # Derive edition from active subscription (not the static user field)
+        edition = await _get_edition_from_subscription(db, str(current_user.id))
+        if not edition:
+            edition = current_user.edition or "community"
+
         # User object
         return {
             "id": str(current_user.id),
             "email": current_user.email,
             "name": current_user.full_name or current_user.username or "Test User",
-            "edition": current_user.edition,
+            "edition": edition,
             "roles": ["admin"] if current_user.is_superuser else ["user"],
             "permissions": [],
             "metadata": {

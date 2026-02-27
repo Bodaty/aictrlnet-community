@@ -104,7 +104,7 @@ async def register(
         username=user_data.username,
         full_name=user_data.full_name,
         hashed_password=get_password_hash(user_data.password),
-        edition=settings.EDITION,
+        edition="community",  # All new users start on community; upgraded via subscription
         tenant_id=DEFAULT_TENANT_ID,
         is_active=True,
         is_superuser=False,
