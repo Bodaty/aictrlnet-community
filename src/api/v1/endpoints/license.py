@@ -69,7 +69,17 @@ async def get_current_license(
             }
         )
 
-    # No active subscription — return Community (Free) defaults
+    # No active subscription — derive from user's edition field
+    edition = user_edition or "community"
+    edition_display = {
+        "community": "Community (Free)",
+        "team": "Team",
+        "business": "Business",
+        "enterprise": "Enterprise",
+    }
+    plan_name = edition_display.get(edition, edition.title())
+    status = "free" if edition == "community" else "active"
+
     now = datetime.utcnow()
     period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if now.month == 12:
@@ -79,10 +89,10 @@ async def get_current_license(
 
     return LicenseStatusResponse(
         subscription={
-            "id": f"free_{user_id}",
-            "plan": user_edition or "community",
-            "plan_name": "Community (Free)",
-            "status": "free",
+            "id": f"{edition}_{user_id}",
+            "plan": edition,
+            "plan_name": plan_name,
+            "status": status,
             "current_period_start": period_start.isoformat() + "Z",
             "current_period_end": period_end.isoformat() + "Z",
             "features": {}
