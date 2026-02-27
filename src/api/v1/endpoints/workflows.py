@@ -320,7 +320,7 @@ async def create_workflow_from_template(
     instantiate_request = InstantiateTemplateRequest(
         name=request.name,
         description=request.description,
-        parameters=request.parameters if hasattr(request, 'parameters') else {}
+        parameters=request.parameters if hasattr(request, 'parameters') and request.parameters is not None else {}
     )
 
     result = await template_service.instantiate_template(
@@ -330,14 +330,14 @@ async def create_workflow_from_template(
         request=instantiate_request
     )
 
-    # Get the created workflow
-    workflow_id = result.get('workflow_id')
-    if not workflow_id:
+    # Get the created workflow definition
+    workflow_def_id = result.get('workflow_definition_id') or result.get('workflow_id')
+    if not workflow_def_id:
         raise HTTPException(status_code=500, detail="Failed to create workflow from template")
 
     from models.community import WorkflowDefinition
     from sqlalchemy import select
-    query = select(WorkflowDefinition).where(WorkflowDefinition.id == workflow_id)
+    query = select(WorkflowDefinition).where(WorkflowDefinition.id == workflow_def_id)
     db_result = await db.execute(query)
     workflow = db_result.scalar_one_or_none()
 

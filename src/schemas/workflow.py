@@ -35,8 +35,8 @@ class EdgeSchema(BaseModel):
 
 class WorkflowDefinitionSchema(BaseModel):
     """Workflow definition schema."""
-    nodes: List[NodeSchema]
-    edges: List[EdgeSchema]
+    nodes: List[NodeSchema] = Field(default_factory=list)
+    edges: List[EdgeSchema] = Field(default_factory=list)
     metadata: Optional[Dict[str, Any]] = None
 
 

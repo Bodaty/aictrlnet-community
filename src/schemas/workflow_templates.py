@@ -200,7 +200,7 @@ class InstantiateTemplateRequest(BaseModel):
     """Request to create a workflow from a template."""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    parameters: Dict[str, Any] = Field(default_factory=dict)
+    parameters: Optional[Dict[str, Any]] = Field(default_factory=dict)
     project_id: Optional[UUID] = None
     # Enhancement options for unified pipeline
     enhancements: Optional[Dict[str, bool]] = Field(None, description="Enhancement options to apply")
