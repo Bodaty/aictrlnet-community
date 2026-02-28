@@ -38,6 +38,7 @@ class LimitType(Enum):
 class Edition(Enum):
     """Product editions with different feature sets."""
     COMMUNITY = "community"
+    TEAM = "team"
     BUSINESS_STARTER = "business_starter"
     BUSINESS_GROWTH = "business_growth"
     BUSINESS_SCALE = "business_scale"
@@ -87,6 +88,17 @@ class LicenseEnforcer:
             LimitType.SESSIONS: 0,            # No sessions in community
             LimitType.AGENTS: 1,              # Only self agent
             LimitType.AI_AGENT_REQUESTS: 100,   # 100 AI agent requests per day
+        },
+        Edition.TEAM: {
+            LimitType.WORKFLOWS: 30,
+            LimitType.ADAPTERS: 10,
+            LimitType.USERS: 3,
+            LimitType.API_CALLS: 100000,      # 100K per month
+            LimitType.EXECUTIONS: 10000,      # 10k per month
+            LimitType.STORAGE_GB: 10,
+            LimitType.SESSIONS: 20,
+            LimitType.AGENTS: 5,
+            LimitType.AI_AGENT_REQUESTS: 1000,  # 1000 AI agent requests per day
         },
         Edition.BUSINESS_STARTER: {
             LimitType.WORKFLOWS: 100,
@@ -139,9 +151,18 @@ class LicenseEnforcer:
     EDITION_FEATURES = {
         Edition.COMMUNITY: {
             "basic_workflows",
-            "basic_adapters", 
+            "basic_adapters",
             "rest_api",
             "community_support",
+        },
+        Edition.TEAM: {
+            "basic_workflows",
+            "basic_adapters",
+            "rest_api",
+            "community_support",
+            "team_collaboration",
+            "shared_workspaces",
+            "team_management",
         },
         Edition.BUSINESS_STARTER: {
             "basic_workflows",
@@ -489,16 +510,16 @@ class LicenseEnforcer:
                 },
                 {
                     "edition": Edition.BUSINESS_GROWTH.value,
-                    "price": "$1,199/month",
-                    "highlights": ["500 workflows", "50 adapters", "20 users", "Priority support", "4 hrs/mo expert assistance"]
+                    "price": "$1,499/month",
+                    "highlights": ["500 workflows", "50 adapters", "20 users", "Priority support", "5 hrs/mo expert assistance"]
                 }
             ]
         elif current == Edition.BUSINESS_STARTER:
             options = [
                 {
                     "edition": Edition.BUSINESS_GROWTH.value,
-                    "price": "$1,199/month",
-                    "highlights": ["5x more workflows", "2.5x more adapters", "4x more users", "4 hrs/mo expert assistance"]
+                    "price": "$1,499/month",
+                    "highlights": ["5x more workflows", "2.5x more adapters", "4x more users", "5 hrs/mo expert assistance"]
                 },
                 {
                     "edition": Edition.BUSINESS_SCALE.value,

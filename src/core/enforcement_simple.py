@@ -35,6 +35,7 @@ class LimitType(str, Enum):
 class Edition(str, Enum):
     """Available editions."""
     COMMUNITY = "community"
+    TEAM = "team"
     BUSINESS_STARTER = "business_starter"
     BUSINESS_GROWTH = "business_growth"
     BUSINESS_SCALE = "business_scale"
@@ -64,6 +65,10 @@ class LimitExceededException(Exception):
 
 # Mapping of features to their minimum required edition
 FEATURE_REQUIRED_EDITION = {
+    # Team features
+    "team_collaboration": Edition.TEAM,
+    "shared_workspaces": Edition.TEAM,
+    "team_management": Edition.TEAM,
     # Business Starter features
     "business_adapters": Edition.BUSINESS_STARTER,
     "approval_workflows": Edition.BUSINESS_STARTER,
@@ -74,7 +79,6 @@ FEATURE_REQUIRED_EDITION = {
     "a2a_protocol": Edition.BUSINESS_STARTER,
     "sla_monitoring": Edition.BUSINESS_STARTER,
     "organization_management": Edition.BUSINESS_STARTER,
-    "team_management": Edition.BUSINESS_STARTER,
     "template_discovery": Edition.BUSINESS_STARTER,
     "subscription_licensing": Edition.BUSINESS_STARTER,
     # Business Growth features
@@ -108,6 +112,9 @@ FEATURE_REQUIRED_EDITION = {
 
 # Human-readable names for features
 FEATURE_DISPLAY_NAMES = {
+    # Team
+    "team_collaboration": "Team Collaboration",
+    "shared_workspaces": "Shared Workspaces",
     # Business Starter
     "approval_workflows": "Approval Workflows",
     "business_adapters": "Business Adapters",
@@ -145,6 +152,7 @@ FEATURE_DISPLAY_NAMES = {
 # Human-readable names for editions
 EDITION_DISPLAY_NAMES = {
     Edition.COMMUNITY: "Community",
+    Edition.TEAM: "Team",
     Edition.BUSINESS_STARTER: "Business Starter",
     Edition.BUSINESS_GROWTH: "Business Growth",
     Edition.BUSINESS_SCALE: "Business Scale",
@@ -185,6 +193,16 @@ class LicenseEnforcer:
             LimitType.SESSIONS: 5,
             LimitType.AGENTS: 2,
         },
+        Edition.TEAM: {
+            LimitType.WORKFLOWS: 30,
+            LimitType.ADAPTERS: 10,
+            LimitType.USERS: 3,
+            LimitType.API_CALLS: 100000,
+            LimitType.STORAGE: 10240,  # 10GB
+            LimitType.EXECUTIONS: 10000,
+            LimitType.SESSIONS: 20,
+            LimitType.AGENTS: 5,
+        },
         Edition.BUSINESS_STARTER: {
             LimitType.WORKFLOWS: 100,
             LimitType.ADAPTERS: 20,
@@ -200,7 +218,7 @@ class LicenseEnforcer:
             LimitType.ADAPTERS: 50,
             LimitType.USERS: 20,
             LimitType.API_CALLS: 5000000,
-            LimitType.STORAGE: 51200,  # 50GB
+            LimitType.STORAGE: 204800,  # 200GB
             LimitType.EXECUTIONS: 50000,
             LimitType.SESSIONS: 200,
             LimitType.AGENTS: 25,
@@ -209,8 +227,8 @@ class LicenseEnforcer:
             LimitType.WORKFLOWS: 1000,
             LimitType.ADAPTERS: 999999,  # Unlimited
             LimitType.USERS: 50,
-            LimitType.API_CALLS: 10000000,
-            LimitType.STORAGE: 102400,  # 100GB
+            LimitType.API_CALLS: 20000000,
+            LimitType.STORAGE: 512000,  # 500GB
             LimitType.EXECUTIONS: 100000,
             LimitType.SESSIONS: 500,
             LimitType.AGENTS: 50,
@@ -234,6 +252,14 @@ class LicenseEnforcer:
             "core_adapters",
             "single_user",
             "community_support",
+        ],
+        Edition.TEAM: [
+            "basic_workflows",
+            "core_adapters",
+            "community_support",
+            "team_collaboration",
+            "shared_workspaces",
+            "team_management",
         ],
         Edition.BUSINESS_STARTER: [
             "basic_workflows",
@@ -460,6 +486,7 @@ class LicenseEnforcer:
         # Map to proper enum value
         edition_map = {
             "community": Edition.COMMUNITY,
+            "team": Edition.TEAM,
             "business": Edition.BUSINESS_STARTER,  # Default business tier
             "enterprise": Edition.ENTERPRISE
         }
@@ -497,6 +524,17 @@ class LicenseEnforcer:
         if current_edition == "community":
             upgrade_options = [
                 {
+                    "edition": "team",
+                    "price": "$149/month",
+                    "highlights": [
+                        "30 workflows",
+                        "10 adapters",
+                        "3 users",
+                        "Team collaboration",
+                        "Shared workspaces"
+                    ]
+                },
+                {
                     "edition": "business_starter",
                     "price": "$599/month",
                     "highlights": [
@@ -510,14 +548,14 @@ class LicenseEnforcer:
                 },
                 {
                     "edition": "business_growth",
-                    "price": "$1,199/month",
+                    "price": "$1,499/month",
                     "highlights": [
                         "500 workflows",
                         "50 adapters",
                         "20 users",
                         "Priority support",
                         "Advanced analytics",
-                        "4 hrs/mo expert assistance"
+                        "5 hrs/mo expert assistance"
                     ]
                 }
             ]
