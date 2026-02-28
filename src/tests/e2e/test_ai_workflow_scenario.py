@@ -502,16 +502,18 @@ class TestCustomerSupportE2E:
             with patch('adapters.implementations.communication.email_adapter.EmailAdapter.execute') as mock_email:
                 # OpenAI returns technical category and generates response
                 mock_openai.side_effect = [
-                    AsyncMock(
-                        success=True,
-                        data={"content": json.dumps({"category": "technical"})}
-                    ),
-                    AsyncMock(
-                        success=True,
-                        data={"content": f"Response for query {i}"}
-                    )
+                    mock
                     for i in range(5)
-                    for _ in range(2)  # Two calls per query
+                    for mock in (
+                        AsyncMock(
+                            success=True,
+                            data={"content": json.dumps({"category": "technical"})}
+                        ),
+                        AsyncMock(
+                            success=True,
+                            data={"content": f"Response for query {i}"}
+                        ),
+                    )
                 ]
                 
                 mock_email.return_value = AsyncMock(
