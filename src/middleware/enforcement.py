@@ -34,6 +34,8 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
         "/api/upgrade",
         "/api/billing",
         "/api/usage",
+        "/api/v1/usage",
+        "/api/v1/license",
         "/.well-known"
     }
     
