@@ -22,6 +22,7 @@ from core.config import get_settings
 from core.cache import get_cache
 from core.tenant_context import DEFAULT_TENANT_ID, get_current_tenant_id
 from models import User
+from models.subscription import Subscription, SubscriptionStatus, BillingPeriod
 from services.mfa_service import MFAService
 from schemas.mfa import LoginRequest, LoginResponse, MFAVerifyRequest, MFAVerifyResponse
 
@@ -46,8 +47,11 @@ class UserResponse(BaseModel):
     is_active: bool
     is_superuser: bool
     edition: str
+    trial_active: Optional[bool] = None
+    trial_days_remaining: Optional[int] = None
+    trial_end: Optional[str] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -98,24 +102,43 @@ async def register(
         expires_delta=timedelta(hours=24)
     )
     
+    now = datetime.utcnow()
+    trial_end = now + timedelta(days=14)
+    user_id = str(uuid.uuid4())
+
     user = User(
-        id=str(uuid.uuid4()),
+        id=user_id,
         email=user_data.email,
         username=user_data.username,
         full_name=user_data.full_name,
         hashed_password=get_password_hash(user_data.password),
-        edition="community",  # All new users start on community; upgraded via subscription
+        edition="business",  # All new users start with 14-day Business trial
         tenant_id=DEFAULT_TENANT_ID,
         is_active=True,
         is_superuser=False,
         email_verified=False,
         email_verification_token=verification_token,
     )
-    
+
+    # Auto-create 14-day Business trial subscription (no credit card required)
+    trial_subscription = Subscription(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        tenant_id=DEFAULT_TENANT_ID,
+        plan_id="business_starter",
+        status=SubscriptionStatus.TRIALING,
+        billing_period=BillingPeriod.MONTHLY,
+        started_at=now,
+        current_period_start=now,
+        current_period_end=trial_end,
+        trial_end=trial_end,
+    )
+
     db.add(user)
+    db.add(trial_subscription)
     await db.commit()
     await db.refresh(user)
-    
+
     return user
 
 
@@ -202,9 +225,41 @@ async def login(
 @router.get("/me", response_model=UserResponse)
 async def read_users_me(
     current_user: User = Depends(get_current_active_user),
-) -> User:
-    """Get current user."""
-    return current_user
+    db: AsyncSession = Depends(get_db),
+):
+    """Get current user with trial status."""
+    # Check for trial subscription
+    result = await db.execute(
+        select(Subscription).where(
+            Subscription.user_id == current_user.id,
+            Subscription.status.in_([SubscriptionStatus.TRIALING, SubscriptionStatus.EXPIRED])
+        )
+    )
+    trial_sub = result.scalar_one_or_none()
+
+    trial_active = False
+    trial_days = None
+    trial_end_str = None
+
+    if trial_sub and trial_sub.trial_end:
+        now = datetime.utcnow()
+        trial_active = trial_sub.status == SubscriptionStatus.TRIALING and trial_sub.trial_end > now
+        trial_days = max(0, (trial_sub.trial_end - now).days) if trial_active else 0
+        trial_end_str = trial_sub.trial_end.isoformat()
+
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        username=current_user.username,
+        full_name=current_user.full_name,
+        is_active=current_user.is_active,
+        is_superuser=current_user.is_superuser,
+        edition=current_user.edition,
+        trial_active=trial_active,
+        trial_days_remaining=trial_days,
+        trial_end=trial_end_str,
+        created_at=current_user.created_at,
+    )
 
 
 @router.post("/logout")

@@ -2,10 +2,12 @@
 
 import time
 import logging
+from datetime import datetime
 from typing import Callable, Optional, Dict, Any
 from fastapi import Request, Response, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
+from sqlalchemy import select
 
 from core.database import get_db
 from core.enforcement_simple import (
@@ -37,6 +39,14 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
         "/api/v1/usage",
         "/api/v1/license",
         "/.well-known"
+    }
+
+    # Paths exempt from trial expiry check (user must still be able to log in, pay, etc.)
+    TRIAL_EXEMPT_PATHS = {
+        "/api/v1/subscription",
+        "/api/v1/billing",
+        "/api/v1/auth",
+        "/api/v1/users/me",
     }
     
     # Map endpoints to limit types
@@ -95,7 +105,16 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
             
             # Store tenant_id in request state for other middleware
             request.state.tenant_id = tenant_id
-            
+
+            # Check for expired trial
+            if not self._is_trial_exempt_path(request.url.path):
+                trial_error = await self._check_trial_expiry(request)
+                if trial_error:
+                    return JSONResponse(
+                        status_code=402,
+                        content=trial_error
+                    )
+
             # Check feature access
             feature_error = await self._check_feature_access(request, tenant_id)
             if feature_error:
@@ -151,6 +170,91 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
         
         return False
     
+    def _is_trial_exempt_path(self, path: str) -> bool:
+        """Check if path is exempt from trial expiry enforcement."""
+        for exempt in self.TRIAL_EXEMPT_PATHS:
+            if path.startswith(exempt):
+                return True
+        return False
+
+    async def _check_trial_expiry(self, request: Request) -> Optional[Dict[str, Any]]:
+        """Check if user's trial has expired. Returns error dict or None."""
+        try:
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                return None
+
+            token = auth_header[7:]
+            settings = get_settings()
+
+            # Dev token shortcut — dev user has no trial to expire
+            if token == "dev-token-for-testing":
+                return None
+
+            from jose import jwt, JWTError
+            try:
+                payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+                user_id = payload.get("sub")
+            except JWTError:
+                return None
+
+            if not user_id:
+                return None
+
+            from models.subscription import Subscription, SubscriptionStatus
+            from models import User
+
+            async for db in get_db():
+                # Only check users on business edition (trial users)
+                user_result = await db.execute(
+                    select(User).where(User.id == user_id)
+                )
+                user = user_result.scalar_one_or_none()
+                if not user or user.edition not in ("business", "trial_expired"):
+                    break
+
+                # Already expired — block immediately
+                if user.edition == "trial_expired":
+                    return {
+                        "trial_expired": True,
+                        "message": "Your 14-day Business trial has ended. Choose a plan to continue using HitLai.",
+                        "options": {
+                            "subscribe": "/pricing",
+                            "self_hosted": "https://aictrlnet.com/download",
+                        }
+                    }
+
+                # Check for trialing subscription that has expired
+                result = await db.execute(
+                    select(Subscription).where(
+                        Subscription.user_id == user_id,
+                        Subscription.status == SubscriptionStatus.TRIALING,
+                    )
+                )
+                trial = result.scalar_one_or_none()
+
+                if trial and trial.trial_end and trial.trial_end < datetime.utcnow():
+                    # Expire the trial
+                    trial.status = SubscriptionStatus.EXPIRED
+                    user.edition = "trial_expired"
+                    await db.commit()
+
+                    return {
+                        "trial_expired": True,
+                        "message": "Your 14-day Business trial has ended. Choose a plan to continue using HitLai.",
+                        "options": {
+                            "subscribe": "/pricing",
+                            "self_hosted": "https://aictrlnet.com/download",
+                        }
+                    }
+
+                break
+
+        except Exception as e:
+            logger.debug(f"Trial expiry check error: {e}")
+
+        return None
+
     def _is_resource_endpoint(self, path: str) -> bool:
         """Check if endpoint creates resources that count against limits."""
         
