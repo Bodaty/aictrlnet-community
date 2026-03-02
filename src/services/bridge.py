@@ -231,38 +231,46 @@ class BridgeService:
         skip: int = 0,
         limit: int = 100
     ) -> Dict[str, Any]:
-        """Get data from a bridge connection."""
+        """Get sync history data from a bridge connection."""
         connection = await self.get_connection(connection_id)
         if not connection:
             raise ValueError(f"Bridge connection '{connection_id}' not found")
-        
-        # Mock data retrieval
-        mock_items = []
-        for i in range(min(limit, 50)):  # Cap at 50 for demo
-            mock_items.append({
-                "id": f"item_{skip + i + 1}",
-                "name": f"Item {skip + i + 1}",
-                "type": connection.source_type,
-                "data": {
-                    "source": connection.source_type,
-                    "target": connection.target_type,
-                    "timestamp": time.time()
-                },
-                "metadata": {
-                    "connection_id": connection_id,
-                    "sync_source": connection.name
-                }
+
+        # Query real BridgeSync records for this connection
+        total_query = select(func.count(BridgeSync.id)).where(
+            BridgeSync.connection_id == connection_id
+        )
+        total = await self.db.scalar(total_query) or 0
+
+        syncs_query = select(BridgeSync).where(
+            BridgeSync.connection_id == connection_id
+        ).order_by(BridgeSync.created_at.desc()).offset(skip).limit(limit)
+
+        result = await self.db.execute(syncs_query)
+        syncs = result.scalars().all()
+
+        items = []
+        for sync in syncs:
+            items.append({
+                "id": str(sync.id),
+                "status": sync.status,
+                "started_at": sync.started_at.isoformat() if sync.started_at else None,
+                "completed_at": sync.completed_at.isoformat() if sync.completed_at else None,
+                "items_processed": sync.items_processed or 0,
+                "items_created": sync.items_created or 0,
+                "items_updated": sync.items_updated or 0,
+                "items_failed": sync.items_failed or 0,
+                "error_message": sync.error_message,
+                "sync_options": sync.sync_options,
+                "created_at": sync.created_at.isoformat() if sync.created_at else None,
             })
-        
-        # Mock total count
-        total = 1000  # Simulate large dataset
-        
+
         return {
-            "items": mock_items,
+            "items": items,
             "total": total,
             "page": (skip // limit) + 1,
             "limit": limit,
-            "connection_id": connection_id
+            "connection_id": connection_id,
         }
     
     async def delete_connection(self, connection_id: str) -> bool:

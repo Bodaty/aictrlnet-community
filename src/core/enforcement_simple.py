@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, and_
 
 from core.config import get_settings
 from core.cache import get_cache
@@ -500,21 +501,83 @@ class LicenseEnforcer:
         }
     
     async def _get_current_usage(self, tenant_id: str, limit_type: LimitType) -> int:
-        """Get current usage - returns mock data for community edition."""
-        
-        # Mock usage data
-        mock_usage = {
-            LimitType.WORKFLOWS: 5,
-            LimitType.ADAPTERS: 3,
-            LimitType.USERS: 1,
-            LimitType.API_CALLS: 1000,
-            LimitType.STORAGE: 512,
-            LimitType.EXECUTIONS: 100,
-            LimitType.SESSIONS: 2,
-            LimitType.AGENTS: 1,
-        }
-        
-        return mock_usage.get(limit_type, 0)
+        """Get current usage from real database counts."""
+        try:
+            if limit_type == LimitType.WORKFLOWS:
+                from models.community_complete import WorkflowDefinition
+                query = select(func.count(WorkflowDefinition.id))
+                if tenant_id:
+                    query = query.where(WorkflowDefinition.tenant_id == tenant_id)
+                return await self.db.scalar(query) or 0
+
+            elif limit_type == LimitType.ADAPTERS:
+                from models.community_complete import Adapter
+                query = select(func.count(Adapter.id)).where(Adapter.enabled == True)
+                return await self.db.scalar(query) or 0
+
+            elif limit_type == LimitType.USERS:
+                from models.user import User
+                query = select(func.count(User.id)).where(User.is_active == True)
+                if tenant_id:
+                    query = query.where(User.tenant_id == tenant_id)
+                return await self.db.scalar(query) or 0
+
+            elif limit_type == LimitType.EXECUTIONS:
+                from models.workflow_execution import WorkflowExecution
+                # Count executions in current month
+                month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                query = select(func.count(WorkflowExecution.id)).where(
+                    WorkflowExecution.created_at >= month_start
+                )
+                if tenant_id:
+                    query = query.where(WorkflowExecution.tenant_id == tenant_id)
+                return await self.db.scalar(query) or 0
+
+            elif limit_type == LimitType.API_CALLS:
+                from models.usage_metrics import UsageMetric
+                now = datetime.utcnow()
+                query = select(func.coalesce(func.sum(UsageMetric.api_calls_month), 0)).where(
+                    and_(
+                        UsageMetric.tenant_id == (tenant_id or "community"),
+                        UsageMetric.period_end >= now,
+                    )
+                )
+                return await self.db.scalar(query) or 0
+
+            elif limit_type == LimitType.STORAGE:
+                from models.usage_metrics import UsageMetric
+                query = select(func.coalesce(func.max(UsageMetric.storage_bytes), 0)).where(
+                    UsageMetric.tenant_id == (tenant_id or "community")
+                )
+                storage_bytes = await self.db.scalar(query) or 0
+                return storage_bytes // (1024 * 1024)  # Convert bytes to MB
+
+            elif limit_type == LimitType.SESSIONS:
+                # Count active bridge sessions as a proxy for sessions
+                from models.community_complete import BridgeConnection
+                query = select(func.count(BridgeConnection.id)).where(
+                    BridgeConnection.status == "active"
+                )
+                return await self.db.scalar(query) or 0
+
+            elif limit_type == LimitType.AGENTS:
+                # Try to count agent pods if available (Business edition)
+                try:
+                    from models.community_complete import Task, TaskStatus
+                    query = select(func.count(Task.id)).where(
+                        Task.status == TaskStatus.IN_PROGRESS
+                    )
+                    if tenant_id:
+                        query = query.where(Task.tenant_id == tenant_id)
+                    return await self.db.scalar(query) or 0
+                except Exception:
+                    return 0
+
+            return 0
+
+        except Exception as e:
+            logger.warning(f"Error getting usage for {limit_type.value}: {e}, returning 0")
+            return 0
     
     def _get_upgrade_path(self, current_edition: str) -> Dict[str, Any]:
         """Get upgrade options from current edition."""

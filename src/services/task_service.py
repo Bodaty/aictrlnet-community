@@ -3,6 +3,7 @@
 from typing import Dict, Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from datetime import datetime
 import uuid
 import logging
 
@@ -54,26 +55,41 @@ class TaskService:
         return result.scalar_one_or_none()
 
     async def execute_task(self, task_id: str) -> Dict[str, Any]:
-        """Execute a task (mock implementation)."""
+        """Start task execution — transitions to IN_PROGRESS.
+
+        Tasks are status-tracked entities. This method transitions a task
+        from PENDING to IN_PROGRESS and records the start time. The caller
+        (workflow engine, node executor, etc.) is responsible for updating
+        the task to COMPLETED or FAILED when actual work finishes.
+        """
         task = await self.get_task(task_id)
         if not task:
             raise NotFoundError(f"Task {task_id} not found")
 
-        # Mock execution - update status and store result in metadata
-        task.status = TaskStatus.COMPLETED
+        if task.status == TaskStatus.COMPLETED:
+            return {
+                "status": TaskStatus.COMPLETED.value,
+                "message": "Task is already completed",
+            }
+
+        if task.status == TaskStatus.FAILED:
+            return {
+                "status": TaskStatus.FAILED.value,
+                "message": "Task previously failed — update status to retry",
+            }
+
+        # Transition to IN_PROGRESS
+        task.status = TaskStatus.IN_PROGRESS
         task.task_metadata = task.task_metadata or {}
-        task.task_metadata["result"] = {
-            "output": f"Task {task.name} completed successfully",
-            "execution_time": 0.5
-        }
+        task.task_metadata["started_at"] = datetime.utcnow().isoformat()
 
         await self.db.commit()
 
-        result_data = task.task_metadata.get("result", {})
+        logger.info(f"Task {task_id} ({task.name}) transitioned to IN_PROGRESS")
+
         return {
-            "status": task.status.value if hasattr(task.status, 'value') else str(task.status),
-            "output": result_data.get("output"),
-            "execution_time": result_data.get("execution_time")
+            "status": TaskStatus.IN_PROGRESS.value,
+            "started_at": task.task_metadata["started_at"],
         }
     
     async def list_tasks(

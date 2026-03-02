@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 import json
 import time
-import asyncio
 
 from models.community import MCPServer, MCPTool, MCPInvocation
 
@@ -139,23 +138,22 @@ class MCPService:
         if not tool:
             raise ValueError(f"Tool '{method}' not found on server '{adapter}'")
         
-        # Simulate MCP execution (in real implementation, this would call the actual MCP server)
+        # Execute via real MCP protocol for stdio transport
         try:
-            # Mock execution based on common MCP patterns
-            result_data = await self._mock_mcp_execution(server, tool, params)
+            result_data = await self._execute_mcp_tool(server, tool, params)
             status = "success"
             error_msg = None
-            
+
         except Exception as e:
             result_data = None
             status = "error"
             error_msg = str(e)
             raise
-            
+
         finally:
             # Record the invocation
             duration_ms = int((time.time() - start_time) * 1000)
-            
+
             invocation = MCPInvocation(
                 tool_id=tool.id,
                 server_id=server.id,
@@ -165,67 +163,116 @@ class MCPService:
                 error_message=error_msg,
                 duration_ms=duration_ms
             )
-            
+
             self.db.add(invocation)
             await self.db.commit()
-        
+
         return {
             "data": result_data,
             "execution_time_ms": duration_ms,
         }
-    
-    async def _mock_mcp_execution(
+
+    async def _execute_mcp_tool(
         self,
         server: MCPServer,
         tool: MCPTool,
         params: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Mock MCP execution for testing purposes."""
-        # Simulate network delay
-        await asyncio.sleep(0.1)
-        
-        # Return mock data based on tool name
-        tool_name = tool.name.lower()
-        
-        if "list" in tool_name:
-            return {
-                "items": [
-                    {
-                        "id": f"item_{i}",
-                        "name": f"Mock Item {i}",
-                        "type": "resource"
-                    }
-                    for i in range(3)
-                ]
-            }
-        elif "get" in tool_name or "read" in tool_name:
-            return {
-                "content": f"Mock content for {params.get('id', 'unknown')}",
-                "type": "text",
-                "metadata": {
-                    "source": server.name,
-                    "timestamp": time.time()
+        """Execute a tool via the real MCP protocol."""
+        # Route to HTTP transport for servers with a URL but no command
+        if server.url and not server.command:
+            return await self._execute_mcp_tool_http(server, tool, params)
+
+        if not server.command:
+            raise ValueError(
+                f"MCP server '{server.name}' has no command or url configured. "
+                "Set 'command' for stdio transport or 'url' for HTTP transport."
+            )
+
+        from adapters.implementations.ai.mcp_client_adapter import (
+            MCPConnection,
+            MCPServerConfig,
+            MCPTransportType,
+        )
+
+        # Parse args and env_vars from JSON text fields
+        args = []
+        if server.args:
+            try:
+                args = json.loads(server.args)
+            except (json.JSONDecodeError, TypeError):
+                args = []
+
+        env = {}
+        if server.env_vars:
+            try:
+                env = json.loads(server.env_vars)
+            except (json.JSONDecodeError, TypeError):
+                env = {}
+
+        # Build config and connect
+        config = MCPServerConfig(
+            name=server.name,
+            command=server.command,
+            args=args,
+            env=env,
+            transport=MCPTransportType.STDIO,
+        )
+
+        connection = MCPConnection(config)
+        try:
+            connected = await connection.connect()
+            if not connected:
+                raise RuntimeError(f"Failed to connect to MCP server '{server.name}'")
+
+            # Call the tool
+            result = await connection.call_tool(tool.name, params)
+
+            if "error" in result:
+                raise RuntimeError(f"MCP tool error: {result['error']}")
+
+            return result
+
+        finally:
+            await connection.disconnect()
+
+    async def _execute_mcp_tool_http(
+        self,
+        server: MCPServer,
+        tool: MCPTool,
+        params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Execute a tool via HTTP transport using MCPServerAdapter."""
+        from adapters.mcp.server_adapter import MCPServerAdapter
+
+        adapter = MCPServerAdapter(
+            control_plane_url="",
+            mcp_server_url=server.url,
+            api_key=server.api_key,
+            server_name=server.name,
+        )
+
+        try:
+            result = await adapter.process_task({
+                "payload": {
+                    "api_type": "tool",
+                    "tool_name": tool.name,
+                    "tool_input": params,
                 }
-            }
-        elif "call" in tool_name or "execute" in tool_name:
+            })
+
+            if not result.get("success"):
+                raise RuntimeError(
+                    f"HTTP MCP tool error: {result.get('error', 'unknown error')}"
+                )
+
             return {
-                "result": f"Executed {tool.name} with params: {json.dumps(params)}",
-                "success": True,
-                "metadata": {
-                    "server": server.name,
-                    "tool": tool.name
-                }
+                "content": [{"type": "text", "text": json.dumps(result.get("result", {}))}],
+                "isError": False,
             }
-        else:
-            return {
-                "message": f"Mock response from {server.name}.{tool.name}",
-                "parameters": params,
-                "server_info": {
-                    "name": server.name,
-                    "status": server.status
-                }
-            }
-    
+        finally:
+            await adapter.close()
+
     async def create_server(
         self,
         name: str,
