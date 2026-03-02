@@ -2,9 +2,8 @@
 
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, text
 import time
-import asyncio
 import json
 from datetime import datetime
 
@@ -196,34 +195,12 @@ class BridgeService:
         connection: BridgeConnection,
         options: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Perform the actual synchronization."""
-        # Simulate sync operation based on connection types
-        await asyncio.sleep(0.5)  # Simulate processing time
-        
-        source_type = connection.source_type
-        target_type = connection.target_type
-        
-        # Mock data processing based on types
-        if source_type == "database":
-            items_processed = options.get("batch_size", 100)
-        elif source_type == "api":
-            items_processed = options.get("page_size", 50)
-        elif source_type == "file":
-            items_processed = options.get("chunk_size", 1000)
-        else:
-            items_processed = 25
-        
-        # Simulate some processing results
-        items_created = int(items_processed * 0.3)  # 30% new items
-        items_updated = int(items_processed * 0.6)  # 60% updated items
-        items_failed = items_processed - items_created - items_updated  # remainder failed
-        
-        return {
-            "items_processed": items_processed,
-            "items_created": items_created,
-            "items_updated": items_updated,
-            "items_failed": items_failed
-        }
+        """Perform the actual synchronization between source and target."""
+        raise NotImplementedError(
+            f"Bridge connector not yet implemented for "
+            f"{connection.source_type} -> {connection.target_type}. "
+            f"Real connectors for each source/target type are required."
+        )
     
     async def get_connection_data(
         self,
@@ -281,7 +258,7 @@ class BridgeService:
         
         # Delete related sync records first
         await self.db.execute(
-            "DELETE FROM bridge_syncs WHERE connection_id = :connection_id",
+            text("DELETE FROM bridge_syncs WHERE connection_id = :connection_id"),
             {"connection_id": connection_id}
         )
         

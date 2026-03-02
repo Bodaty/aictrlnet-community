@@ -304,11 +304,18 @@ class MCPService:
         config: Optional[Dict[str, Any]] = None
     ) -> MCPServer:
         """Create a new MCP server."""
+        # MCPServer stores extra info in server_info (JSON text field)
+        server_info = {}
+        if description:
+            server_info["description"] = description
+        if config:
+            server_info["config"] = config
+
         server = MCPServer(
             name=name,
             url=url,
-            description=description,
-            config=config or {},
+            server_info=json.dumps(server_info) if server_info else None,
+            transport_type="http_sse" if url else "stdio",
             status="active"
         )
         

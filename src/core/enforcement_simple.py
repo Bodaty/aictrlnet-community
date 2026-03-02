@@ -512,7 +512,8 @@ class LicenseEnforcer:
 
             elif limit_type == LimitType.ADAPTERS:
                 from models.community_complete import Adapter
-                query = select(func.count(Adapter.id)).where(Adapter.enabled == True)
+                # Adapter model has no tenant_id — count is global
+                query = select(func.count(Adapter.id)).where(Adapter.enabled.is_(True))
                 return await self.db.scalar(query) or 0
 
             elif limit_type == LimitType.USERS:
