@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -526,7 +526,7 @@ class LicenseEnforcer:
             elif limit_type == LimitType.EXECUTIONS:
                 from models.workflow_execution import WorkflowExecution
                 # Count executions in current month
-                month_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                month_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
                 query = select(func.count(WorkflowExecution.id)).where(
                     WorkflowExecution.created_at >= month_start
                 )
@@ -536,7 +536,7 @@ class LicenseEnforcer:
 
             elif limit_type == LimitType.API_CALLS:
                 from models.usage_metrics import UsageMetric
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc)
                 query = select(func.coalesce(func.sum(UsageMetric.api_calls_month), 0)).where(
                     and_(
                         UsageMetric.tenant_id == (tenant_id or "community"),

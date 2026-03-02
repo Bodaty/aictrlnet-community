@@ -151,21 +151,23 @@ class MCPService:
             raise
 
         finally:
-            # Record the invocation
+            # Record the invocation — wrapped so logging errors don't mask tool errors
             duration_ms = int((time.time() - start_time) * 1000)
+            try:
+                invocation = MCPInvocation(
+                    tool_id=tool.id,
+                    server_id=server.id,
+                    request_data=params,
+                    response_data=result_data,
+                    status=status,
+                    error_message=error_msg,
+                    duration_ms=duration_ms
+                )
 
-            invocation = MCPInvocation(
-                tool_id=tool.id,
-                server_id=server.id,
-                request_data=params,
-                response_data=result_data,
-                status=status,
-                error_message=error_msg,
-                duration_ms=duration_ms
-            )
-
-            self.db.add(invocation)
-            await self.db.commit()
+                self.db.add(invocation)
+                await self.db.commit()
+            except Exception:
+                await self.db.rollback()
 
         return {
             "data": result_data,
@@ -236,11 +238,14 @@ class MCPService:
             result = await connection.call_tool(tool.name, params)
 
             if "error" in result:
-                raise RuntimeError(f"MCP tool error: {result['error']}")
+                err = result['error']
+                if isinstance(err, dict):
+                    err = err.get('message', str(err))
+                raise RuntimeError(f"MCP tool error: {err}")
 
             if result.get("isError"):
                 # Tool reported an execution error via MCP protocol
-                content = result.get("content", [])
+                content = result.get("content") or []
                 error_text = ""
                 for item in content:
                     if isinstance(item, dict) and item.get("type") == "text":

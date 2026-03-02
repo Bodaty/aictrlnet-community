@@ -361,7 +361,7 @@ class BridgeService:
         successful_syncs = successful_result.scalar() or 0
         
         failed_query = select(func.count(BridgeSync.id)).where(
-            BridgeSync.status == "failed"
+            BridgeSync.status == "error"
         )
         failed_result = await self.db.execute(failed_query)
         failed_syncs = failed_result.scalar() or 0
@@ -373,12 +373,21 @@ class BridgeService:
         last_sync_result = await self.db.execute(last_sync_query)
         last_sync = last_sync_result.scalar_one_or_none()
         
-        # Calculate average sync duration (mock for now)
-        avg_duration_ms = 1250
-        
-        # Calculate data transferred (mock for now)
-        data_transferred = total_syncs * 1024 * 1024  # Mock: 1MB per sync
-        
+        # Calculate average sync duration from completed syncs
+        avg_duration_query = select(
+            func.avg(
+                func.extract('epoch', BridgeSync.completed_at) -
+                func.extract('epoch', BridgeSync.started_at)
+            ) * 1000
+        ).where(
+            and_(
+                BridgeSync.status == "completed",
+                BridgeSync.completed_at.isnot(None),
+                BridgeSync.started_at.isnot(None),
+            )
+        )
+        avg_duration_ms = await self.db.scalar(avg_duration_query)
+
         return {
             "total_connections": total_connections,
             "active_connections": active_connections,
@@ -386,6 +395,5 @@ class BridgeService:
             "successful_syncs": successful_syncs,
             "failed_syncs": failed_syncs,
             "last_sync_time": last_sync.isoformat() if last_sync else None,
-            "average_sync_duration_ms": avg_duration_ms,
-            "data_transferred_bytes": data_transferred
+            "average_sync_duration_ms": round(avg_duration_ms, 1) if avg_duration_ms else None,
         }
