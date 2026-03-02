@@ -3,6 +3,7 @@
 from typing import Dict, Any, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime
 import uuid
 import logging
@@ -79,9 +80,11 @@ class TaskService:
             }
 
         # Transition to IN_PROGRESS
+        started_at = datetime.utcnow().isoformat()
         task.status = TaskStatus.IN_PROGRESS
-        task.task_metadata = task.task_metadata or {}
-        task.task_metadata["started_at"] = datetime.utcnow().isoformat()
+        task.task_metadata = dict(task.task_metadata or {})
+        task.task_metadata["started_at"] = started_at
+        flag_modified(task, "task_metadata")
 
         await self.db.commit()
 
@@ -89,7 +92,9 @@ class TaskService:
 
         return {
             "status": TaskStatus.IN_PROGRESS.value,
-            "started_at": task.task_metadata["started_at"],
+            "output": f"Task {task.name} started",
+            "execution_time": None,
+            "started_at": started_at,
         }
     
     async def list_tasks(

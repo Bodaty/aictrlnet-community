@@ -179,8 +179,15 @@ class MCPService:
         params: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Execute a tool via the real MCP protocol."""
-        # Route to HTTP transport for servers with a URL but no command
-        if server.url and not server.command:
+        # Route based on transport_type field
+        transport = getattr(server, "transport_type", "stdio") or "stdio"
+
+        if transport == "http_sse" or (server.url and not server.command):
+            if not server.url:
+                raise ValueError(
+                    f"MCP server '{server.name}' is configured for HTTP transport "
+                    "but has no URL set."
+                )
             return await self._execute_mcp_tool_http(server, tool, params)
 
         if not server.command:
@@ -231,6 +238,15 @@ class MCPService:
             if "error" in result:
                 raise RuntimeError(f"MCP tool error: {result['error']}")
 
+            if result.get("isError"):
+                # Tool reported an execution error via MCP protocol
+                content = result.get("content", [])
+                error_text = ""
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        error_text += item.get("text", "")
+                raise RuntimeError(f"MCP tool execution error: {error_text or 'unknown'}")
+
             return result
 
         finally:
@@ -266,8 +282,15 @@ class MCPService:
                     f"HTTP MCP tool error: {result.get('error', 'unknown error')}"
                 )
 
+            # Return in MCP-standard content format, matching stdio path
+            tool_result = result.get("result", {})
+            if isinstance(tool_result, str):
+                text_content = tool_result
+            else:
+                text_content = json.dumps(tool_result)
+
             return {
-                "content": [{"type": "text", "text": json.dumps(result.get("result", {}))}],
+                "content": [{"type": "text", "text": text_content}],
                 "isError": False,
             }
         finally:
