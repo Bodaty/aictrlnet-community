@@ -279,31 +279,54 @@ class BridgeService:
         limit: int = 50,
         level: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Get logs for a bridge connection."""
+        """Get logs for a bridge connection derived from sync history."""
         connection = await self.get_connection(connection_id)
         if not connection:
             raise ValueError(f"Bridge connection '{connection_id}' not found")
-        
-        # Mock log entries
-        log_levels = ["info", "warning", "error", "debug"]
-        if level and level not in log_levels:
-            level = None
-        
+
+        # Derive logs from BridgeSync records
+        conditions = [BridgeSync.connection_id == connection_id]
+        if level == "error":
+            conditions.append(BridgeSync.status == "error")
+        elif level == "info":
+            conditions.append(BridgeSync.status == "completed")
+
+        query = select(BridgeSync).where(
+            and_(*conditions)
+        ).order_by(BridgeSync.created_at.desc()).offset(skip).limit(limit)
+
+        result = await self.db.execute(query)
+        syncs = result.scalars().all()
+
         logs = []
-        for i in range(min(limit, 20)):  # Cap at 20 for demo
-            log_level = level if level else log_levels[i % len(log_levels)]
+        for sync in syncs:
+            if sync.status == "error":
+                log_level = "error"
+                message = f"Sync failed: {sync.error_message or 'unknown error'}"
+            elif sync.status == "completed":
+                log_level = "info"
+                message = (
+                    f"Sync completed: {sync.items_processed or 0} processed, "
+                    f"{sync.items_created or 0} created, "
+                    f"{sync.items_updated or 0} updated, "
+                    f"{sync.items_failed or 0} failed"
+                )
+            elif sync.status == "running":
+                log_level = "info"
+                message = "Sync in progress"
+            else:
+                log_level = "warning"
+                message = f"Sync status: {sync.status}"
+
             logs.append({
-                "timestamp": (time.time() - (i * 300)),  # 5 minutes apart
+                "timestamp": sync.created_at.isoformat() if sync.created_at else None,
                 "level": log_level,
-                "message": f"Bridge {connection.name}: {log_level.title()} message {i + 1}",
-                "source": "bridge_service",
+                "message": message,
+                "source": "bridge_sync",
                 "connection_id": connection_id,
-                "metadata": {
-                    "source_type": connection.source_type,
-                    "target_type": connection.target_type
-                }
+                "sync_id": str(sync.id),
             })
-        
+
         return logs
     
     async def get_active_sessions(self) -> List[Dict[str, Any]]:

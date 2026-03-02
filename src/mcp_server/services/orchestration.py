@@ -37,10 +37,10 @@ class MCPOrchestrationService:
             task = await self.task_service.create_task(
                 name=task_definition.get("name"),
                 description=task_definition.get("description", "MCP orchestrated task"),
-                task_type=task_definition.get("type", "mcp_orchestration"),
-                destination=task_definition.get("destination", "ai"),
-                payload=task_definition.get("payload", {}),
                 metadata={
+                    "task_type": task_definition.get("type", "mcp_orchestration"),
+                    "destination": task_definition.get("destination", "ai"),
+                    "payload": task_definition.get("payload", {}),
                     "mcp_context": context,
                     "mcp_messages": messages,
                     "orchestrated_via": "mcp"
@@ -137,12 +137,17 @@ class MCPOrchestrationService:
         offset: int = 0
     ) -> Dict[str, Any]:
         """List tasks orchestrated via MCP."""
-        tasks = await self.task_service.list_tasks(
-            filters={"metadata.orchestrated_via": "mcp"},
-            limit=limit,
+        all_tasks = await self.task_service.list_tasks(
+            limit=limit * 2,  # Fetch extra since we filter in Python
             offset=offset
         )
-        
+
+        # Filter to MCP-orchestrated tasks
+        tasks = [
+            t for t in all_tasks
+            if t.task_metadata and t.task_metadata.get("orchestrated_via") == "mcp"
+        ][:limit]
+
         return {
             "tasks": [
                 {
@@ -150,7 +155,7 @@ class MCPOrchestrationService:
                     "name": task.name,
                     "status": task.status,
                     "created_at": task.created_at.isoformat(),
-                    "metadata": task.metadata
+                    "metadata": task.task_metadata
                 }
                 for task in tasks
             ],
@@ -175,6 +180,6 @@ class MCPOrchestrationService:
             "status": task.status,
             "created_at": task.created_at.isoformat(),
             "updated_at": task.updated_at.isoformat() if task.updated_at else None,
-            "result": task.result,
-            "metadata": task.metadata
+            "result": task.task_metadata.get("result") if task.task_metadata else None,
+            "metadata": task.task_metadata
         }

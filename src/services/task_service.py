@@ -139,10 +139,10 @@ class TaskService:
             else:
                 task.status = status
         if metadata is not None:
-            # Merge metadata rather than replace
-            existing_metadata = task.task_metadata or {}
+            existing_metadata = dict(task.task_metadata or {})
             existing_metadata.update(metadata)
             task.task_metadata = existing_metadata
+            flag_modified(task, "task_metadata")
 
         await self.db.commit()
         await self.db.refresh(task)
