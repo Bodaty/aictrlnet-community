@@ -481,7 +481,7 @@ async def get_model_provider_status(
         # Business/Enterprise editions will override this endpoint with adapter checking
         configured = False
         status_message = f"⚠️ Not configured - requires {provider_info['provider']} API key"
-        configuration_url = f"/integrations?adapter={provider_info['adapter_type']}"
+        configuration_url = f"/adapters/configure/{provider_info['adapter_type']}"
 
         return {
             "provider": provider_info["provider"],

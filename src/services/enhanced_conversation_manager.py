@@ -1731,7 +1731,7 @@ Response (just the sentence, no quotes):"""
         if not history:
             return ""
 
-        formatted = "## Conversation History\n\n"
+        formatted = "<conversation_context>\n"
 
         for msg in history:
             content = msg["content"]
@@ -1740,7 +1740,7 @@ Response (just the sentence, no quotes):"""
             role_label = "User" if msg["role"] == "user" else "Assistant"
             formatted += f"{role_label}: {content}\n\n"
 
-        formatted += "---\nRespond to the latest message.\n"
+        formatted += "</conversation_context>\nRespond to the latest message.\n"
 
         return formatted
 
@@ -1843,6 +1843,15 @@ Response (just the sentence, no quotes):"""
             pass
 
         return None
+
+    @staticmethod
+    def _strip_context_headers(text: str) -> str:
+        """Strip leaked conversation context headers from LLM response."""
+        import re
+        return re.sub(
+            r'^\s*\*{0,2}(Conversation (Summary|History|Context))\*{0,2}\s*\n*',
+            '', text, count=1
+        ).lstrip()
 
     def _build_v5_response(
         self,
@@ -2019,7 +2028,7 @@ Response (just the sentence, no quotes):"""
                 return response
 
         # No tools executed - use LLM's response (will be cleaned by _strip_json_from_response)
-        response = llm_response.text or ""
+        response = self._strip_context_headers(llm_response.text or "")
 
         # If LLM response is just JSON, don't use it
         if response.strip().startswith('{') and response.strip().endswith('}'):
