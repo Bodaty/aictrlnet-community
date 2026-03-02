@@ -186,12 +186,13 @@ class AdapterConfigService:
         """Test an adapter configuration."""
         start_time = time.time()
         
+        adapter = None
         try:
             # Decrypt credentials
             credentials = {}
             if config.credentials:
                 credentials = decrypt_data(config.credentials)
-            
+
             # Create test adapter instance
             adapter_config = AdapterConfig(
                 name=f"test_{config.adapter_type}",
@@ -200,13 +201,17 @@ class AdapterConfigService:
                 custom_config=config.settings or {},
                 timeout_seconds=timeout
             )
-            
+
+            # Remove stale test adapter if one exists from a previous failed cleanup
+            stale_id = f"test_{config.adapter_type}-{adapter_config.version}"
+            await adapter_registry.remove_adapter(stale_id)
+
             # Try to create and initialize adapter
             adapter = await adapter_registry.create_adapter(
                 config.adapter_type,
                 adapter_config
             )
-            
+
             if adapter:
                 # Test basic functionality
                 if hasattr(adapter, 'health_check'):
@@ -214,7 +219,7 @@ class AdapterConfigService:
                         adapter.health_check(),
                         timeout=timeout
                     )
-                    
+
                     if health.get('status') in ('healthy', 'ready'):
                         status = TestStatus.SUCCESS
                         message = "Adapter configuration is valid and operational"
@@ -224,19 +229,23 @@ class AdapterConfigService:
                 else:
                     status = TestStatus.SUCCESS
                     message = "Adapter created successfully"
-                
-                # Clean up test adapter
-                await adapter_registry.remove_adapter(config.adapter_type)
             else:
                 status = TestStatus.FAILED
                 message = "Failed to create adapter instance"
-            
+
         except asyncio.TimeoutError:
             status = TestStatus.FAILED
             message = f"Test timed out after {timeout} seconds"
         except Exception as e:
             status = TestStatus.FAILED
             message = f"Test failed: {str(e)}"
+        finally:
+            # Always clean up the test adapter
+            if adapter:
+                try:
+                    await adapter_registry.remove_adapter(adapter.id)
+                except Exception:
+                    pass
         
         # Update configuration test status
         config.test_status = status.value
