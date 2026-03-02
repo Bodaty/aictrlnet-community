@@ -56,13 +56,17 @@ async def list_adapter_configs(
     response_configs = []
     for config in configs:
         config_dict = config.to_dict()
+        # Track whether credentials exist before removing them
+        has_creds = bool(config_dict.get('credentials'))
         # Don't include credentials in list response for security
         config_dict.pop('credentials', None)
         # Add settings from the model
         config_dict['settings'] = config.settings
         # Fix metadata field name
         config_dict['metadata'] = config_dict.pop('metadata', {})
-        response_configs.append(AdapterConfigResponse(**config_dict))
+        resp = AdapterConfigResponse(**config_dict)
+        resp.has_credentials = has_creds
+        response_configs.append(resp)
     
     return AdapterConfigListResponse(
         configs=response_configs,

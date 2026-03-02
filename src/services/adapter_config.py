@@ -215,7 +215,7 @@ class AdapterConfigService:
                         timeout=timeout
                     )
                     
-                    if health.get('status') == 'healthy':
+                    if health.get('status') in ('healthy', 'ready'):
                         status = TestStatus.SUCCESS
                         message = "Adapter configuration is valid and operational"
                     else:
@@ -226,7 +226,7 @@ class AdapterConfigService:
                     message = "Adapter created successfully"
                 
                 # Clean up test adapter
-                await adapter_registry.shutdown_adapter(config.adapter_type)
+                await adapter_registry.remove_adapter(config.adapter_type)
             else:
                 status = TestStatus.FAILED
                 message = "Failed to create adapter instance"
@@ -352,7 +352,7 @@ class AdapterConfigService:
         try:
             # Shutdown adapter if it exists
             if config.adapter_type in adapter_registry.adapters:
-                await adapter_registry.shutdown_adapter(config.adapter_type)
+                await adapter_registry.remove_adapter(config.adapter_type)
             
             config.enabled = False
             await self.db.commit()

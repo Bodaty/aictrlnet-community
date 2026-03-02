@@ -55,6 +55,7 @@ class AdapterConfigResponse(AdapterConfigBase):
     updated_at: datetime
     last_tested_at: Optional[datetime] = None
     version: Optional[str] = None
+    has_credentials: bool = Field(False, description="Whether credentials are saved")
     metadata_field: Dict[str, Any] = Field(default_factory=dict, alias="metadata")
 
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())

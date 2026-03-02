@@ -14,7 +14,7 @@ from .models import (
 )
 from events.event_bus import event_bus
 from control_plane.services import control_plane_service
-from control_plane.models import ComponentType
+from control_plane.models import ComponentType, ComponentHeartbeat
 
 
 logger = logging.getLogger(__name__)
@@ -302,10 +302,10 @@ class BaseAdapter(ABC):
             # Send heartbeat to control plane
             if self._component_id:
                 health_score = 100.0 if self.status == AdapterStatus.READY else 50.0
-                await control_plane_service.process_heartbeat({
-                    "component_id": self._component_id,
-                    "health_score": health_score,
-                    "metrics": {
+                await control_plane_service.process_heartbeat(ComponentHeartbeat(
+                    component_id=self._component_id,
+                    health_score=health_score,
+                    metrics={
                         "total_requests": self.metrics.total_requests,
                         "success_rate": (
                             self.metrics.successful_requests / self.metrics.total_requests
@@ -313,7 +313,7 @@ class BaseAdapter(ABC):
                         ),
                         "average_response_time_ms": self.metrics.average_response_time_ms
                     }
-                })
+                ))
             
             return {
                 "status": self.status.value,
