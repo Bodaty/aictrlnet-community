@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from core.database import get_db
 from core.security import get_current_user
+from core.tenant_context import get_current_tenant_id
 from models.staged_file import StagedFile
 from schemas.file_upload import FileUploadResponse, StagedFileResponse
 
@@ -142,7 +143,7 @@ async def upload_file(
         audit = AuditService(db)
         await audit.audit_file_upload(
             user_id=str(user_id),
-            tenant_id=None,
+            tenant_id=get_current_tenant_id(),
             file_metadata={
                 "filename": safe_filename,
                 "content_type": file.content_type,
@@ -193,6 +194,8 @@ async def upload_file(
                     "file_id": str(file_id),
                     "user_id": str(user_id),
                 },
+                tenant_id=get_current_tenant_id(),
+                user_id=str(user_id),
             )
             execution_id = str(execution.id)
             logger.info(f"File upload triggered workflow {workflow_id}, execution {execution_id}")

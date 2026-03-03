@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 class WorkflowExecutionService:
     """Service for managing workflow execution."""
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, edition: str = "community"):
         self.db = db
+        self.edition = edition
         self.node_executor = NodeExecutor()
         self.iam_service = IAMService(db)
     
@@ -44,7 +45,9 @@ class WorkflowExecutionService:
         workflow_id: str,
         input_data: Optional[Dict[str, Any]] = None,
         triggered_by: str = "manual",
-        trigger_metadata: Optional[Dict[str, Any]] = None
+        trigger_metadata: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None
     ) -> WorkflowExecutionResponse:
         """Create a new workflow execution."""
         # Get workflow definition
@@ -71,6 +74,8 @@ class WorkflowExecutionService:
             input_data=input_data or {},
             triggered_by=triggered_by,
             trigger_metadata=trigger_metadata or {},
+            tenant_id=tenant_id,
+            user_id=user_id,
             context={
                 "workflow_name": workflow.name,
                 "workflow_version": workflow.version,

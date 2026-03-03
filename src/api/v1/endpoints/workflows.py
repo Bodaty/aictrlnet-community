@@ -592,12 +592,16 @@ async def execute_workflow(
     # Extract dry_run flag and pass via trigger_metadata
     trigger_metadata = {**(request.trigger_metadata or {}), "is_dry_run": request.dry_run}
 
-    # Create execution
+    # Create execution with tenant/user context for RLS
+    user_id = getattr(current_user, "id", None) or (current_user.get("id") if isinstance(current_user, dict) else None)
+
     execution = await execution_service.create_execution(
         workflow_id=workflow_id,  # Already a string
         input_data=request.input_data or {},
         triggered_by=request.trigger_source or "manual",
-        trigger_metadata=trigger_metadata
+        trigger_metadata=trigger_metadata,
+        tenant_id=tenant_id,
+        user_id=str(user_id) if user_id else None
     )
     
     # Start execution
@@ -1033,12 +1037,16 @@ async def trigger_workflow_manual(
 ):
     """Manually trigger a workflow execution."""
     scheduler = WorkflowScheduler(db)
-    
+
     import uuid
+    user_id = getattr(current_user, "id", None) or (current_user.get("id") if isinstance(current_user, dict) else None)
+    tenant_id = getattr(current_user, "tenant_id", None) or get_current_tenant_id()
     execution = await scheduler.trigger_workflow(
         workflow_id=uuid.UUID(workflow_id),
         trigger_type=TriggerType.MANUAL,
-        trigger_data=trigger_data
+        trigger_data=trigger_data,
+        user_id=str(user_id) if user_id else None,
+        tenant_id=tenant_id,
     )
     
     return {

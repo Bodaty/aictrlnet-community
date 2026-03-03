@@ -88,7 +88,8 @@ class WorkflowService:
     async def execute_workflow(
         self,
         workflow_id: str,
-        input_data: Dict[str, Any] = None
+        input_data: Dict[str, Any] = None,
+        user_id: Optional[str] = None
     ) -> WorkflowExecution:
         """Execute a workflow via the real execution engine."""
         from services.workflow_execution import WorkflowExecutionService
@@ -96,7 +97,9 @@ class WorkflowService:
         execution = await exec_service.create_execution(
             workflow_id=workflow_id,
             input_data=input_data or {},
-            triggered_by="api"
+            triggered_by="api",
+            tenant_id=get_current_tenant_id(),
+            user_id=user_id,
         )
         result = await exec_service.start_execution(execution.id)
         logger.info(f"Executed workflow {workflow_id}, execution {result.id}")

@@ -2477,11 +2477,14 @@ class ToolDispatcher:
             return ToolResult(success=False, error="Workflow execution service not available")
 
         try:
+            from core.tenant_context import get_current_tenant_id
             execution = await workflow_exec_service.create_execution(
                 workflow_id=args['workflow_id'],
                 input_data=args.get('inputs', {}),
                 triggered_by="conversation",
-                trigger_metadata={"user_id": user_id}
+                trigger_metadata={"user_id": user_id},
+                tenant_id=get_current_tenant_id(),
+                user_id=user_id,
             )
 
             started = await workflow_exec_service.start_execution(execution.id)

@@ -270,12 +270,44 @@ class NLPService:
                                 "timestamp": datetime.utcnow().isoformat()
                             })
                     
+                    # Edit mode: return modified definition without creating a new DB record
+                    if is_edit_mode:
+                        logger.info("Edit mode: returning modified workflow definition without DB insert")
+                        processing_steps.append({
+                            "step": "edit_mode_return",
+                            "result": "returning_modified_definition",
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                        return {
+                            "workflow": {
+                                "definition": ai_workflow,
+                                "nodes": ai_workflow.get("nodes", []),
+                                "edges": ai_workflow.get("edges", []),
+                            },
+                            "edit_mode": True,
+                            "edit_intent": edit_intent,
+                            "generation_method": generation_method,
+                            "confidence_score": confidence_score,
+                            "intent_analysis": intent_analysis,
+                            "ai_model_used": ai_model_used,
+                            "processing_steps": processing_steps,
+                            "plan": {
+                                "intent": intent_analysis,
+                                "steps": [
+                                    {"action": n.get("name", n.get("type", "step")), "type": n.get("type", "task")}
+                                    for n in ai_workflow.get("nodes", [])
+                                ],
+                                "confidence": confidence_score,
+                                "edit_intent": edit_intent,
+                            }
+                        }
+
                     workflow = await self._create_workflow_from_nlp(
                         prompt, ai_workflow, generation_method,
                         tenant_id=context.get('tenant_id') or get_current_tenant_id() if context else get_current_tenant_id(),
                         context=context
                     )
-                    
+
                     if return_transparency:
                         return await self._build_transparency_response(
                             workflow, generation_method, templates_used,
@@ -457,7 +489,17 @@ class NLPService:
             
             # Enhance prompt with available tools
             enhanced_prompt = self._enhance_prompt_with_tools(prompt, available_tools)
-            
+
+            # In edit mode, include current workflow definition so LLM modifies it
+            if context and context.get('mode') == 'edit' and context.get('current_workflow'):
+                current_wf = context['current_workflow']
+                current_wf_json = json.dumps(current_wf, indent=2, default=str)
+                enhanced_prompt = (
+                    f"EDIT MODE: Modify the existing workflow below based on the user's request.\n"
+                    f"Current workflow definition:\n{current_wf_json}\n\n"
+                    f"User's edit request: {enhanced_prompt}"
+                )
+
             # Use LLM service to generate workflow steps
             workflow_steps = await llm_service.generate_workflow_steps(
                 prompt=enhanced_prompt,

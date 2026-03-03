@@ -34,10 +34,12 @@ class WorkflowScheduler:
         self,
         workflow_id: uuid.UUID,
         trigger_type: TriggerType,
-        trigger_data: Optional[Dict[str, Any]] = None
+        trigger_data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None
     ) -> WorkflowExecution:
         """Trigger workflow execution - Community supports manual only."""
-        
+
         # Community edition only supports manual triggers
         if trigger_type != TriggerType.MANUAL:
             logger.warning(
@@ -45,13 +47,15 @@ class WorkflowScheduler:
                 f"Using manual trigger instead."
             )
             trigger_type = TriggerType.MANUAL
-        
+
         # Create execution
         execution = await self.execution_service.create_execution(
             workflow_id=workflow_id,
             input_data=trigger_data.get("input_data", {}) if trigger_data else {},
             triggered_by=trigger_type.value,
-            trigger_metadata=trigger_data or {}
+            trigger_metadata=trigger_data or {},
+            tenant_id=tenant_id,
+            user_id=user_id,
         )
         
         # Start execution
