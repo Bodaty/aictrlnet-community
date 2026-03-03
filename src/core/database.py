@@ -13,7 +13,7 @@ from datetime import datetime
 import logging
 
 from .config import get_settings
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_tenant_id, DEFAULT_TENANT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,16 @@ def get_engine():
             pool_pre_ping=True,
             pool_recycle=300,
             pool_timeout=10,
+            connect_args={
+                "server_settings": {
+                    # Set default tenant for RLS on every new connection.
+                    # On Cloud SQL the postgres user is NOT a true SUPERUSER,
+                    # so FORCE ROW LEVEL SECURITY is enforced. This ensures
+                    # every connection starts with a valid tenant context.
+                    # get_db() overrides per-request when needed.
+                    "app.current_tenant_id": DEFAULT_TENANT_ID,
+                }
+            },
         )
     return _engine
 

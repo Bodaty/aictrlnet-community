@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     
     # Database
     POSTGRES_SERVER: str = Field(default="localhost")
-    POSTGRES_USER: str = Field(default="aictrlnet")
+    POSTGRES_USER: str = Field(default="app")
     POSTGRES_PASSWORD: str = Field(default="local_dev_password")
     POSTGRES_DB: str = Field(default="aictrlnet_community")
     POSTGRES_PORT: int = Field(default=5432)
