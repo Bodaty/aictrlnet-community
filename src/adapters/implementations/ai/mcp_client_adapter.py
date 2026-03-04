@@ -124,8 +124,10 @@ class MCPConnection:
         try:
             if self.config.transport == MCPTransportType.STDIO:
                 return await self._connect_stdio()
+            elif self.config.transport == MCPTransportType.HTTP_SSE:
+                return await self._connect_http_sse()
             else:
-                logger.error(f"HTTP/SSE transport not yet implemented")
+                logger.error(f"Unknown transport type: {self.config.transport}")
                 return False
         except Exception as e:
             logger.error(f"Failed to connect to MCP server {self.config.name}: {e}")
@@ -176,6 +178,167 @@ class MCPConnection:
         except Exception as e:
             logger.error(f"Failed to start MCP server {self.config.name}: {e}")
             return False
+
+    async def _connect_http_sse(self) -> bool:
+        """Connect using HTTP with SSE transport (Streamable HTTP per MCP 2025-03-26).
+
+        The client POSTs JSON-RPC requests to the server URL and receives
+        responses. For server-initiated messages, the client opens an SSE
+        stream via GET on the same endpoint.
+        """
+        import httpx
+
+        if not self.config.url:
+            logger.error(f"HTTP/SSE transport requires a URL for server {self.config.name}")
+            return False
+
+        self._http_client = httpx.AsyncClient(
+            timeout=30.0,
+            headers=self.config.headers or {},
+        )
+        self._http_url = self.config.url.rstrip("/")
+
+        # Perform initialization handshake over HTTP
+        success = await self._initialize_http()
+        if success:
+            logger.info(f"MCP server {self.config.name} initialized via HTTP/SSE")
+            self.initialized = True
+
+            if self.capabilities.tools:
+                await self._fetch_tools_http()
+            if self.capabilities.resources:
+                await self._fetch_resources_http()
+        else:
+            # Clean up HTTP client on failed initialization
+            await self._http_client.aclose()
+            self._http_client = None
+
+        return success
+
+    async def _initialize_http(self) -> bool:
+        """Perform MCP initialization handshake over HTTP."""
+        init_request = {
+            "jsonrpc": "2.0",
+            "id": self._next_request_id(),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": self._protocol_version,
+                "capabilities": {
+                    "roots": {"listChanged": True},
+                    "sampling": {}
+                },
+                "clientInfo": {
+                    "name": "AICtrlNet",
+                    "version": "1.0.0"
+                }
+            }
+        }
+
+        try:
+            response = await self._http_request(init_request)
+
+            if "error" in response:
+                logger.error(f"HTTP initialize error: {response['error']}")
+                return False
+
+            result = response.get("result", {})
+            self.server_info = result.get("serverInfo", {})
+
+            caps = result.get("capabilities", {})
+            if "tools" in caps:
+                self.capabilities.tools = True
+                self.capabilities.tools_list_changed = caps["tools"].get("listChanged", False)
+            if "resources" in caps:
+                self.capabilities.resources = True
+                self.capabilities.resources_list_changed = caps["resources"].get("listChanged", False)
+                self.capabilities.resources_subscribe = caps["resources"].get("subscribe", False)
+            if "prompts" in caps:
+                self.capabilities.prompts = True
+                self.capabilities.prompts_list_changed = caps["prompts"].get("listChanged", False)
+            if "logging" in caps:
+                self.capabilities.logging = True
+
+            # Send initialized notification
+            await self._http_request({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }, expect_response=False)
+
+            return True
+
+        except Exception as e:
+            logger.error(f"HTTP initialize failed for {self.config.name}: {e}")
+            return False
+
+    async def _http_request(
+        self, request: Dict[str, Any], expect_response: bool = True
+    ) -> Dict[str, Any]:
+        """Send a JSON-RPC request over HTTP POST."""
+        resp = await self._http_client.post(
+            self._http_url,
+            json=request,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        resp.raise_for_status()
+
+        if not expect_response:
+            return {}
+
+        return resp.json()
+
+    async def _fetch_tools_http(self) -> None:
+        """Fetch tools from the server over HTTP."""
+        request = {
+            "jsonrpc": "2.0",
+            "id": self._next_request_id(),
+            "method": "tools/list",
+            "params": {}
+        }
+        try:
+            response = await self._http_request(request)
+            if "error" in response:
+                logger.warning(f"Failed to list tools via HTTP: {response['error']}")
+                return
+            result = response.get("result", {})
+            self.tools = [
+                MCPTool(
+                    name=t["name"],
+                    description=t.get("description", ""),
+                    input_schema=t.get("inputSchema", {}),
+                    server_name=self.config.name,
+                )
+                for t in result.get("tools", [])
+            ]
+            logger.info(f"Loaded {len(self.tools)} tools from {self.config.name} via HTTP")
+        except Exception as e:
+            logger.warning(f"Failed to fetch tools via HTTP from {self.config.name}: {e}")
+
+    async def _fetch_resources_http(self) -> None:
+        """Fetch resources from the server over HTTP."""
+        request = {
+            "jsonrpc": "2.0",
+            "id": self._next_request_id(),
+            "method": "resources/list",
+            "params": {}
+        }
+        try:
+            response = await self._http_request(request)
+            if "error" in response:
+                logger.warning(f"Failed to list resources via HTTP: {response['error']}")
+                return
+            result = response.get("result", {})
+            self.resources = [
+                MCPResource(
+                    uri=r["uri"],
+                    name=r["name"],
+                    description=r.get("description"),
+                    mime_type=r.get("mimeType"),
+                )
+                for r in result.get("resources", [])
+            ]
+            logger.info(f"Loaded {len(self.resources)} resources from {self.config.name} via HTTP")
+        except Exception as e:
+            logger.warning(f"Failed to fetch resources via HTTP from {self.config.name}: {e}")
 
     async def _initialize(self) -> bool:
         """Perform MCP initialization handshake.
@@ -338,7 +501,10 @@ class MCPConnection:
         }
 
         try:
-            response = await self._send_request(request, timeout=120.0)
+            if self.config.transport == MCPTransportType.HTTP_SSE:
+                response = await self._http_request(request)
+            else:
+                response = await self._send_request(request, timeout=120.0)
 
             if "error" in response:
                 return {"error": response["error"]}
@@ -367,7 +533,10 @@ class MCPConnection:
         }
 
         try:
-            response = await self._send_request(request, timeout=60.0)
+            if self.config.transport == MCPTransportType.HTTP_SSE:
+                response = await self._http_request(request)
+            else:
+                response = await self._send_request(request, timeout=60.0)
 
             if "error" in response:
                 return {"error": response["error"]}
@@ -456,6 +625,11 @@ class MCPConnection:
 
     async def disconnect(self) -> None:
         """Disconnect from the MCP server."""
+        # Close HTTP client if using HTTP/SSE transport
+        if hasattr(self, '_http_client') and self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None
+
         if self._read_task:
             self._read_task.cancel()
             try:

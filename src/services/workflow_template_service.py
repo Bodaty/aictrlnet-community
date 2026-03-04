@@ -1046,8 +1046,7 @@ class WorkflowTemplateService:
             elif format == "yaml":
                 data = yaml.safe_load(content)
             elif format == "bpmn":
-                # Would need BPMN parser
-                raise ValidationError("BPMN import not yet implemented")
+                data = self._parse_bpmn(content)
             else:
                 raise ValidationError(f"Unsupported format: {format}")
         except Exception as e:
@@ -1082,14 +1081,199 @@ class WorkflowTemplateService:
             import yaml
             return yaml.dump(export_data, default_flow_style=False)
         elif format == "pdf":
-            # Would need PDF generation library
-            raise ValidationError("PDF export not yet implemented")
+            return self._export_pdf(export_data)
         elif format == "bpmn":
-            # Would need BPMN converter
-            raise ValidationError("BPMN export not yet implemented")
+            return self._export_bpmn(export_data)
         else:
             raise ValidationError(f"Unsupported export format: {format}")
     
+    def _parse_bpmn(self, xml_content: str) -> Dict[str, Any]:
+        """Parse BPMN 2.0 XML into internal workflow template format."""
+        import xml.etree.ElementTree as ET
+
+        BPMN_NS = {
+            "bpmn": "http://www.omg.org/spec/BPMN/20100524/MODEL",
+            "bpmndi": "http://www.omg.org/spec/BPMN/20100524/DI",
+        }
+
+        root = ET.fromstring(xml_content)
+        process = root.find("bpmn:process", BPMN_NS)
+        if process is None:
+            # Try without namespace
+            process = root.find("process")
+        if process is None:
+            raise ValidationError("No <process> element found in BPMN XML")
+
+        name = process.get("name") or process.get("id") or "Imported BPMN Workflow"
+
+        nodes = []
+        connections = []
+
+        def _find(parent, tag):
+            """Find elements with or without BPMN namespace."""
+            result = parent.findall(f"bpmn:{tag}", BPMN_NS)
+            if not result:
+                result = parent.findall(tag)
+            return result
+
+        # Map BPMN elements to workflow nodes
+        task_tags = ["task", "serviceTask", "userTask", "scriptTask"]
+        for tag in task_tags:
+            for task in _find(process, tag):
+                nodes.append({
+                    "id": task.get("id"),
+                    "name": task.get("name") or task.get("id"),
+                    "type": task.tag.split("}")[-1] if "}" in task.tag else task.tag,
+                })
+
+        for tag in ["exclusiveGateway", "parallelGateway"]:
+            for gw in _find(process, tag):
+                nodes.append({
+                    "id": gw.get("id"),
+                    "name": gw.get("name") or gw.get("id"),
+                    "type": gw.tag.split("}")[-1] if "}" in gw.tag else gw.tag,
+                })
+
+        for start in _find(process, "startEvent"):
+            nodes.append({"id": start.get("id"), "name": "Start", "type": "startEvent"})
+        for end in _find(process, "endEvent"):
+            nodes.append({"id": end.get("id"), "name": "End", "type": "endEvent"})
+
+        for flow in _find(process, "sequenceFlow"):
+            connections.append({
+                "id": flow.get("id"),
+                "source": flow.get("sourceRef"),
+                "target": flow.get("targetRef"),
+                "name": flow.get("name"),
+            })
+
+        return {
+            "name": name,
+            "description": f"Imported from BPMN: {name}",
+            "category": "imported",
+            "tags": ["imported", "bpmn"],
+            "definition": {"nodes": nodes, "connections": connections},
+        }
+
+    def _export_bpmn(self, export_data: Dict[str, Any]) -> str:
+        """Export workflow template to BPMN 2.0 XML."""
+        import xml.etree.ElementTree as ET
+
+        BPMN_NS = "http://www.omg.org/spec/BPMN/20100524/MODEL"
+        ET.register_namespace("bpmn", BPMN_NS)
+
+        definitions = ET.Element(f"{{{BPMN_NS}}}definitions", {
+            "id": "Definitions_1",
+            "targetNamespace": "http://aictrlnet.com/bpmn",
+        })
+
+        process_id = export_data.get("name", "Process_1").replace(" ", "_")
+        process = ET.SubElement(definitions, f"{{{BPMN_NS}}}process", {
+            "id": process_id,
+            "name": export_data.get("name", "Workflow"),
+            "isExecutable": "true",
+        })
+
+        definition = export_data.get("definition", {})
+        nodes = definition.get("nodes", [])
+        connections = definition.get("connections", [])
+
+        type_map = {
+            "startEvent": "startEvent",
+            "endEvent": "endEvent",
+            "exclusiveGateway": "exclusiveGateway",
+            "parallelGateway": "parallelGateway",
+        }
+
+        for node in nodes:
+            node_type = node.get("type", "task")
+            bpmn_tag = type_map.get(node_type, "task")
+            ET.SubElement(process, f"{{{BPMN_NS}}}{bpmn_tag}", {
+                "id": node.get("id", f"Node_{nodes.index(node)}"),
+                "name": node.get("name", ""),
+            })
+
+        for conn in connections:
+            ET.SubElement(process, f"{{{BPMN_NS}}}sequenceFlow", {
+                "id": conn.get("id", f"Flow_{connections.index(conn)}"),
+                "sourceRef": conn.get("source", ""),
+                "targetRef": conn.get("target", ""),
+            })
+
+        return ET.tostring(definitions, encoding="unicode", xml_declaration=True)
+
+    def _export_pdf(self, export_data: Dict[str, Any]) -> str:
+        """Export workflow template as a simple text-based PDF.
+
+        Uses a minimal PDF generator so we don't require heavy external
+        dependencies (reportlab, weasyprint, etc.).
+        """
+        name = export_data.get("name", "Workflow Template")
+        description = export_data.get("description", "")
+        category = export_data.get("category", "")
+        tags = ", ".join(export_data.get("tags", []))
+        definition = json.dumps(export_data.get("definition", {}), indent=2)
+
+        # Build text content
+        lines = [
+            f"Workflow Template: {name}",
+            f"Category: {category}",
+            f"Tags: {tags}",
+            "",
+            "Description:",
+            description,
+            "",
+            "Definition:",
+            definition,
+        ]
+        text_content = "\n".join(lines)
+
+        # Minimal PDF 1.4 — render each line separately
+        import base64 as _b64
+
+        def _escape(s):
+            return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+        # Build page stream: position each line with Td
+        stream_parts = ["BT", "/F1 10 Tf", "50 750 Td"]
+        for line in lines:
+            # Truncate very long lines to fit page width (~80 chars in Courier 10pt)
+            for chunk in [line[i:i+80] for i in range(0, max(len(line), 1), 80)] if line else [""]:
+                stream_parts.append(f"({_escape(chunk)}) Tj")
+                stream_parts.append("0 -14 Td")  # Move down 14 points
+        stream_parts.append("ET")
+        page_stream = " ".join(stream_parts)
+        stream_bytes = page_stream.encode("latin-1", errors="replace")
+        stream_len = len(stream_bytes)
+
+        # Build PDF objects with tracked byte offsets
+        pdf_parts = ["%PDF-1.4\n"]
+        offsets = []
+
+        def _add_obj(content):
+            offsets.append(sum(len(p.encode("latin-1")) for p in pdf_parts))
+            pdf_parts.append(content + "\n")
+
+        _add_obj("1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj")
+        _add_obj("2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj")
+        _add_obj("3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj")
+        _add_obj(f"4 0 obj<</Length {stream_len}>>stream\n{stream_bytes.decode('latin-1')}\nendstream endobj")
+        _add_obj("5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Courier>>endobj")
+
+        xref_offset = sum(len(p.encode("latin-1")) for p in pdf_parts)
+
+        xref_lines = [f"xref\n0 {len(offsets) + 1}\n"]
+        xref_lines.append("0000000000 65535 f \n")
+        for off in offsets:
+            xref_lines.append(f"{off:010d} 00000 n \n")
+
+        pdf_parts.extend(xref_lines)
+        pdf_parts.append(f"trailer<</Size {len(offsets) + 1}/Root 1 0 R>>\n")
+        pdf_parts.append(f"startxref\n{xref_offset}\n%%EOF")
+
+        pdf_text = "".join(pdf_parts)
+        return _b64.b64encode(pdf_text.encode("latin-1")).decode("ascii")
+
     def get_content_type(self, format: str) -> str:
         """Get the content type for a format."""
         content_types = {
