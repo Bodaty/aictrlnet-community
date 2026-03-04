@@ -957,13 +957,60 @@ class ActionOrchestrator:
                 "upgrade_to": "business"
             }
         
-        # This would call the actual pod service when available
-        # For now, return a placeholder
-        return {
-            "success": True,
-            "message": "Pod formation would be executed here",
-            "params_received": params
-        }
+        try:
+            from aictrlnet_business.models.pod_swarm import AgentPod, PodMember, PodStatus
+            from sqlalchemy import select
+
+            # Create the pod
+            pod = AgentPod(
+                name=params.get("name", f"Pod-{datetime.now().strftime('%H%M%S')}"),
+                objective=params.get("objective", ""),
+                strategy=params.get("strategy", "consensus"),
+                max_size=params.get("max_size", 5),
+                status=PodStatus.FORMING,
+                created_by=user_id
+            )
+            self.db.add(pod)
+            await self.db.flush()
+
+            # Add members if agent IDs provided
+            agent_ids = params.get("agents", [])
+            members_added = 0
+            for agent_id in agent_ids:
+                member = PodMember(
+                    pod_id=pod.id,
+                    agent_id=agent_id,
+                    role="member"
+                )
+                self.db.add(member)
+                members_added += 1
+
+            await self.db.commit()
+            await self.db.refresh(pod)
+
+            return {
+                "success": True,
+                "pod": {
+                    "id": str(pod.id),
+                    "name": pod.name,
+                    "objective": pod.objective,
+                    "status": pod.status.value if hasattr(pod.status, 'value') else str(pod.status),
+                    "members": members_added
+                },
+                "message": f"Pod '{pod.name}' formed with {members_added} member(s)"
+            }
+        except ImportError:
+            return {
+                "success": False,
+                "error": "Pod formation requires Business edition or higher",
+                "upgrade_required": True,
+                "upgrade_to": "business"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Pod formation failed: {str(e)}"
+            }
     
     async def _execute_task_via_service(
         self,

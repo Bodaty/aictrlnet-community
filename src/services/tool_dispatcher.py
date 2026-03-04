@@ -2524,15 +2524,44 @@ class ToolDispatcher:
             return ToolResult(success=False, error=str(e))
 
     async def _instantiate_template(self, args: Dict, user_id: str) -> ToolResult:
-        """Instantiate a template."""
-        # TODO: Implement template instantiation
-        return ToolResult(
-            success=True,
-            data={
-                "message": f"Template instantiation for '{args.get('workflow_name')}' would be created here",
-                "template_id": args.get('template_id')
-            }
-        )
+        """Instantiate a workflow template — creates a real workflow from the template."""
+        template_service = self._services.get('template_service')
+        if not template_service:
+            return ToolResult(success=False, error="Template service not available")
+
+        template_id = args.get('template_id')
+        workflow_name = args.get('workflow_name', 'Untitled Workflow')
+        customizations = args.get('customizations', {})
+
+        if not template_id:
+            return ToolResult(success=False, error="template_id is required")
+
+        try:
+            result = await template_service.instantiate_template(
+                self.db,
+                template_id,
+                user_id,
+                workflow_name=workflow_name,
+                customizations=customizations
+            )
+
+            workflow_id = None
+            if hasattr(result, 'id'):
+                workflow_id = str(result.id)
+            elif isinstance(result, dict):
+                workflow_id = str(result.get('id', result.get('workflow_id', '')))
+
+            return ToolResult(
+                success=True,
+                data={
+                    "workflow_id": workflow_id,
+                    "workflow_name": workflow_name,
+                    "template_id": template_id,
+                    "message": f"Workflow '{workflow_name}' created from template"
+                }
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
 
     async def _create_task(self, args: Dict, user_id: str) -> ToolResult:
         """Create a task."""

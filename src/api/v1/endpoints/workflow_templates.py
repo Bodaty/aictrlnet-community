@@ -275,11 +275,42 @@ async def preview_template(
         if not template.workflow_definition:
             raise ValidationError("Template has no workflow definition")
         
-        # TODO: Apply parameters to preview
-        # For now, just return the workflow definition
+        import json as _json
+        import copy
+
+        preview_def = copy.deepcopy(template.workflow_definition)
+        params_applied = {}
+
+        if parameters:
+            try:
+                param_dict = _json.loads(parameters)
+            except (_json.JSONDecodeError, TypeError):
+                raise ValidationError("Invalid JSON in parameters query string")
+
+            # Apply parameters to the workflow definition
+            # Replace placeholders in node configs and top-level fields
+            for key, value in param_dict.items():
+                # Top-level overrides (name, description, etc.)
+                if key in preview_def:
+                    preview_def[key] = value
+                    params_applied[key] = value
+
+                # Walk nodes and replace matching config values
+                for node in preview_def.get("nodes", []):
+                    config = node.get("config", {})
+                    if key in config:
+                        config[key] = value
+                        params_applied[key] = value
+                    # Also check for {{key}} placeholders in string values
+                    for cfg_key, cfg_val in list(config.items()):
+                        if isinstance(cfg_val, str) and f"{{{{{key}}}}}" in cfg_val:
+                            config[cfg_key] = cfg_val.replace(f"{{{{{key}}}}}", str(value))
+                            params_applied[key] = value
+
         return {
-            "preview": template.workflow_definition,
-            "parameters_applied": parameters is not None
+            "preview": preview_def,
+            "parameters_applied": len(params_applied) > 0,
+            "applied_parameters": params_applied
         }
         
     except NotFoundError as e:

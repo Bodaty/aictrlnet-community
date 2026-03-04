@@ -2,7 +2,7 @@
 
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func, desc
+from sqlalchemy import select, and_, or_, func, desc, String
 from sqlalchemy.orm import selectinload
 from datetime import datetime, timedelta
 import uuid
@@ -420,15 +420,44 @@ class IAMService:
         )
         error_rate = error_messages / total_messages if total_messages > 0 else 0
         
-        # TODO: Calculate actual metrics from data
+        # Calculate average message size from actual content
+        avg_size_result = await self.db.scalar(
+            select(func.avg(func.length(func.cast(IAMMessage.content, String))))
+        )
+        avg_message_size = int(avg_size_result) if avg_size_result else 0
+
+        # Calculate average response time: avg(delivered_at - created_at) for delivered messages
+        avg_response_result = await self.db.scalar(
+            select(func.avg(
+                func.extract('epoch', IAMMessage.delivered_at) -
+                func.extract('epoch', IAMMessage.created_at)
+            )).where(
+                IAMMessage.delivered_at.isnot(None),
+                IAMMessage.status == IAMMessageStatus.DELIVERED
+            )
+        )
+        if avg_response_result and avg_response_result > 0:
+            avg_response_ms = int(avg_response_result * 1000)
+        else:
+            avg_response_ms = 0
+
+        # Calculate uptime from earliest agent registration
+        earliest_agent = await self.db.scalar(
+            select(func.min(IAMAgent.created_at))
+        )
+        if earliest_agent:
+            uptime_seconds = int((datetime.utcnow() - earliest_agent).total_seconds())
+        else:
+            uptime_seconds = 0
+
         return IAMSystemMetrics(
             total_messages=total_messages,
             messages_per_minute=messages_per_minute,
             active_agents=active_agents,
-            avg_message_size_bytes=425,  # Placeholder
-            avg_response_time_ms=1350,   # Placeholder
+            avg_message_size_bytes=avg_message_size,
+            avg_response_time_ms=avg_response_ms,
             error_rate=error_rate,
-            uptime_seconds=86400          # Placeholder
+            uptime_seconds=uptime_seconds
         )
     
     async def get_agent_metrics(self, agent_id: uuid.UUID) -> Optional[IAMAgentMetrics]:
@@ -617,26 +646,57 @@ class IAMService:
         self.db.add(event)
     
     async def _process_message_delivery(self, message_id: uuid.UUID):
-        """Process message delivery asynchronously."""
-        # This would be implemented to handle actual message delivery
-        # For now, we just mark messages as delivered
-        async with AsyncSession(self.db.get_bind()) as session:
-            result = await session.execute(
-                select(IAMMessage).where(IAMMessage.id == message_id)
-            )
-            message = result.scalar_one_or_none()
-            
-            if message:
+        """Process message delivery: update status, log, and publish event."""
+        try:
+            from core.database import get_session_maker
+            async with get_session_maker()() as session:
+                result = await session.execute(
+                    select(IAMMessage).where(IAMMessage.id == message_id)
+                )
+                message = result.scalar_one_or_none()
+
+                if not message:
+                    return
+
+                # Check if message has expired
+                if message.expires_at and message.expires_at < datetime.utcnow():
+                    message.status = IAMMessageStatus.EXPIRED
+                    await session.commit()
+                    return
+
+                # Mark as delivered
                 message.status = IAMMessageStatus.DELIVERED
                 message.delivered_at = datetime.utcnow()
-                
-                await self._log_event(
+
+                # Log the delivery event
+                event = IAMEventLog(
                     event_type="message_delivered",
                     message_id=message_id,
-                    event_data={"delivered_at": message.delivered_at.isoformat()}
+                    agent_id=message.recipient_id,
+                    event_data={
+                        "delivered_at": message.delivered_at.isoformat(),
+                        "sender_id": str(message.sender_id),
+                        "message_type": message.message_type.value if hasattr(message.message_type, 'value') else str(message.message_type)
+                    }
                 )
-                
+                session.add(event)
                 await session.commit()
+
+                # Publish delivery event for real-time consumers
+                try:
+                    from core.events import event_bus
+                    await event_bus.publish("iam.message_delivered", {
+                        "message_id": str(message_id),
+                        "sender_id": str(message.sender_id),
+                        "recipient_id": str(message.recipient_id) if message.recipient_id else None,
+                        "message_type": message.message_type.value if hasattr(message.message_type, 'value') else str(message.message_type),
+                        "delivered_at": message.delivered_at.isoformat()
+                    })
+                except Exception:
+                    pass  # Event publishing is best-effort
+
+        except Exception as e:
+            logger.error(f"Message delivery processing failed for {message_id}: {e}")
     
     def _parse_time_range(self, time_range: str) -> timedelta:
         """Parse time range string to timedelta."""
