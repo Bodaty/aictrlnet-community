@@ -61,18 +61,29 @@ class AICtrlNetApp:
             from services.usage_collector import usage_collector
             logger.info("Usage collector service initialized")
             
-            # Initialize workflow templates
+            # Initialize workflow templates (retry with backoff for fresh deploys where
+            # migrations may not have run yet when the service starts)
             try:
                 from services.workflow_template_service import WorkflowTemplateService
                 from .database import get_session_maker
-                
-                async with get_session_maker()() as db:
-                    template_service = WorkflowTemplateService()
-                    count = await template_service.initialize_system_templates(db)
-                    logger.info(f"Initialized {count} Community workflow templates")
+                import asyncio as _asyncio
+
+                for attempt in range(5):
+                    try:
+                        async with get_session_maker()() as db:
+                            template_service = WorkflowTemplateService()
+                            count = await template_service.initialize_system_templates(db)
+                            logger.info(f"Initialized {count} Community workflow templates")
+                            break
+                    except Exception as tmpl_err:
+                        if attempt < 4:
+                            wait = 2 ** attempt  # 1, 2, 4, 8 seconds
+                            logger.warning(f"Template init attempt {attempt+1}/5 failed ({tmpl_err}), retrying in {wait}s")
+                            await _asyncio.sleep(wait)
+                        else:
+                            logger.error(f"Failed to initialize workflow templates after 5 attempts: {tmpl_err}")
             except Exception as e:
                 logger.error(f"Failed to initialize workflow templates: {e}")
-                # Don't fail startup if templates can't be loaded
             
             # Register all adapter classes (not instances) for discovery
             try:

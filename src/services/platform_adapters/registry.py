@@ -117,15 +117,43 @@ class PlatformAdapterService:
                     supported_auth_methods=supported_auth,
                     is_active=True,
                     is_beta=False,
-                    config_schema={},  # TODO: Add JSON schema for config
-                    documentation_url=None,  # TODO: Add docs URL
-                    icon_url=None  # TODO: Add icon URL
+                    config_schema=self._get_adapter_config_schema(platform_type),
+                    documentation_url=self._get_adapter_docs_url(platform_type),
+                    icon_url=self._get_adapter_icon_url(platform_type)
                 )
                 self.db.add(db_adapter)
         
         await self.db.commit()
         logger.info("Synced adapters to database")
     
+    _ADAPTER_DOCS = {
+        PlatformType.N8N: "https://docs.n8n.io/api/",
+        PlatformType.ZAPIER: "https://platform.zapier.com/docs/api",
+        PlatformType.MAKE: "https://www.make.com/en/api-documentation",
+        PlatformType.POWER_AUTOMATE: "https://learn.microsoft.com/en-us/power-automate/web-api",
+        PlatformType.IFTTT: "https://ifttt.com/docs/connect_api",
+    }
+
+    _ADAPTER_ICONS = {
+        PlatformType.N8N: "/static/icons/n8n.svg",
+        PlatformType.ZAPIER: "/static/icons/zapier.svg",
+        PlatformType.MAKE: "/static/icons/make.svg",
+        PlatformType.POWER_AUTOMATE: "/static/icons/power-automate.svg",
+        PlatformType.IFTTT: "/static/icons/ifttt.svg",
+    }
+
+    def _get_adapter_config_schema(self, platform_type: PlatformType) -> dict:
+        base = {"type": "object", "properties": {"api_url": {"type": "string"}, "api_key": {"type": "string"}}, "required": ["api_url", "api_key"]}
+        if platform_type == PlatformType.N8N:
+            base["properties"]["webhook_url"] = {"type": "string"}
+        return base
+
+    def _get_adapter_docs_url(self, platform_type: PlatformType) -> Optional[str]:
+        return self._ADAPTER_DOCS.get(platform_type)
+
+    def _get_adapter_icon_url(self, platform_type: PlatformType) -> Optional[str]:
+        return self._ADAPTER_ICONS.get(platform_type)
+
     async def get_adapter_info(
         self,
         platform_type: PlatformType

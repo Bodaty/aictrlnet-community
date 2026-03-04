@@ -4,7 +4,8 @@ import time
 import logging
 from datetime import datetime
 from typing import Callable, Optional, Dict, Any
-from fastapi import Request, Response, HTTPException
+from fastapi import Request, Response, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from sqlalchemy import select
@@ -478,35 +479,24 @@ async def check_operation_limit(
     )
 
 
-# Decorator for endpoint-level enforcement
+# Dependency factory for endpoint-level feature enforcement (FastAPI Depends compatible)
 def require_feature(feature: str):
-    """Decorator to require a specific feature for an endpoint."""
-    
-    def decorator(func):
-        async def wrapper(request: Request, *args, **kwargs):
-            tenant_id = getattr(request.state, "tenant_id", None)
-            if not tenant_id:
-                raise HTTPException(
-                    status_code=401,
-                    detail="Authentication required"
-                )
-            
-            async for db in get_db():
-                enforcer = LicenseEnforcer(db)
+    """Return a FastAPI dependency that checks if a feature is enabled for the tenant.
 
-                if not await enforcer.check_feature(tenant_id, feature):
-                    tenant_info = await enforcer._get_tenant_info(tenant_id)
-                    current_edition = Edition(tenant_info["edition"])
-                    detail = get_feature_upgrade_info(feature, current_edition)
-                    detail["upgrade_options"] = enforcer._get_upgrade_path(
-                        tenant_info["edition"]
-                    )
-                    raise HTTPException(status_code=403, detail=detail)
+    Usage: _: None = Depends(require_feature("approval_workflows"))
+    """
 
-                break
-            
-            return await func(request, *args, **kwargs)
-        
-        return wrapper
-    
-    return decorator
+    async def _check_feature(request: Request, db: AsyncSession = Depends(get_db)):
+        tenant_id = getattr(request.state, "tenant_id", None)
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        enforcer = LicenseEnforcer(db)
+        if not await enforcer.check_feature(tenant_id, feature):
+            tenant_info = await enforcer._get_tenant_info(tenant_id)
+            current_edition = Edition(tenant_info["edition"])
+            detail = get_feature_upgrade_info(feature, current_edition)
+            detail["upgrade_options"] = enforcer._get_upgrade_path(tenant_info["edition"])
+            raise HTTPException(status_code=403, detail=detail)
+
+    return _check_feature

@@ -368,10 +368,17 @@ class StripeService:
             f"trial_end={trial_end_dt.isoformat() if trial_end_dt else 'unknown'}"
         )
 
-        # TODO: Integrate with notification service to send email/in-app alert
-        # e.g. await notification_service.send_trial_ending_notice(
-        #     user_id=subscription.user_id, days_remaining=days_remaining
-        # )
+        # Publish trial ending event so notification systems can react
+        try:
+            from events.event_bus import event_bus
+            await event_bus.publish("subscription.trial_ending", {
+                "user_id": str(subscription.user_id),
+                "subscription_id": str(subscription.id),
+                "days_remaining": days_remaining,
+                "trial_end": trial_end_dt.isoformat() if trial_end_dt else None
+            })
+        except Exception as notify_err:
+            logger.warning(f"Failed to publish trial_ending event: {notify_err}")
 
     async def _handle_invoice_paid(self, invoice_data: Dict[str, Any]) -> None:
         """Handle successful invoice payment.

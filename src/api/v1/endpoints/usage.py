@@ -167,11 +167,15 @@ async def get_current_usage(
     
     # Add platform_nodes for Business/Enterprise
     if edition.value in ["business_starter", "business_growth", "business_scale", "enterprise"]:
-        # TODO: Count actual platform nodes when implemented
+        from models.platform_integration import PlatformAdapter
+        node_count = await db.scalar(
+            select(func.count(PlatformAdapter.id)).where(PlatformAdapter.is_active == True)
+        ) or 0
+        node_limit = float(limits.get("PLATFORM_NODES", 5))
         metrics["platform_nodes"] = MetricInfo(
-            current=0.0,
-            limit=5.0,
-            percentage=0.0
+            current=float(node_count),
+            limit=node_limit,
+            percentage=float(node_count / node_limit * 100) if node_limit > 0 else 0
         )
     
     return CurrentUsageResponse(

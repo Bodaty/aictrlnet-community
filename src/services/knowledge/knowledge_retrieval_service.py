@@ -376,7 +376,10 @@ class KnowledgeRetrievalService:
         if hasattr(self.manifest_service, 'get_capabilities_summary'):
             capabilities = await self.manifest_service.get_capabilities_summary()
             # Add extra fields the enhanced conversation manager expects
-            capabilities["automation_coverage"] = 0.0  # TODO: Calculate properly
+            total_templates = capabilities.get("templates", 0)
+            total_adapters = capabilities.get("adapters", 0)
+            # Coverage = fraction of platform adapters active relative to templates available
+            capabilities["automation_coverage"] = round(total_adapters / total_templates, 2) if total_templates > 0 else 0.0
             capabilities["learning_status"] = "active" if self._initialized else "initializing"
             capabilities["active_automations"] = 0
             capabilities["ready"] = True
