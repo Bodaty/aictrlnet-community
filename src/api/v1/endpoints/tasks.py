@@ -21,21 +21,6 @@ import logging
 logger = logging.getLogger(__name__)
 logger.info("Tasks router initialized")
 
-@router.post("/simple")
-async def simple_post():
-    """Simple POST endpoint."""
-    return {"message": "Simple POST works!"}
-
-@router.get("/test")
-async def test_endpoint():
-    """Test endpoint to verify routing works."""
-    return {"message": "Test endpoint works!"}
-
-@router.post("/test-post")
-async def test_post_endpoint():
-    """Test POST endpoint."""
-    return {"message": "POST works!"}
-
 
 @router.get("/")
 async def list_tasks(
