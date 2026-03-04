@@ -296,14 +296,31 @@ class LicenseService:
                     "remaining": max(0, max_requests - int(current_requests))
                 }
             
-            # Storage limits
+            # Storage limits — sum actual staged file sizes
             if "storage_gb" in limits:
-                # TODO: Implement actual storage tracking
+                try:
+                    from models.staged_file import StagedFile
+                    total_bytes = await db.scalar(
+                        select(func.sum(StagedFile.file_size)).where(
+                            and_(
+                                StagedFile.user_id == user_id if user_id else True,
+                                or_(
+                                    StagedFile.expires_at.is_(None),
+                                    StagedFile.expires_at > now
+                                )
+                            )
+                        )
+                    ) or 0
+                    current_gb = round(total_bytes / (1024 ** 3), 4)
+                except Exception as e:
+                    logger.warning(f"Could not query staged file storage: {e}")
+                    current_gb = 0.0
+                storage_limit = limits["storage_gb"]
                 limits_status["storage"] = {
-                    "current": 0.1,  # Placeholder
-                    "limit": limits["storage_gb"],
-                    "percentage": 10.0,  # Placeholder
-                    "remaining": limits["storage_gb"] - 0.1
+                    "current": current_gb,
+                    "limit": storage_limit,
+                    "percentage": round((current_gb / storage_limit * 100), 2) if storage_limit > 0 else 0,
+                    "remaining": round(storage_limit - current_gb, 4)
                 }
             
             return {
@@ -439,31 +456,61 @@ class LicenseService:
         user_id: Optional[str] = None,
         months: int = 12
     ) -> List[Dict[str, Any]]:
-        """Get billing history."""
+        """Get billing history from the billing_history table."""
         try:
-            # This would typically query a billing_history table
-            # For now, return sample data based on subscription
-            subscription_status = await LicenseService.get_subscription_status(db, tenant_id, user_id)
-            
-            # Generate sample billing history
+            from models.subscription import BillingHistory, UsageTracking
+
+            effective_tenant_id = tenant_id or get_current_tenant_id()
+
+            # Query real billing history records
+            conditions = []
+            if effective_tenant_id:
+                conditions.append(BillingHistory.tenant_id == effective_tenant_id)
+            if user_id:
+                conditions.append(BillingHistory.user_id == user_id)
+
+            cutoff = datetime.utcnow() - timedelta(days=30 * months)
+            conditions.append(BillingHistory.billing_period_start >= cutoff)
+
+            result = await db.execute(
+                select(BillingHistory).where(
+                    and_(*conditions) if conditions else True
+                ).order_by(desc(BillingHistory.billing_period_start)).limit(months)
+            )
+            records = result.scalars().all()
+
             history = []
-            for i in range(months):
-                date = datetime.utcnow() - timedelta(days=30 * i)
+            for record in records:
+                # Get usage for this billing period
+                usage_conditions = [
+                    UsageTracking.billing_period_start == record.billing_period_start,
+                    UsageTracking.billing_period_end == record.billing_period_end
+                ]
+                if effective_tenant_id:
+                    usage_conditions.append(UsageTracking.tenant_id == effective_tenant_id)
+
+                usage_result = await db.execute(
+                    select(
+                        UsageTracking.resource_type,
+                        func.sum(UsageTracking.quantity).label("total")
+                    ).where(and_(*usage_conditions)).group_by(UsageTracking.resource_type)
+                )
+                usage_summary = {row.resource_type: int(row.total) for row in usage_result}
+
                 history.append({
-                    "period": date.strftime("%Y-%m"),
-                    "plan": subscription_status.get("plan_name", "Community"),
-                    "amount": 0 if subscription_status.get("plan_name") == "Community" else 29.99,
-                    "status": "paid" if subscription_status.get("plan_name") != "Community" else "free",
-                    "invoice_date": date.isoformat(),
-                    "usage_summary": {
-                        "tasks": 450 + (i * 50),
-                        "workflows": 25 + (i * 5),
-                        "api_requests": 5000 + (i * 1000)
-                    }
+                    "period": record.billing_period_start.strftime("%Y-%m"),
+                    "plan": record.description or "Unknown",
+                    "amount": float(record.amount),
+                    "currency": record.currency,
+                    "status": record.status.value if hasattr(record.status, 'value') else str(record.status),
+                    "invoice_date": record.created_at.isoformat() if record.created_at else None,
+                    "paid_at": record.paid_at.isoformat() if record.paid_at else None,
+                    "stripe_invoice_id": record.stripe_invoice_id,
+                    "usage_summary": usage_summary
                 })
-            
+
             return history
-            
+
         except Exception as e:
             logger.error(f"Error getting billing history: {e}")
             return []
