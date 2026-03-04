@@ -16,17 +16,10 @@ class BridgeService:
     def __init__(self, db: AsyncSession):
         self.db = db
     
-    # Supported bridge types
+    # Supported bridge types (only types with implemented connectors)
     SUPPORTED_TYPES = {
-        "source": [
-            "database", "api", "file", "webhook", "message_queue",
-            "kafka", "rabbitmq", "redis", "s3", "ftp", "sftp"
-        ],
-        "target": [
-            "database", "api", "file", "webhook", "message_queue",
-            "kafka", "rabbitmq", "redis", "s3", "ftp", "sftp",
-            "elasticsearch", "mongodb", "postgres", "mysql"
-        ]
+        "source": ["api", "webhook"],
+        "target": ["api"]
     }
     
     async def list_connections(
@@ -195,12 +188,88 @@ class BridgeService:
         connection: BridgeConnection,
         options: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Perform the actual synchronization between source and target."""
-        raise NotImplementedError(
-            f"Bridge connector not yet implemented for "
-            f"{connection.source_type} -> {connection.target_type}. "
-            f"Real connectors for each source/target type are required."
+        """Perform synchronization: read from source, write to target."""
+        import httpx
+
+        config = connection.config or {}
+        source_config = config.get("source", {})
+        target_config = config.get("target", {})
+
+        source_data = await self._read_from_source(
+            connection.source_type, source_config, options
         )
+
+        if not source_data:
+            return {"items_processed": 0, "items_created": 0, "items_updated": 0, "items_failed": 0}
+
+        return await self._write_to_target(
+            connection.target_type, target_config, source_data, options
+        )
+
+    async def _read_from_source(
+        self, source_type: str, config: Dict[str, Any], options: Dict[str, Any]
+    ) -> list:
+        """Read data from the source connector."""
+        import httpx
+
+        if source_type == "api":
+            url = config.get("url")
+            if not url:
+                raise ValueError("API source requires 'url' in config")
+            headers = config.get("headers", {})
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, headers=headers, params=config.get("params", {}))
+                resp.raise_for_status()
+                data = resp.json()
+                return data if isinstance(data, list) else data.get("items", data.get("data", [data]))
+
+        elif source_type == "webhook":
+            return options.get("payload", [])
+
+        else:
+            raise ValueError(
+                f"Unsupported source type: {source_type}. "
+                f"Supported: {', '.join(self.SUPPORTED_TYPES['source'])}"
+            )
+
+    async def _write_to_target(
+        self, target_type: str, config: Dict[str, Any], data: list, options: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Write data to the target connector."""
+        import httpx
+
+        created = 0
+        updated = 0
+        failed = 0
+
+        if target_type == "api":
+            url = config.get("url")
+            if not url:
+                raise ValueError("API target requires 'url' in config")
+            headers = config.get("headers", {})
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for item in data:
+                    try:
+                        resp = await client.post(url, json=item, headers=headers)
+                        if resp.status_code in (200, 201):
+                            created += 1
+                        else:
+                            failed += 1
+                    except Exception:
+                        failed += 1
+
+        else:
+            raise ValueError(
+                f"Unsupported target type: {target_type}. "
+                f"Supported: {', '.join(self.SUPPORTED_TYPES['target'])}"
+            )
+
+        return {
+            "items_processed": len(data),
+            "items_created": created,
+            "items_updated": updated,
+            "items_failed": failed,
+        }
     
     async def get_connection_data(
         self,

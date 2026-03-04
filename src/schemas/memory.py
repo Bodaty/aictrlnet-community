@@ -1,6 +1,7 @@
 """Memory schemas."""
 
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 
@@ -50,9 +51,9 @@ class MemoryEntryResponse(BaseModel):
     owner: str
     scope: str
     scope_id: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    expires_at: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 

@@ -9,9 +9,10 @@ Exposes StripeService methods for:
 
 from typing import Optional
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+import os
 
 from core.database import get_db
 from core.dependencies import get_current_user_safe
@@ -199,3 +200,48 @@ async def get_upcoming_invoice(
     except Exception as e:
         logger.error(f"Error getting upcoming invoice: {e}")
         raise HTTPException(status_code=500, detail="Failed to get upcoming invoice")
+
+
+@router.post("/webhook")
+async def stripe_webhook(
+    request: Request,
+    stripe_signature: Optional[str] = Header(None, alias="stripe-signature"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Handle Stripe webhook events."""
+    body = await request.body()
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+    if webhook_secret:
+        # Production mode — signature required
+        if not stripe_signature:
+            raise HTTPException(status_code=400, detail="Missing Stripe-Signature header")
+        try:
+            import stripe
+            event = stripe.Webhook.construct_event(
+                body, stripe_signature, webhook_secret
+            )
+        except Exception as e:
+            logger.error(f"Webhook signature verification failed: {e}")
+            raise HTTPException(status_code=400, detail="Invalid signature")
+    else:
+        # Dev mode (no secret configured) — parse body directly
+        import json
+        try:
+            event = json.loads(body)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    event_type = event.get("type", "")
+    event_data = event.get("data", {}).get("object", event.get("data", {}))
+
+    stripe_service = StripeService(db)
+
+    try:
+        await stripe_service.handle_webhook(event_type, event_data)
+    except Exception as e:
+        logger.error(f"Webhook handler error for {event_type}: {e}")
+        # Return 200 anyway to prevent Stripe retries for handler errors
+        return {"received": True, "error": str(e)}
+
+    return {"received": True}

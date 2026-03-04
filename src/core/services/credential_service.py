@@ -231,32 +231,66 @@ class DatabaseCredentialBackend(CredentialBackend):
 
 
 class VaultCredentialBackend(CredentialBackend):
-    """External vault integration (e.g., HashiCorp Vault) for enterprise"""
-    
+    """External vault integration (HashiCorp Vault KV v2) for enterprise."""
+
     def __init__(self, vault_url: str, vault_token: str, mount_point: str = "secret"):
-        self.vault_url = vault_url
+        self.vault_url = vault_url.rstrip("/")
         self.vault_token = vault_token
         self.mount_point = mount_point
-        
-        # In production, use hvac library for HashiCorp Vault
-        # import hvac
-        # self.client = hvac.Client(url=vault_url, token=vault_token)
-    
+
+    def _headers(self) -> Dict[str, str]:
+        return {"X-Vault-Token": self.vault_token}
+
+    def _kv_path(self, platform: str, credential_id: str) -> str:
+        return f"{self.vault_url}/v1/{self.mount_point}/data/platforms/{platform}/{credential_id}"
+
+    def _meta_path(self, platform: str, credential_id: str) -> str:
+        return f"{self.vault_url}/v1/{self.mount_point}/metadata/platforms/{platform}/{credential_id}"
+
     async def get_credentials(self, platform: str, credential_id: str) -> Dict[str, Any]:
-        """Get credentials from external vault"""
-        # Simplified implementation - in production use proper vault client
-        path = f"{self.mount_point}/data/platforms/{platform}/{credential_id}"
-        
-        # Mock implementation for now
-        raise NotImplementedError("Vault backend requires hvac library and vault setup")
-    
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    self._kv_path(platform, credential_id),
+                    headers=self._headers(),
+                )
+                if resp.status_code == 404:
+                    raise CredentialNotFoundError(
+                        f"Credentials not found for {platform}:{credential_id}"
+                    )
+                resp.raise_for_status()
+                return resp.json()["data"]["data"]
+        except CredentialNotFoundError:
+            raise
+        except Exception as e:
+            raise CredentialNotFoundError(f"Vault connection error: {str(e)}")
+
     async def store_credentials(self, platform: str, credential_id: str, credentials: Dict[str, Any]) -> bool:
-        """Store credentials in vault"""
-        raise NotImplementedError("Vault backend requires hvac library and vault setup")
-    
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    self._kv_path(platform, credential_id),
+                    json={"data": credentials},
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                return True
+        except Exception as e:
+            raise ValueError(f"Vault store error: {str(e)}")
+
     async def delete_credentials(self, platform: str, credential_id: str) -> bool:
-        """Delete credentials from vault"""
-        raise NotImplementedError("Vault backend requires hvac library and vault setup")
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.delete(
+                    self._meta_path(platform, credential_id),
+                    headers=self._headers(),
+                )
+                return resp.status_code in (200, 204)
+        except Exception as e:
+            raise ValueError(f"Vault delete error: {str(e)}")
 
 
 class CredentialService:
