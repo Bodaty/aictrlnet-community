@@ -781,7 +781,7 @@ class IAMService:
         if agent_id:
             query = query.where(IAMEventLog.agent_id == agent_id)
         
-        query = query.order_by(desc(IAMEventLog.timestamp)).offset(skip).limit(limit)
+        query = query.order_by(desc(IAMEventLog.created_at)).offset(skip).limit(limit)
         result = await self.db.execute(query)
         events = result.scalars().all()
         
@@ -793,7 +793,7 @@ class IAMService:
                 "session_id": str(event.session_id) if event.session_id else None,
                 "message_id": str(event.message_id) if event.message_id else None,
                 "event_data": event.event_data,
-                "timestamp": event.timestamp.isoformat()
+                "timestamp": event.created_at.isoformat()
             }
             for event in events
         ]
