@@ -35,6 +35,13 @@ class KnowledgeItem:
         }
 
 
+_shared_keyword_index = None
+_shared_document_frequency = None
+_shared_total_documents = 0
+_shared_index_built_at = 0
+_KNOWLEDGE_INDEX_TTL = 300  # 5-minute TTL
+
+
 class KnowledgeRetrievalService:
     """
     RAG-based retrieval service for system knowledge.
@@ -53,9 +60,14 @@ class KnowledgeRetrievalService:
     async def initialize(self):
         """
         Initialize the retrieval service.
+        Uses module-level cached index with 5-minute TTL.
         """
         if self._initialized:
             return
+
+        import time as _time
+
+        global _shared_keyword_index, _shared_document_frequency, _shared_total_documents, _shared_index_built_at
 
         # Import here to avoid circular dependencies
         from services.knowledge.system_manifest_service import get_manifest_service
@@ -66,11 +78,21 @@ class KnowledgeRetrievalService:
         self.indexer = KnowledgeIndexer(self.db)
         await self.indexer.build_index()
 
-        # Build keyword index for Community edition
-        await self._build_keyword_index()
+        now = _time.time()
+        if _shared_keyword_index is not None and (now - _shared_index_built_at) < _KNOWLEDGE_INDEX_TTL:
+            # Reuse cached index
+            self.keyword_index = _shared_keyword_index
+            self.document_frequency = _shared_document_frequency
+            self.total_documents = _shared_total_documents
+        else:
+            # Build fresh index and cache it
+            await self._build_keyword_index()
+            _shared_keyword_index = self.keyword_index
+            _shared_document_frequency = self.document_frequency
+            _shared_total_documents = self.total_documents
+            _shared_index_built_at = now
 
         self._initialized = True
-        print("[KnowledgeRetrieval] Initialized with manifest and index")
 
     async def find_relevant_knowledge(
         self,

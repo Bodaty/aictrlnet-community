@@ -330,9 +330,15 @@ class ConversationManagerService:
         session_id: UUID,
         role: str,
         content: str,
+        commit: bool = True,
         **kwargs
     ) -> ConversationMessage:
-        """Store a message in the conversation history."""
+        """Store a message in the conversation history.
+
+        Args:
+            commit: If True (default), commits immediately. Set to False to
+                    batch with other operations and commit manually.
+        """
         message = ConversationMessage(
             id=uuid4(),
             session_id=session_id,
@@ -352,8 +358,9 @@ class ConversationManagerService:
         )
 
         self.db.add(message)
-        await self.db.commit()
-        await self.db.refresh(message)
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(message)
 
         # Auto-name conversation from first user message if not already named
         if role == "user":

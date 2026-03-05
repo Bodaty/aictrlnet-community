@@ -12,7 +12,7 @@ from adapters.models import (
     AdapterCapability, AdapterRequest, AdapterResponse,
     AdapterConfig, AdapterCategory
 )
-from adapters.tool_calling import ToolCallingMixin, ToolCallingRequest, ToolCallingResponse
+from adapters.tool_calling import ToolCallingMixin, ToolCallingRequest, ToolCallingResponse, ToolCallingStreamEvent
 from events.event_bus import event_bus
 
 
@@ -807,5 +807,136 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             )
         finally:
             # Only close if we created a temporary client
+            if client is not self.client:
+                await client.aclose()
+
+    async def chat_with_tools_stream(self, request: ToolCallingRequest):
+        """Stream tool-augmented chat via Ollama with native streaming.
+
+        Text tokens stream as text_delta events. Tool calls arrive in the
+        final done:true chunk and are yielded as a tool_calls event.
+        """
+        import uuid
+
+        # Build Ollama tools and messages (same as chat_with_tools)
+        ollama_tools = []
+        for tool in request.tools:
+            ollama_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool.get("name", tool.get("function", {}).get("name", "")),
+                    "description": tool.get("description", tool.get("function", {}).get("description", "")),
+                    "parameters": tool.get("parameters", tool.get("function", {}).get("parameters", {
+                        "type": "object", "properties": {}, "required": []
+                    }))
+                }
+            })
+
+        api_messages = []
+        for msg in request.messages:
+            if msg["role"] == "tool":
+                api_messages.append({"role": "tool", "content": msg["content"]})
+            elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                api_messages.append({
+                    "role": "assistant",
+                    "content": msg.get("content") or "",
+                    "tool_calls": [
+                        {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                        for tc in msg["tool_calls"]
+                    ]
+                })
+            else:
+                api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        has_system = any(m["role"] == "system" for m in api_messages)
+        if not has_system and request.system_prompt:
+            api_messages.insert(0, {"role": "system", "content": request.system_prompt})
+
+        payload = {
+            "model": request.model,
+            "messages": api_messages,
+            "tools": ollama_tools if ollama_tools else None,
+            "stream": True,
+            "options": {
+                "temperature": request.temperature,
+                "num_predict": request.max_tokens or 2000
+            }
+        }
+        # Remove None tools to avoid Ollama API issues
+        if payload["tools"] is None:
+            del payload["tools"]
+
+        client = self.client
+        if client is None:
+            client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
+
+        try:
+            accumulated_text = ""
+            tool_calls = []
+            input_tokens = 0
+            output_tokens = 0
+            done_reason = None
+
+            async with client.stream("POST", "/api/chat", json=payload) as response:
+                if response.status_code != 200:
+                    # Read error body
+                    error_body = ""
+                    async for chunk in response.aiter_bytes():
+                        error_body += chunk.decode()
+                    yield ToolCallingStreamEvent(type="error", text=f"Ollama API error: {response.status_code} {error_body[:200]}")
+                    return
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    message = data.get("message", {})
+
+                    # Stream text deltas
+                    content = message.get("content", "")
+                    if content:
+                        accumulated_text += content
+                        yield ToolCallingStreamEvent(type="text_delta", text=content)
+
+                    # Extract tool calls from final message (done: true)
+                    if data.get("done"):
+                        input_tokens = data.get("prompt_eval_count", 0)
+                        output_tokens = data.get("eval_count", 0)
+                        done_reason = data.get("done_reason")
+
+                        if "tool_calls" in message and message["tool_calls"]:
+                            for tc in message["tool_calls"]:
+                                function = tc.get("function", {})
+                                tool_name = function.get("name")
+                                tool_args = function.get("arguments", {})
+                                if isinstance(tool_args, str):
+                                    try:
+                                        tool_args = json.loads(tool_args)
+                                    except json.JSONDecodeError:
+                                        tool_args = {}
+                                if tool_name:
+                                    tool_calls.append({
+                                        "name": tool_name,
+                                        "arguments": tool_args,
+                                        "id": str(uuid.uuid4())
+                                    })
+
+            # Yield tool_calls event if any
+            if tool_calls:
+                yield ToolCallingStreamEvent(type="tool_calls", tool_calls=tool_calls)
+
+            # Yield done event with token counts
+            yield ToolCallingStreamEvent(
+                type="done",
+                tokens_used=input_tokens + output_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                stop_reason=done_reason,
+            )
+        finally:
             if client is not self.client:
                 await client.aclose()

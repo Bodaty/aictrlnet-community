@@ -416,6 +416,133 @@ class LLMService:
                 messages=messages
             )
 
+    async def generate_with_tools_stream(
+        self,
+        prompt: Optional[str],
+        tools: List[ToolDefinition],
+        user_settings: Optional[UserLLMSettings] = None,
+        model_override: Optional[str] = None,
+        task_type: str = "tool_use",
+        temperature: Optional[float] = 0.3,
+        max_tokens: Optional[int] = None,
+        system_prompt: Optional[str] = None,
+        tool_choice: str = "auto",
+        context: Optional[Dict[str, Any]] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ):
+        """Stream text deltas from tool-augmented generation.
+
+        Yields dicts:
+          {"type": "text_delta", "text": "..."}
+          {"type": "complete", "response": LLMToolResponse}
+
+        Falls back to non-streaming for providers without native streaming
+        or for text-based tool calling fallback.
+        """
+        import json
+        import uuid
+        from datetime import datetime
+
+        start_time = datetime.utcnow()
+
+        temp_request = LLMRequest(
+            prompt=prompt or "",
+            user_settings=user_settings,
+            model_override=model_override,
+            task_type=task_type,
+        )
+        model, tier = await self.generation_engine._select_model(temp_request)
+        provider = get_provider_from_model(model)
+
+        native_supported = self._supports_native_tools(provider, model)
+
+        if not native_supported:
+            # Text-based fallback — yield complete result as single event
+            result = await self._generate_with_text_tools(
+                prompt=prompt, tools=tools, user_settings=user_settings,
+                model_override=model_override, task_type=task_type,
+                temperature=temperature, max_tokens=max_tokens,
+                system_prompt=system_prompt, tool_choice=tool_choice,
+                context=context, start_time=start_time, messages=messages,
+            )
+            if result.text:
+                yield {"type": "text_delta", "text": result.text}
+            yield {"type": "complete", "response": result}
+            return
+
+        # Native tool calling with streaming
+        try:
+            adapter = await _AdapterProvider.get(provider)
+            if not adapter:
+                result = await self._generate_with_text_tools(
+                    prompt=prompt, tools=tools, user_settings=user_settings,
+                    model_override=model_override, task_type=task_type,
+                    temperature=temperature, max_tokens=max_tokens,
+                    system_prompt=system_prompt, tool_choice=tool_choice,
+                    context=context, start_time=start_time, messages=messages,
+                )
+                if result.text:
+                    yield {"type": "text_delta", "text": result.text}
+                yield {"type": "complete", "response": result}
+                return
+
+            tc_request = self._build_tool_calling_request(
+                prompt=prompt, tools=tools, model=model,
+                temperature=temperature, max_tokens=max_tokens,
+                system_prompt=system_prompt or "You are an AI assistant that helps users accomplish tasks.",
+                tool_choice=tool_choice, messages=messages,
+            )
+
+            accumulated_text = ""
+            tool_calls_data = []
+            stream_tokens = 0
+            stream_input_tokens = 0
+            stream_output_tokens = 0
+            stream_stop_reason = None
+
+            async for event in adapter.chat_with_tools_stream(tc_request):
+                if event.type == "text_delta" and event.text:
+                    accumulated_text += event.text
+                    yield {"type": "text_delta", "text": event.text}
+                elif event.type == "tool_calls":
+                    tool_calls_data.extend(event.tool_calls)
+                elif event.type == "done":
+                    stream_tokens = event.tokens_used
+                    stream_input_tokens = event.input_tokens
+                    stream_output_tokens = event.output_tokens
+                    stream_stop_reason = event.stop_reason
+
+            # Build final response
+            from adapters.tool_calling import ToolCallingResponse
+            tc_response = ToolCallingResponse(
+                text=accumulated_text or None,
+                tool_calls=tool_calls_data,
+                tokens_used=stream_tokens,
+                input_tokens=stream_input_tokens,
+                output_tokens=stream_output_tokens,
+                stop_reason=stream_stop_reason,
+            )
+            llm_response = await self._to_llm_tool_response(
+                tc_response, provider=provider, tier=tier,
+                start_time=start_time, tools=tools, tool_choice=tool_choice,
+                model=model, user_settings=user_settings,
+            )
+            yield {"type": "complete", "response": llm_response}
+
+        except Exception as e:
+            logger.error(f"{provider.value} streaming tool calling failed: {e}")
+            # Fallback to non-streaming
+            result = await self._generate_with_text_tools(
+                prompt=prompt, tools=tools, user_settings=user_settings,
+                model_override=model_override, task_type=task_type,
+                temperature=temperature, max_tokens=max_tokens,
+                system_prompt=system_prompt, tool_choice=tool_choice,
+                context=context, start_time=start_time, messages=messages,
+            )
+            if result.text:
+                yield {"type": "text_delta", "text": result.text}
+            yield {"type": "complete", "response": result}
+
     def _supports_native_tools(self, provider: ModelProvider, model: str) -> bool:
         """Check if a provider supports native tool calling via adapter."""
         return provider.value in _NATIVE_TOOL_PROVIDER_NAMES

@@ -35,6 +35,17 @@ class ToolCallingResponse(BaseModel):
     stop_reason: Optional[str] = None
 
 
+class ToolCallingStreamEvent(BaseModel):
+    """Event yielded during streaming tool-augmented generation."""
+    type: str  # "text_delta", "tool_calls", "done", "error"
+    text: Optional[str] = None
+    tool_calls: List[Dict[str, Any]] = []
+    tokens_used: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    stop_reason: Optional[str] = None
+
+
 class ToolCallingMixin(ABC):
     """Mixin for adapters that support native tool calling.
 
@@ -59,3 +70,18 @@ class ToolCallingMixin(ABC):
             ToolCallingResponse with text and/or tool_calls.
         """
         ...
+
+    async def chat_with_tools_stream(self, request: ToolCallingRequest):
+        """Stream tool-calling response. Default: falls back to non-streaming."""
+        result = await self.chat_with_tools(request)
+        if result.text:
+            yield ToolCallingStreamEvent(type="text_delta", text=result.text)
+        if result.tool_calls:
+            yield ToolCallingStreamEvent(type="tool_calls", tool_calls=result.tool_calls)
+        yield ToolCallingStreamEvent(
+            type="done",
+            tokens_used=result.tokens_used,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            stop_reason=result.stop_reason,
+        )

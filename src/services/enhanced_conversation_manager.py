@@ -24,6 +24,20 @@ from schemas.conversation import ConversationResponse, IntentDetectionResponse
 
 logger = logging.getLogger(__name__)
 
+# Module-level singleton — LLMService is stateless (delegates to _AdapterProvider cache)
+_llm_service_singleton = None
+
+def _get_llm_service():
+    global _llm_service_singleton
+    if _llm_service_singleton is None:
+        try:
+            from llm.service import LLMService
+            _llm_service_singleton = LLMService()
+            logger.info("[EnhancedConversation] LLM service singleton initialized")
+        except ImportError:
+            logger.info("[EnhancedConversation] LLM service not available")
+    return _llm_service_singleton
+
 
 class EnhancedConversationService(ConversationManagerService):
     """
@@ -35,22 +49,58 @@ class EnhancedConversationService(ConversationManagerService):
         super().__init__(db)
         self.knowledge_service = KnowledgeRetrievalService(db)
         self.manifest_service = None
-        self.action_planner = ActionPlanner(db)
-        self.progressive_executor = ProgressiveExecutor(db)
-        self.pattern_service = PatternLearningService(db)
-        self.proactive_assistant = ProactiveAssistant(db)
         self.prompt_assembler = SystemPromptAssembler(db)
         self._knowledge_initialized = False
 
-        # Initialize LLM service for intelligent responses
+        # Lazy-initialized services (only used by v4 process_message flow)
+        self._action_planner = None
+        self._progressive_executor = None
+        self._pattern_service = None
+        self._proactive_assistant = None
+
+        # Initialize LLM service for intelligent responses (singleton — shared across requests)
         # NOTE: Use _enhanced_llm_service to avoid conflict with ToolAwareConversationService's llm_service property
-        self._enhanced_llm_service = None
-        try:
-            from llm.service import LLMService
-            self._enhanced_llm_service = LLMService()
-            logger.info("[EnhancedConversation] LLM service initialized for intelligent responses")
-        except ImportError:
-            logger.info("[EnhancedConversation] LLM service not available - using fallback")
+        self._enhanced_llm_service = _get_llm_service()
+
+    @property
+    def action_planner(self):
+        if self._action_planner is None:
+            self._action_planner = ActionPlanner(self.db)
+        return self._action_planner
+
+    @action_planner.setter
+    def action_planner(self, value):
+        self._action_planner = value
+
+    @property
+    def progressive_executor(self):
+        if self._progressive_executor is None:
+            self._progressive_executor = ProgressiveExecutor(self.db)
+        return self._progressive_executor
+
+    @progressive_executor.setter
+    def progressive_executor(self, value):
+        self._progressive_executor = value
+
+    @property
+    def pattern_service(self):
+        if self._pattern_service is None:
+            self._pattern_service = PatternLearningService(self.db)
+        return self._pattern_service
+
+    @pattern_service.setter
+    def pattern_service(self, value):
+        self._pattern_service = value
+
+    @property
+    def proactive_assistant(self):
+        if self._proactive_assistant is None:
+            self._proactive_assistant = ProactiveAssistant(self.db)
+        return self._proactive_assistant
+
+    @proactive_assistant.setter
+    def proactive_assistant(self, value):
+        self._proactive_assistant = value
 
     async def initialize_knowledge(self):
         """Initialize knowledge services if not already done."""
@@ -1288,7 +1338,7 @@ Response (just the sentence, no quotes):"""
         'list_api_endpoints', 'list_integrations', 'update_onboarding',
     }
 
-    def _prune_tools_for_ollama(self, tools: list, user_message: str, max_tools: int = 30) -> list:
+    def _prune_tools_for_ollama(self, tools: list, user_message: str, max_tools: int = 25) -> list:
         """Prune tools to stay within Ollama's native tool calling limit (~35).
 
         Uses keyword overlap scoring to select the most relevant tools.
@@ -1375,9 +1425,9 @@ Response (just the sentence, no quotes):"""
         await self.initialize_knowledge()
 
         # =====================================================================
-        # Step 1: Load session and full conversation history
+        # Step 1: Load session and conversation history in one query
         # =====================================================================
-        session = await self.get_session(session_id)
+        session, conversation_history = await self._load_session_with_history(session_id)
         if not session:
             yield {"event": "error", "data": {"message": f"Session {session_id} not found"}}
             return
@@ -1385,8 +1435,6 @@ Response (just the sentence, no quotes):"""
         if stream:
             yield {"event": "thinking", "data": {"message": "Understanding your request..."}}
 
-        # Build conversation history from session messages (async to avoid lazy load issues)
-        conversation_history = await self._build_conversation_history(session_id)
         logger.info(f"[v5] Loaded {len(conversation_history)} messages from history")
 
         # =====================================================================
@@ -1480,8 +1528,8 @@ Response (just the sentence, no quotes):"""
             yield {"event": "error", "data": {"message": "LLM service unavailable"}}
             return
 
-        # Format history into prompt (since our LLM service takes prompt, not messages)
-        full_prompt = self._format_history_as_prompt(conversation_history)
+        # Build structured messages for LLM (proper role separation instead of flat text)
+        messages = [{"role": "system", "content": system_prompt}] + conversation_history
 
         try:
             # Build UserLLMSettings from user preferences if available
@@ -1501,14 +1549,28 @@ Response (just the sentence, no quotes):"""
             # Session will lazily re-acquire a connection on the next DB operation.
             await self.db.close()
 
-            llm_response = await self._enhanced_llm_service.generate_with_tools(
-                prompt=full_prompt,
-                tools=tools,
-                system_prompt=system_prompt,
-                task_type="tool_use",
-                temperature=0.4,  # Slightly higher for more natural conversation
+            # =====================================================================
+            # Phase 1: Stream LLM response — LLM decides text or tools
+            # =====================================================================
+            import json as _json
+
+            llm_response = None
+            accumulated_text = ""
+
+            async for event in self._enhanced_llm_service.generate_with_tools_stream(
+                prompt=None, tools=tools, messages=messages,
+                task_type="tool_use", temperature=0.4,
                 user_settings=user_settings,
-            )
+            ):
+                if event["type"] == "text_delta" and stream and event.get("text"):
+                    accumulated_text += event["text"]
+                    yield {"event": "text_delta", "data": {"text": event["text"]}}
+                elif event["type"] == "complete":
+                    llm_response = event["response"]
+
+            if not llm_response:
+                yield {"event": "error", "data": {"message": "LLM returned no response"}}
+                return
 
             # =====================================================================
             # Step 6: Execute tools if LLM decided to call any
@@ -1519,19 +1581,15 @@ Response (just the sentence, no quotes):"""
             has_proper_tool_calls = llm_response.has_tool_calls()
 
             # Also check if LLM output JSON that looks like a tool call
-            # (some models output JSON text instead of proper function calls)
             inferred_tool_call = None
             if not has_proper_tool_calls and llm_response.text:
-                # Pass user's message to validate that extracted data matches user input
                 inferred_tool_call = self._parse_json_tool_call(llm_response.text, content)
 
             if has_proper_tool_calls or inferred_tool_call:
-                # Build list of tool calls to execute (proper or inferred)
                 tool_calls_to_execute = []
                 if has_proper_tool_calls:
                     tool_calls_to_execute = llm_response.tool_calls
                 elif inferred_tool_call:
-                    # Create a simple object with name and arguments
                     class InferredToolCall:
                         def __init__(self, name, arguments):
                             self.name = name
@@ -1561,11 +1619,8 @@ Response (just the sentence, no quotes):"""
                             }
                         }
 
-                    # Build context with knowledge items for domain-aware generation
-                    # Per WORKFLOW_GENERATION_FIX_IMPLEMENTATION.md Change 1.1
                     tool_context = dict(session.context) if session.context else {}
                     if knowledge_items:
-                        # Convert knowledge items to serializable format for tool handlers
                         tool_context['knowledge_items'] = [
                             {'name': k.name, 'type': k.type, 'description': getattr(k, 'description', ''),
                              'category': getattr(k, 'category', ''), 'id': str(getattr(k, 'id', ''))}
@@ -1600,25 +1655,51 @@ Response (just the sentence, no quotes):"""
                             }
                         }
 
-            # =====================================================================
-            # Step 7: Generate final response
-            # =====================================================================
-            response_content = self._build_v5_response(
-                llm_response=llm_response,
-                tool_results=tool_results,
-                knowledge_items=knowledge_items
-            )
+                # =====================================================================
+                # Phase 2: LLM synthesizes tool results into natural response (streamed)
+                # =====================================================================
+                synthesis_messages = list(messages)
+                synthesis_messages.append({
+                    "role": "assistant", "content": "",
+                    "tool_calls": [{"name": tc.name, "arguments": tc.arguments} for tc in tool_calls_to_execute]
+                })
+                for result in tool_results:
+                    synthesis_messages.append({
+                        "role": "tool",
+                        "content": _json.dumps(
+                            result.data if result.success else {"error": result.error},
+                            default=str
+                        )[:2000]
+                    })
+
+                accumulated_text = ""
+                await self.db.close()  # Release DB before second LLM call
+
+                async for event in self._enhanced_llm_service.generate_with_tools_stream(
+                    prompt=None, tools=[], messages=synthesis_messages,
+                    temperature=0.5, user_settings=user_settings,
+                ):
+                    if event["type"] == "text_delta" and stream and event.get("text"):
+                        accumulated_text += event["text"]
+                        yield {"event": "text_delta", "data": {"text": event["text"]}}
+
+                response_content = accumulated_text
+            else:
+                # Text-only turn — use accumulated text from Phase 1
+                response_content = accumulated_text or llm_response.text or ""
 
             # Clean any JSON artifacts from response
             response_content = self._strip_json_from_response(response_content)
 
             # =====================================================================
             # Step 8: Persist assistant response and update session context
+            # (batched into single commit)
             # =====================================================================
             assistant_message = await self._store_message(
                 session_id=session_id,
                 role="assistant",
                 content=response_content,
+                commit=False,
                 llm_model_used=getattr(llm_response, 'model_used', None)
             )
 
@@ -1629,6 +1710,9 @@ Response (just the sentence, no quotes):"""
                 assistant_content=response_content,
                 tool_results=tool_results
             )
+            # Single commit for both message + context update
+            await self.db.commit()
+            await self.db.refresh(assistant_message)
 
             # =====================================================================
             # Step 9: Return final response
@@ -1666,7 +1750,7 @@ Response (just the sentence, no quotes):"""
             response_data = {
                 "content": response_content,
                 "message_id": str(assistant_message.id),
-                "tools_executed": [tc.name for tc in llm_response.tool_calls] if llm_response.has_tool_calls() else [],
+                "tools_executed": [r.data.get('tool_name') for r in tool_results if r.data] if tool_results else [],
                 "all_successful": all(r.success for r in tool_results) if tool_results else True,
                 "session_context": {
                     "parameters": session.context.get('v5_parameters', {}),
@@ -1690,6 +1774,29 @@ Response (just the sentence, no quotes):"""
             import traceback
             logger.error(f"[v5] Traceback: {traceback.format_exc()}")
             yield {"event": "error", "data": {"message": str(e)}}
+
+    async def _load_session_with_history(self, session_id: UUID):
+        """Load session and conversation history in a single DB round trip."""
+        from sqlalchemy import select, desc
+        from sqlalchemy.orm import selectinload
+        from models.conversation import ConversationSession, ConversationMessage
+
+        MAX_HISTORY_MESSAGES = 10
+
+        result = await self.db.execute(
+            select(ConversationSession)
+            .options(selectinload(ConversationSession.messages))
+            .filter(ConversationSession.id == session_id)
+        )
+        session = result.scalar_one_or_none()
+        if not session:
+            return None, []
+
+        # Build history from eagerly loaded messages
+        all_msgs = sorted(session.messages, key=lambda m: m.timestamp)
+        recent = all_msgs[-MAX_HISTORY_MESSAGES:] if len(all_msgs) > MAX_HISTORY_MESSAGES else all_msgs
+        history = [{"role": msg.role, "content": msg.content} for msg in recent]
+        return session, history
 
     async def _build_conversation_history(self, session_id: UUID) -> List[Dict[str, str]]:
         """
@@ -2108,9 +2215,8 @@ Response (just the sentence, no quotes):"""
         # Track turn count
         session.context['v5_parameters']['turn_count'] = session.context['v5_parameters'].get('turn_count', 0) + 1
 
-        # Mark context as modified
+        # Mark context as modified (caller is responsible for committing)
         attributes.flag_modified(session, 'context')
-        await self.db.commit()
 
     def _extract_parameters_from_turn(self, user_content: str) -> Dict[str, Any]:
         """

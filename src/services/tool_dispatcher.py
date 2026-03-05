@@ -1666,6 +1666,8 @@ class ToolDispatcher:
     edition-specific tools and ML-enhanced features.
     """
 
+    _handlers_validated = False
+
     # Map tool names to their handler method names
     TOOL_HANDLER_MAP: Dict[str, str] = {
         # Workflow tools
@@ -1737,8 +1739,10 @@ class ToolDispatcher:
 
         logger.info(f"[v4] ToolDispatcher initialized for {edition.value} edition")
 
-        # Validate tool handlers at initialization
-        self._validate_tool_handlers()
+        # Validate tool handlers once per process (expensive: iterates ~90 tools)
+        if not ToolDispatcher._handlers_validated:
+            self._validate_tool_handlers()
+            ToolDispatcher._handlers_validated = True
 
     def _lazy_load_services(self) -> None:
         """Lazy load services on first use."""
