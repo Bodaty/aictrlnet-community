@@ -8,14 +8,17 @@ from simple environment variables to encrypted database storage and external vau
 import os
 import json
 import base64
+import logging
 from typing import Dict, Any, Optional
 from cryptography.fernet import Fernet
-from sqlalchemy.orm import Session
+from sqlalchemy import select
 from abc import ABC, abstractmethod
 
 from core.database import get_db
 from models.platform_integration import PlatformCredential
 from core.exceptions import CredentialNotFoundError, CredentialDecryptionError
+
+logger = logging.getLogger(__name__)
 
 
 class CredentialBackend(ABC):
@@ -90,7 +93,7 @@ class FileCredentialBackend(CredentialBackend):
             # Generate a key if none provided (for development)
             key = Fernet.generate_key()
             self.fernet = Fernet(key)
-            print(f"Generated encryption key: {key.decode()}")
+            logger.info("Generated new encryption key")
             
         # Ensure directory exists
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -152,82 +155,89 @@ class FileCredentialBackend(CredentialBackend):
 
 class DatabaseCredentialBackend(CredentialBackend):
     """Database storage with encryption (for cloud deployments)"""
-    
+
     def __init__(self, encryption_key: str, db_session_factory=None):
         self.fernet = Fernet(encryption_key.encode() if isinstance(encryption_key, str) else encryption_key)
         self.db_session_factory = db_session_factory or get_db
-    
+
     async def get_credentials(self, platform: str, credential_id: str) -> Dict[str, Any]:
         """Get credentials from database"""
-        db = next(self.db_session_factory())
-        try:
-            credential = db.query(PlatformCredential).filter(
-                PlatformCredential.platform == platform,
-                PlatformCredential.credential_id == credential_id,
-                PlatformCredential.is_active == True
-            ).first()
-            
-            if not credential:
-                raise CredentialNotFoundError(f"Credentials not found for {platform}:{credential_id}")
-            
-            # Decrypt the credentials
-            decrypted = self.fernet.decrypt(credential.encrypted_credentials.encode())
-            return json.loads(decrypted)
-            
-        finally:
-            db.close()
-    
+        async for db in self.db_session_factory():
+            try:
+                result = await db.execute(
+                    select(PlatformCredential).where(
+                        PlatformCredential.platform == platform,
+                        PlatformCredential.name == credential_id
+                    )
+                )
+                credential = result.scalars().first()
+
+                if not credential:
+                    raise CredentialNotFoundError(f"Credentials not found for {platform}:{credential_id}")
+
+                # Decrypt the credentials
+                decrypted = self.fernet.decrypt(credential.encrypted_data.encode())
+                return json.loads(decrypted)
+            finally:
+                await db.close()
+
     async def store_credentials(self, platform: str, credential_id: str, credentials: Dict[str, Any]) -> bool:
         """Store credentials in database"""
-        db = next(self.db_session_factory())
-        try:
-            # Encrypt credentials
-            encrypted = self.fernet.encrypt(json.dumps(credentials).encode()).decode()
-            
-            # Check if credential exists
-            existing = db.query(PlatformCredential).filter(
-                PlatformCredential.platform == platform,
-                PlatformCredential.credential_id == credential_id
-            ).first()
-            
-            if existing:
-                existing.encrypted_credentials = encrypted
-                existing.is_active = True
-            else:
-                credential = PlatformCredential(
-                    platform=platform,
-                    credential_id=credential_id,
-                    encrypted_credentials=encrypted,
-                    is_active=True
+        async for db in self.db_session_factory():
+            try:
+                # Encrypt credentials
+                encrypted = self.fernet.encrypt(json.dumps(credentials).encode()).decode()
+
+                # Check if credential exists
+                result = await db.execute(
+                    select(PlatformCredential).where(
+                        PlatformCredential.platform == platform,
+                        PlatformCredential.name == credential_id
+                    )
                 )
-                db.add(credential)
-            
-            db.commit()
-            return True
-            
-        except Exception as e:
-            db.rollback()
-            raise e
-        finally:
-            db.close()
-    
-    async def delete_credentials(self, platform: str, credential_id: str) -> bool:
-        """Soft delete credentials from database"""
-        db = next(self.db_session_factory())
-        try:
-            credential = db.query(PlatformCredential).filter(
-                PlatformCredential.platform == platform,
-                PlatformCredential.credential_id == credential_id
-            ).first()
-            
-            if credential:
-                credential.is_active = False
-                db.commit()
+                existing = result.scalars().first()
+
+                if existing:
+                    existing.encrypted_data = encrypted
+                else:
+                    credential = PlatformCredential(
+                        platform=platform,
+                        name=credential_id,
+                        auth_method="encrypted",
+                        encrypted_data=encrypted,
+                        user_id="system"
+                    )
+                    db.add(credential)
+
+                await db.commit()
                 return True
-            return False
-            
-        finally:
-            db.close()
+
+            except Exception as e:
+                await db.rollback()
+                raise e
+            finally:
+                await db.close()
+
+    async def delete_credentials(self, platform: str, credential_id: str) -> bool:
+        """Delete credentials from database"""
+        async for db in self.db_session_factory():
+            try:
+                result = await db.execute(
+                    select(PlatformCredential).where(
+                        PlatformCredential.platform == platform,
+                        PlatformCredential.name == credential_id
+                    )
+                )
+                credential = result.scalars().first()
+
+                if credential:
+                    await db.delete(credential)
+                    await db.commit()
+                    return True
+                return False
+
+            finally:
+                await db.close()
 
 
 class VaultCredentialBackend(CredentialBackend):
