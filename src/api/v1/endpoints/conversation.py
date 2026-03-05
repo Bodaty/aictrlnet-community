@@ -40,6 +40,7 @@ from core.edition_discovery import Edition as CoreEdition
 from models.user import User
 from models.conversation import (
     ConversationSession,
+    ConversationMessage,
     ConversationIntent,
     ConversationPattern
 )
@@ -47,8 +48,8 @@ from models.conversation import (
 router = APIRouter()
 
 
-async def _collect_v2_response(service, session_id, content, user_id, user_preferences=None):
-    """Collect response from process_message_v2 in non-streaming mode."""
+async def _collect_v2_response(service, session_id, content, user_id, db, user_preferences=None):
+    """Collect response from process_message_v2 and return ConversationResponse-shaped dict."""
     response_data = {}
     async for event in service.process_message_v2(
         session_id, content, user_id, stream=False, user_preferences=user_preferences
@@ -57,7 +58,33 @@ async def _collect_v2_response(service, session_id, content, user_id, user_prefe
             response_data = event.get("data", {})
         elif event.get("event") == "error":
             raise HTTPException(status_code=500, detail=event["data"].get("message", "Error"))
-    return response_data
+
+    if not response_data:
+        raise HTTPException(status_code=500, detail="No response from conversation service")
+
+    # Fetch the persisted assistant message and session from DB
+    message_id = UUID(response_data["message_id"])
+    msg_result = await db.execute(
+        select(ConversationMessage).where(ConversationMessage.id == message_id)
+    )
+    assistant_msg = msg_result.scalar_one_or_none()
+
+    session_result = await db.execute(
+        select(ConversationSession).where(ConversationSession.id == session_id)
+    )
+    session = session_result.scalar_one_or_none()
+
+    if not assistant_msg or not session:
+        raise HTTPException(status_code=500, detail="Failed to retrieve persisted message or session")
+
+    return {
+        "session_id": session_id,
+        "message": assistant_msg,
+        "state": session.state,
+        "context": response_data.get("session_context", {}),
+        "quick_actions": [],
+        "automation_result": response_data.get("automation_result") or response_data.get("created_workflow"),
+    }
 
 
 def serialize_for_json(obj):
@@ -287,7 +314,7 @@ async def send_message(
     user_preferences = None
     if hasattr(current_user, 'preferences') and current_user.preferences:
         user_preferences = current_user.preferences
-    response_data = await _collect_v2_response(service, session_id, message.content, str(current_user.id), user_preferences=user_preferences)
+    response_data = await _collect_v2_response(service, session_id, message.content, str(current_user.id), db, user_preferences=user_preferences)
 
     return response_data
 
@@ -319,7 +346,7 @@ async def send_message_without_session(
         user_preferences = current_user.preferences
 
     response_data = await _collect_v2_response(
-        service, session.id, message.content, str(current_user.id),
+        service, session.id, message.content, str(current_user.id), db,
         user_preferences=user_preferences
     )
 
