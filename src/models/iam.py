@@ -39,6 +39,9 @@ class IAMAgentType(str, enum.Enum):
     SERVICE = "service"
     MONITOR = "monitor"
     SCHEDULER = "scheduler"
+    AI = "ai"
+    HUMAN = "human"
+    ORCHESTRATOR = "orchestrator"
 
 
 class IAMAgentStatus(str, enum.Enum):
