@@ -445,7 +445,8 @@ class LLMGenerationEngine:
                             tokens_used=result.get("eval_count", 0) + result.get("prompt_eval_count", 0)
                         )
                     else:
-                        raise Exception(f"Ollama error: {response.status_code}")
+                        error_body = response.text[:200] if response.text else "no details"
+                        raise Exception(f"Ollama error {response.status_code}: {error_body}")
                         
         except Exception as e:
             logger.error(f"Ollama generation failed: {e}")

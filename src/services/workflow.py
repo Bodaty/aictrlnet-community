@@ -195,6 +195,7 @@ class WorkflowService:
             status="running",
             context=context or {},
             started_at=datetime.utcnow(),
+            tenant_id=get_current_tenant_id(),
         )
         
         self.db.add(instance)

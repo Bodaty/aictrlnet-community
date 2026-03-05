@@ -10,6 +10,7 @@ import logging
 
 from models.community_complete import Task, TaskStatus
 from core.exceptions import ValidationError, NotFoundError
+from core.tenant_context import get_current_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,8 @@ class TaskService:
             name=name,
             description=description,
             status=TaskStatus.PENDING,
-            task_metadata=metadata or {}
+            task_metadata=metadata or {},
+            tenant_id=get_current_tenant_id()
         )
 
         self.db.add(task)

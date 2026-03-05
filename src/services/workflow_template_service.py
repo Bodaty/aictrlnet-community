@@ -543,6 +543,7 @@ class WorkflowTemplateService:
         
         # First, we need to create a WorkflowDefinition
         from models.community_complete import WorkflowDefinition, WorkflowInstance, WorkflowStatus
+        from core.tenant_context import get_current_tenant_id
         from datetime import datetime
         
         # Merge template metadata with enhancement metadata
@@ -552,14 +553,15 @@ class WorkflowTemplateService:
         }
         
         # Create workflow definition with enhanced metadata
+        tenant_id = get_current_tenant_id()
         workflow_def = WorkflowDefinition(
             name=request.name,
             description=request.description or template.description,
             definition=workflow_config,
             active=True,
             tags=template.tags,
-            metadata=full_metadata if full_metadata else None,
-            tenant_id=user_id  # Using user_id as tenant_id for now
+            workflow_metadata=full_metadata if full_metadata else None,
+            tenant_id=tenant_id
         )
         db.add(workflow_def)
         await db.flush()  # Get the ID without committing
@@ -570,7 +572,7 @@ class WorkflowTemplateService:
             name=request.name,
             status=WorkflowStatus.PENDING,
             input_data=request.parameters,
-            tenant_id=user_id  # Using user_id as tenant_id for now
+            tenant_id=tenant_id
         )
         
         db.add(workflow)
