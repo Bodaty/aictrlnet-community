@@ -12,6 +12,7 @@ class AdapterCategory(str, Enum):
     AI = "ai"
     AI_AGENT = "ai_agent"
     COMMUNICATION = "communication"
+    DATABASE = "database"
     HUMAN = "human"
     PAYMENT = "payment"
     DATA = "data"
