@@ -126,7 +126,7 @@ class IAMMessageResponse(IAMMessageBase):
 # Session schemas
 class IAMSessionBase(BaseModel):
     """Base schema for IAM sessions."""
-    session_type: str = Field(..., min_length=1, max_length=100)
+    session_type: str = Field("direct", min_length=1, max_length=100)
     context: Dict[str, Any] = {}
     participants: List[str] = []
 

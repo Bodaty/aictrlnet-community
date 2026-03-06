@@ -73,13 +73,13 @@ class WorkflowTemplateBase(BaseModel):
 # Create/Update schemas
 class WorkflowTemplateCreate(WorkflowTemplateBase):
     """Schema for creating a workflow template."""
-    definition_path: str = Field(..., max_length=500)
+    definition_path: Optional[str] = Field(None, max_length=500)
     thumbnail_path: Optional[str] = Field(None, max_length=500)
     parent_template_id: Optional[UUID] = None
     
     @validator('definition_path')
     def validate_definition_path(cls, v):
-        if not v.endswith('.json'):
+        if v is not None and not v.endswith('.json'):
             raise ValueError('Definition path must point to a JSON file')
         return v
 

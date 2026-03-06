@@ -1,5 +1,6 @@
 """User-related endpoints."""
 
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,6 +63,26 @@ async def get_current_user(
         if not edition:
             edition = current_user.edition or "community"
 
+        # Get trial status
+        trial_active = False
+        trial_days_remaining = None
+        trial_end_str = None
+        try:
+            trial_result = await db.execute(
+                select(Subscription).where(
+                    Subscription.user_id == current_user.id,
+                    Subscription.status.in_([SubscriptionStatus.TRIALING, SubscriptionStatus.EXPIRED])
+                )
+            )
+            trial_sub = trial_result.scalar_one_or_none()
+            if trial_sub and trial_sub.trial_end:
+                now = datetime.utcnow()
+                trial_active = trial_sub.status == SubscriptionStatus.TRIALING and trial_sub.trial_end > now
+                trial_days_remaining = max(0, (trial_sub.trial_end - now).days) if trial_active else 0
+                trial_end_str = trial_sub.trial_end.isoformat()
+        except Exception:
+            pass
+
         # User object
         return {
             "id": str(current_user.id),
@@ -70,6 +91,9 @@ async def get_current_user(
             "edition": edition,
             "roles": ["admin"] if current_user.is_superuser else ["user"],
             "permissions": [],
+            "trial_active": trial_active,
+            "trial_days_remaining": trial_days_remaining,
+            "trial_end": trial_end_str,
             "metadata": {
                 "last_login": str(current_user.last_login_at) if hasattr(current_user, 'last_login_at') and current_user.last_login_at else None,
                 "created_at": str(current_user.created_at) if hasattr(current_user, 'created_at') else None,
@@ -89,6 +113,9 @@ async def get_current_user(
             "edition": current_user.get("edition", "community"),
             "roles": current_user.get("roles", ["user"]),
             "permissions": current_user.get("permissions", []),
+            "trial_active": False,
+            "trial_days_remaining": None,
+            "trial_end": None,
             "metadata": {
                 "last_login": current_user.get("last_login"),
                 "created_at": current_user.get("created_at"),
@@ -99,6 +126,34 @@ async def get_current_user(
                 }
             }
         }
+
+
+@router.put("/me")
+async def update_current_user(
+    updates: dict,
+    current_user = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update current user's profile (name, etc.)."""
+    if not hasattr(current_user, 'id'):
+        raise HTTPException(status_code=400, detail="Cannot update dev token user")
+
+    allowed_fields = {"name", "full_name", "username"}
+    for key, value in updates.items():
+        if key in ("name", "full_name"):
+            current_user.full_name = value
+        elif key == "username":
+            current_user.username = value
+
+    await db.commit()
+    await db.refresh(current_user)
+
+    return {
+        "id": str(current_user.id),
+        "email": current_user.email,
+        "name": current_user.full_name or current_user.username or "Test User",
+        "message": "Profile updated successfully"
+    }
 
 
 @router.get("/me/preferences")

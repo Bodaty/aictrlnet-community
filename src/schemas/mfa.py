@@ -102,6 +102,7 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     """Login response with MFA support."""
     access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
     token_type: Optional[str] = None
     mfa_required: bool = False
     session_token: Optional[str] = None

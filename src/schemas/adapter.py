@@ -16,8 +16,8 @@ class AdapterBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=256)
     category: str = Field(..., min_length=1, max_length=128)
     description: Optional[str] = None
-    version: str = Field(..., pattern=r"^\d+\.\d+\.\d+$")
-    min_edition: str = Field(..., pattern="^(community|business|enterprise)$")
+    version: str = Field("1.0.0", pattern=r"^\d+\.\d+\.\d+$")
+    min_edition: str = Field("community", pattern="^(community|business|enterprise)$")
     enabled: bool = True
     adapter_metadata: Optional[Dict[str, Any]] = None
     config_schema: Optional[Dict[str, Any]] = None

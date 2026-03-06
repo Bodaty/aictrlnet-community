@@ -39,7 +39,7 @@ class PolicyAssignmentCreate(BaseModel):
     policy_id: str = Field(..., description="Policy to assign")
     resource_type: str = Field(..., description="Resource type (agent, workflow, etc)")
     resource_id: str = Field(..., description="Resource ID")
-    assigned_by: str = Field(..., description="User assigning the policy")
+    assigned_by: Optional[str] = Field(None, description="User assigning the policy")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Assignment metadata")
 
 
