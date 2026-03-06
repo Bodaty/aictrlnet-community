@@ -3,6 +3,7 @@
 from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 import json
 import uuid
 from datetime import datetime
@@ -89,10 +90,10 @@ async def get_mcp_task(
     current_user: User = Depends(get_current_active_user)
 ):
     """Get details of an MCP task"""
-    task = await db.execute(
-        db.query(TaskMCP).filter_by(task_id=task_id)
+    result = await db.execute(
+        select(TaskMCP).where(TaskMCP.task_id == task_id)
     )
-    task = task.scalar_one_or_none()
+    task = result.scalar_one_or_none()
     
     if not task:
         raise HTTPException(
@@ -126,13 +127,13 @@ async def list_mcp_tasks(
     current_user: User = Depends(get_current_active_user)
 ):
     """List MCP tasks"""
-    query = db.query(TaskMCP).filter_by(mcp_enabled=True)
-    
+    query = select(TaskMCP).where(TaskMCP.mcp_enabled == True)
+
     if status:
-        query = query.filter_by(status=status)
-    
+        query = query.where(TaskMCP.status == status)
+
     query = query.offset(offset).limit(limit)
-    
+
     result = await db.execute(query)
     tasks = result.scalars().all()
     

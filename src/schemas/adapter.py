@@ -1,7 +1,7 @@
 """Adapter-related Pydantic schemas."""
 
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from datetime import datetime
 
 from .common import TimestampSchema
@@ -66,10 +66,15 @@ class AdapterResponse(AdapterBase, TimestampSchema):
 
 class AdapterDiscoverResponse(BaseModel):
     """Adapter discovery response."""
-    adapters: List[AdapterResponse]
-    total: int
-    edition: str
-    categories: List[str]
+    adapters: List[AdapterResponse] = []
+    total: int = 0
+    edition: str = "community"
+    categories: List[str] = []
+
+    @field_validator('total', mode='before')
+    @classmethod
+    def coerce_none_to_zero(cls, v):
+        return v if v is not None else 0
 
 
 class AdapterCategoryResponse(BaseModel):

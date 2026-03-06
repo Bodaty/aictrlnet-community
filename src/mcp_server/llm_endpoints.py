@@ -200,7 +200,13 @@ async def handle_mcp_tool_execution(
     try:
         tool_name = request.get("tool")
         tool_input = request.get("input", {})
-        
+
+        if not tool_name:
+            raise HTTPException(
+                status_code=422,
+                detail="Missing required field 'tool' in request body"
+            )
+
         # Route to appropriate tool handler
         if tool_name == "adapter":
             from services.adapter import AdapterService
@@ -225,6 +231,8 @@ async def handle_mcp_tool_execution(
             "status": "completed"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"MCP tool execution failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

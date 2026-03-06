@@ -402,22 +402,22 @@ class IAMService:
     async def get_system_metrics(self) -> IAMSystemMetrics:
         """Get system-wide metrics."""
         # Get basic counts
-        total_messages = await self.db.scalar(select(func.count(IAMMessage.id)))
-        active_agents = await self.db.scalar(
+        total_messages = (await self.db.scalar(select(func.count(IAMMessage.id)))) or 0
+        active_agents = (await self.db.scalar(
             select(func.count(IAMAgent.id)).where(IAMAgent.status == IAMAgentStatus.ACTIVE)
-        )
-        
+        )) or 0
+
         # Calculate messages per minute (last hour)
         one_hour_ago = datetime.utcnow() - timedelta(hours=1)
-        recent_messages = await self.db.scalar(
+        recent_messages = (await self.db.scalar(
             select(func.count(IAMMessage.id)).where(IAMMessage.created_at >= one_hour_ago)
-        )
+        )) or 0
         messages_per_minute = recent_messages / 60.0 if recent_messages else 0
-        
+
         # Calculate error rate
-        error_messages = await self.db.scalar(
+        error_messages = (await self.db.scalar(
             select(func.count(IAMMessage.id)).where(IAMMessage.status == IAMMessageStatus.FAILED)
-        )
+        )) or 0
         error_rate = error_messages / total_messages if total_messages > 0 else 0
         
         # Calculate average message size from actual content
@@ -468,22 +468,22 @@ class IAMService:
             return None
         
         # Get message counts
-        sent_count = await self.db.scalar(
+        sent_count = (await self.db.scalar(
             select(func.count(IAMMessage.id)).where(IAMMessage.sender_id == agent_id)
-        )
-        received_count = await self.db.scalar(
+        )) or 0
+        received_count = (await self.db.scalar(
             select(func.count(IAMMessage.id)).where(IAMMessage.recipient_id == agent_id)
-        )
-        
+        )) or 0
+
         # Get error rate
-        error_count = await self.db.scalar(
+        error_count = (await self.db.scalar(
             select(func.count(IAMMessage.id)).where(
                 and_(
                     IAMMessage.sender_id == agent_id,
                     IAMMessage.status == IAMMessageStatus.FAILED
                 )
             )
-        )
+        )) or 0
         error_rate = error_count / sent_count if sent_count > 0 else 0
         
         # Get last activity

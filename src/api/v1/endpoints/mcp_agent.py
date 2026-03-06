@@ -12,7 +12,7 @@ from typing import List, Optional
 import logging
 
 from core.database import get_db
-from core.security import get_current_active_user
+from core.dependencies import get_current_user_safe
 from services.mcp_unified import UnifiedMCPService
 from services.mcp_agent_tool_provider import MCPAgentToolProvider, MCPEnabledAgentService
 from schemas.mcp import (
@@ -57,7 +57,7 @@ async def list_agent_available_tools(
     server: Optional[str] = Query(None, description="Filter by MCP server name"),
     refresh: bool = Query(False, description="Force refresh tool cache"),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: dict = Depends(get_current_user_safe)
 ):
     """
     List all MCP tools available for agent use.
@@ -106,7 +106,7 @@ async def list_agent_available_tools(
 @router.get("/tools/summary", response_model=MCPToolsSummaryResponse)
 async def get_tools_summary(
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: dict = Depends(get_current_user_safe)
 ):
     """
     Get a summary of available MCP tools.
@@ -132,7 +132,7 @@ async def get_tool_by_name(
     tool_name: str,
     server: Optional[str] = Query(None, description="Filter by MCP server name"),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: dict = Depends(get_current_user_safe)
 ):
     """
     Get a specific MCP tool by name.
@@ -171,7 +171,7 @@ async def get_tool_by_name(
 async def execute_agent_with_mcp(
     request: MCPAgentExecutionRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: dict = Depends(get_current_user_safe)
 ):
     """
     Execute an agent with MCP tools automatically injected.
@@ -188,7 +188,7 @@ async def execute_agent_with_mcp(
         from services.agent_execution_basic import AgentExecutionService
 
         tool_provider = await get_tool_provider()
-        agent_service = AgentExecutionService(db)
+        agent_service = AgentExecutionService(db, current_user["id"])
 
         mcp_agent_service = MCPEnabledAgentService(agent_service, tool_provider)
 
@@ -225,7 +225,7 @@ async def inject_mcp_tools_into_agent(
     agent_id: str,
     request: MCPToolInjectionRequest = MCPToolInjectionRequest(),
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: dict = Depends(get_current_user_safe)
 ):
     """
     Inject MCP tools into an existing agent's configuration.
@@ -239,10 +239,16 @@ async def inject_mcp_tools_into_agent(
     """
     try:
         # Import here to avoid circular imports
-        from services.agent_execution_basic import AgentExecutionService
+        try:
+            from services.agent_execution_basic import AgentExecutionService
+        except ImportError:
+            raise HTTPException(
+                status_code=501,
+                detail="Agent execution service not available in this edition"
+            )
 
         tool_provider = await get_tool_provider()
-        agent_service = AgentExecutionService(db)
+        agent_service = AgentExecutionService(db, current_user["id"])
 
         # Get current agent config
         agent_config = await agent_service.get_agent_config(agent_id)
@@ -291,7 +297,7 @@ async def inject_mcp_tools_into_agent(
 @router.post("/tools/refresh")
 async def refresh_tools_cache(
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: dict = Depends(get_current_user_safe)
 ):
     """
     Force refresh the MCP tools cache.

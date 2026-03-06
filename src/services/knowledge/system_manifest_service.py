@@ -439,6 +439,61 @@ class SystemManifestService:
         }
         return descriptions.get(agent_name, "AI agent")
 
+    async def get_feature_details(self, name: str) -> Optional[Dict]:
+        """Get detailed information about a specific feature by name."""
+        if not self.manifest.get("generated_at"):
+            await self.generate_manifest()
+
+        features = self.manifest.get("features", {})
+
+        # Try exact match first
+        feature_data = features.get(name)
+
+        # Try case-insensitive / partial match if exact match fails
+        if not feature_data:
+            name_lower = name.lower()
+            for key, value in features.items():
+                if key.lower() == name_lower or name_lower in key.lower():
+                    feature_data = value
+                    name = key  # Use the canonical name
+                    break
+
+        if not feature_data:
+            return None
+
+        # Gather related endpoints
+        related_endpoints = []
+        for endpoint_key, endpoint_info in self.manifest.get("endpoints", {}).items():
+            endpoint_path = endpoint_info.get("path", "")
+            # Match endpoints whose path contains the feature name (with hyphens/underscores)
+            feature_slug = name.lower().replace("_", "-")
+            feature_slug_alt = name.lower().replace("-", "_")
+            if feature_slug in endpoint_path.lower() or feature_slug_alt in endpoint_path.lower():
+                related_endpoints.append(endpoint_info)
+
+        # Gather related templates
+        related_templates = []
+        templates_by_edition = self.manifest.get("templates", {}).get("by_edition", {})
+        for edition_name, count in templates_by_edition.items():
+            if edition_name in self.accessible_editions:
+                related_templates.append({
+                    "edition": edition_name,
+                    "count": count
+                })
+
+        return {
+            "feature": {
+                "name": name,
+                "description": feature_data.get("description", ""),
+                "required_edition": feature_data.get("edition", "community"),
+                "capabilities": feature_data.get("capabilities", {}),
+            },
+            "related_endpoints": related_endpoints,
+            "related_templates": related_templates,
+            "edition": self.edition,
+            "accessible": feature_data.get("edition", "community") in self.accessible_editions
+        }
+
     async def get_manifest(self) -> Dict:
         """Get the complete system manifest."""
         if not self.manifest.get("generated_at"):

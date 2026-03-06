@@ -9,7 +9,7 @@ which is used for adapter registry metadata.
 
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from pydantic import BaseModel, Field, UUID4, validator, ConfigDict
+from pydantic import BaseModel, Field, UUID4, validator, field_validator, ConfigDict
 from enum import Enum
 
 
@@ -77,8 +77,13 @@ class AdapterConfigTestResponse(BaseModel):
 
 class AdapterConfigListResponse(BaseModel):
     """Response for listing adapter configurations."""
-    configs: List[AdapterConfigResponse]
-    total: int
+    configs: List[AdapterConfigResponse] = []
+    total: int = 0
+
+    @field_validator('total', mode='before')
+    @classmethod
+    def coerce_none_to_zero(cls, v):
+        return v if v is not None else 0
     
     
 class AdapterConfigBulkTestRequest(BaseModel):

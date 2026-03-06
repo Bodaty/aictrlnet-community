@@ -9,6 +9,7 @@ from datetime import datetime
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from core.config import get_settings
 from services.agent_config_service import AgentConfigService
@@ -274,3 +275,82 @@ class BasicAgentExecutor:
             "basic_assistant": "General AI assistance"
         }
         return descriptions.get(agent_name, "AI agent")
+
+
+class AgentExecutionService:
+    """Config load/save/execute wrapper for MCP agent endpoints."""
+
+    def __init__(self, db: AsyncSession, user_id: str = None):
+        self.db = db
+        self.user_id = user_id
+        self._executor = BasicAgentExecutor()
+
+    async def get_agent_config(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Load per-agent MCP config from User.preferences."""
+        from models.user import User
+
+        if not self.user_id:
+            return {"agent_id": agent_id, "tools": [], "metadata": {}}
+
+        result = await self.db.execute(
+            select(User).where(User.id == self.user_id)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            return None
+
+        prefs = user.preferences or {}
+        config = prefs.get("agent_mcp_configs", {}).get(agent_id, {})
+
+        return {
+            "agent_id": agent_id,
+            "tools": config.get("tools", []),
+            "metadata": config.get("metadata", {}),
+        }
+
+    async def update_agent_config(self, agent_id: str, config: Dict[str, Any]) -> None:
+        """Persist agent config. Strips non-serializable handler functions from tools."""
+        from models.user import User
+
+        if not self.user_id:
+            return
+
+        result = await self.db.execute(
+            select(User).where(User.id == self.user_id)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            return
+
+        if not user.preferences:
+            user.preferences = {}
+        if "agent_mcp_configs" not in user.preferences:
+            user.preferences["agent_mcp_configs"] = {}
+
+        serializable_tools = [
+            {k: v for k, v in tool.items() if k != "handler"}
+            for tool in config.get("tools", [])
+        ]
+
+        user.preferences["agent_mcp_configs"][agent_id] = {
+            "tools": serializable_tools,
+            "metadata": config.get("metadata", {}),
+        }
+
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(user, "preferences")
+        await self.db.commit()
+
+    async def execute_agent(
+        self,
+        agent_id: str,
+        task: Dict[str, Any],
+        config_override: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """Execute agent via BasicAgentExecutor."""
+        return await self._executor.execute_agent(
+            db=self.db,
+            user_id=self.user_id or "",
+            agent_name=agent_id,
+            task=task
+        )

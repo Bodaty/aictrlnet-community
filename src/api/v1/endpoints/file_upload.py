@@ -120,7 +120,7 @@ async def upload_file(
     # Business+ governance: risk assessment on file uploads
     try:
         from aictrlnet_business.services.ai_governance import RiskAssessmentEngine
-        risk_engine = RiskAssessmentEngine()
+        risk_engine = RiskAssessmentEngine(db)
         risk_result = risk_engine.assess_file_risk({
             "filename": safe_filename,
             "content_type": file.content_type,
@@ -140,8 +140,8 @@ async def upload_file(
     # Enterprise audit logging
     try:
         from aictrlnet_enterprise.services.audit_service import AuditService
-        audit = AuditService(db)
-        await audit.audit_file_upload(
+        await AuditService.audit_file_upload(
+            db=db,
             user_id=str(user_id),
             tenant_id=get_current_tenant_id(),
             file_metadata={

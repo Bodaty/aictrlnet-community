@@ -800,11 +800,19 @@ async def test_mcp_connection(
             "capabilities": capabilities
         }
 
+    except (ConnectionError, OSError, TimeoutError) as e:
+        logger.warning(f"MCP test connection failed (server unavailable): {e}")
+        return {
+            "status": "degraded",
+            "server_url": server_url,
+            "capabilities": [],
+            "error": f"MCP server unavailable: {str(e)}"
+        }
     except Exception as e:
-        logger.error(f"MCP test failed: {e}")
+        logger.error(f"MCP test failed unexpectedly: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=f"MCP test failed: {str(e)}"
         )
 
 

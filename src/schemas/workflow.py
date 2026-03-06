@@ -68,13 +68,15 @@ class WorkflowUpdate(BaseModel):
 
 class WorkflowResponse(WorkflowBase, TimestampSchema):
     """Workflow response schema."""
-    id: str
-    definition: WorkflowDefinitionSchema
-    version: int
+    id: Optional[str] = None
+    definition: Optional[WorkflowDefinitionSchema] = None
+    version: int = 1
     is_template: bool = False
     template_id: Optional[str] = None
     status: str = "draft"  # draft, active, archived
-    tenant_id: str
+    tenant_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
     @model_validator(mode='before')
     @classmethod
@@ -87,8 +89,9 @@ class WorkflowResponse(WorkflowBase, TimestampSchema):
         if hasattr(data, '__dict__'):
             result = {}
             for key in ['id', 'name', 'description', 'tags', 'version', 'tenant_id', 'created_at', 'updated_at']:
-                if hasattr(data, key):
-                    result[key] = getattr(data, key)
+                val = getattr(data, key, None)
+                if val is not None:
+                    result[key] = val
             
             # Extract definition
             if hasattr(data, 'definition'):

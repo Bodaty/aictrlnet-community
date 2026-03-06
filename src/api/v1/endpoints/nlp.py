@@ -436,7 +436,7 @@ async def preview_template(
         template = await template_service.get_template(db, template_uuid, "system", load_definition=True)
         if not template:
             raise HTTPException(status_code=404, detail=f"Template {template_id} not found")
-        
+
         # Create preview from template data
         preview = {
             'id': str(template.id),
@@ -452,9 +452,15 @@ async def preview_template(
             'preview_available': template.workflow_definition is not None,
             'workflow_definition': template.workflow_definition
         }
-        
+
         return jsonable_encoder(preview)
+    except HTTPException:
+        raise
     except Exception as e:
+        # NotFoundError and similar → 404
+        err_msg = str(e).lower()
+        if "not found" in err_msg or "access denied" in err_msg:
+            raise HTTPException(status_code=404, detail=f"Template {template_id} not found")
         logger.error(f"Error getting template preview: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 

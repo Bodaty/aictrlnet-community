@@ -803,9 +803,12 @@ async def get_execution_details(
     """Get detailed execution information."""
     import uuid
     execution_service = WorkflowExecutionService(db)
-    details = await execution_service.get_execution_details(
-        execution_id=uuid.UUID(execution_id)
-    )
+    try:
+        details = await execution_service.get_execution_details(
+            execution_id=uuid.UUID(execution_id)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     return details
 
 
@@ -1041,14 +1044,17 @@ async def trigger_workflow_manual(
     import uuid
     user_id = getattr(current_user, "id", None) or (current_user.get("id") if isinstance(current_user, dict) else None)
     tenant_id = getattr(current_user, "tenant_id", None) or get_current_tenant_id()
-    execution = await scheduler.trigger_workflow(
-        workflow_id=uuid.UUID(workflow_id),
-        trigger_type=TriggerType.MANUAL,
-        trigger_data=trigger_data,
-        user_id=str(user_id) if user_id else None,
-        tenant_id=tenant_id,
-    )
-    
+    try:
+        execution = await scheduler.trigger_workflow(
+            workflow_id=uuid.UUID(workflow_id),
+            trigger_type=TriggerType.MANUAL,
+            trigger_data=trigger_data,
+            user_id=str(user_id) if user_id else None,
+            tenant_id=tenant_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
     return {
         "execution_id": str(execution.id),
         "workflow_id": str(execution.workflow_id),

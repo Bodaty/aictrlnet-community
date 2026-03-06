@@ -128,8 +128,11 @@ async def create_conversation_session(
         selectinload(ConversationSession.actions)
     )
     result = await db.execute(stmt)
-    session = result.scalar_one()
-    
+    session = result.scalar_one_or_none()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     return session
 
 

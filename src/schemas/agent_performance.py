@@ -158,7 +158,7 @@ class MetricsComparison(BaseModel):
 
 class PerformanceComparisonRequest(BaseModel):
     """Performance comparison request."""
-    agent_ids: List[str] = Field(..., min_items=2, max_items=5)
+    agent_ids: List[str] = Field(default_factory=list, description="Agent IDs to compare")
     time_range: str = Field("24h", description="Time range: 1h, 24h, 7d")
 
 

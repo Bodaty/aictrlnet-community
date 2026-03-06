@@ -3609,7 +3609,7 @@ class ToolDispatcher:
             # Business+ governance: risk assessment on browser actions
             try:
                 from aictrlnet_business.services.ai_governance import RiskAssessmentEngine
-                risk_engine = RiskAssessmentEngine()
+                risk_engine = RiskAssessmentEngine(self.db)
                 risk_result = risk_engine.assess_browser_risk(actions)
                 if risk_result.get("risk_level") in ("very_high", "critical"):
                     return ToolResult(

@@ -88,9 +88,9 @@ class PersonalAgentConfigUpdate(BaseModel):
 
 class PersonalAgentConfigResponse(BaseModel):
     """Response schema for personal agent configuration."""
-    id: str
-    user_id: str
-    agent_name: str
+    id: Optional[str] = None
+    user_id: Optional[str] = None
+    agent_name: str = "My Assistant"
     personality: Dict[str, Any] = {}
     preferences: Dict[str, Any] = {}
     active_workflows: List[str] = []
