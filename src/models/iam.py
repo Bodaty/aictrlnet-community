@@ -160,8 +160,8 @@ class IAMSession(Base):
     
     # Session metadata
     session_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    context: Mapped[Dict[str, Any]] = mapped_column(JSONB, default={})
-    participants: Mapped[List[str]] = mapped_column(JSONB, default=[])
+    context: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+    participants: Mapped[List[str]] = mapped_column(JSONB, default=list)
     
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

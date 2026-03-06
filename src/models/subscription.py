@@ -53,8 +53,8 @@ class SubscriptionPlan(Base):
     price_monthly = Column(Float, nullable=False)
     price_annual = Column(Float)  # Discounted annual price
     currency = Column(String, default="USD")
-    features = Column(JSON, default={})  # Feature flags
-    limits = Column(JSON, default={})    # Numeric limits
+    features = Column(JSON, default=dict)  # Feature flags
+    limits = Column(JSON, default=dict)    # Numeric limits
     stripe_price_id_monthly = Column(String)  # Stripe Price ID for monthly
     stripe_price_id_annual = Column(String)   # Stripe Price ID for annual
     is_active = Column(Boolean, default=True)
@@ -95,7 +95,7 @@ class Subscription(Base):
     
     # Metadata
     cancel_reason = Column(String)
-    meta_data = Column(JSON, default={})
+    meta_data = Column(JSON, default=dict)
     
     # Relationships
     user = relationship("User", back_populates="subscriptions")
@@ -125,7 +125,7 @@ class UsageTracking(Base):
     timestamp = Column(DateTime, nullable=False)
     billing_period_start = Column(DateTime)
     billing_period_end = Column(DateTime)
-    meta_data = Column(JSON, default={})
+    meta_data = Column(JSON, default=dict)
     
     # Relationships
     subscription = relationship("Subscription", back_populates="usage_tracking")
@@ -153,7 +153,7 @@ class PaymentMethod(Base):
     exp_year = Column(Integer)
     is_default = Column(Boolean, default=False)
     stripe_payment_method_id = Column(String)
-    meta_data = Column(JSON, default={})
+    meta_data = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -190,7 +190,7 @@ class BillingHistory(Base):
     # Additional info
     description = Column(Text)
     failure_reason = Column(String)
-    meta_data = Column(JSON, default={})
+    meta_data = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
     paid_at = Column(DateTime)
     

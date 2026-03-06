@@ -327,3 +327,15 @@ async def refresh_tools_cache(
             status_code=500,
             detail=f"Failed to refresh cache: {str(e)}"
         )
+
+
+async def cleanup_mcp_singletons():
+    """Clean up module-level MCP service singletons."""
+    global _mcp_service, _tool_provider
+    if _mcp_service is not None:
+        try:
+            await _mcp_service.cleanup()
+        except Exception as e:
+            logger.warning(f"MCP service cleanup error: {e}")
+        _mcp_service = None
+    _tool_provider = None

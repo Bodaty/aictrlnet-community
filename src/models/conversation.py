@@ -31,13 +31,13 @@ class ConversationSession(Base):
     ended_at = Column(DateTime, nullable=True)
     
     # Context and extracted information
-    context = Column(JSON, default={}, nullable=False)
-    extracted_params = Column(JSON, default={}, nullable=False)
+    context = Column(JSON, default=dict, nullable=False)
+    extracted_params = Column(JSON, default=dict, nullable=False)
     primary_intent = Column(String(100), nullable=True, index=True)
     intent_confidence = Column(Float, nullable=True)
     
     # Session metadata - avoid using 'metadata' as column name
-    session_config = Column(JSON, default={
+    session_config = Column(JSON, default=lambda: {
         "user_agent": None,
         "ip_address": None,
         "client_version": None,
@@ -46,7 +46,7 @@ class ConversationSession(Base):
     })
     
     # Channel-agnostic conversation support
-    channel_bindings = Column(JSON, default={}, nullable=False)  # {"slack": {"channel_id": "C123"}, "whatsapp": {"phone": "+1..."}}
+    channel_bindings = Column(JSON, default=dict, nullable=False)  # {"slack": {"channel_id": "C123"}, "whatsapp": {"phone": "+1..."}}
     primary_channel = Column(String(50), default="web", nullable=False)  # Channel that initiated session
 
     # Flags
@@ -73,8 +73,8 @@ class ConversationMessage(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
     
     # Message metadata - avoid using 'metadata' as column name
-    message_config = Column(JSON, default={}, nullable=False)
-    suggested_actions = Column(JSON, default=[], nullable=False)  # Quick action buttons
+    message_config = Column(JSON, default=dict, nullable=False)
+    suggested_actions = Column(JSON, default=list, nullable=False)  # Quick action buttons
     
     # Channel tracking
     channel_type = Column(String(50), default="web", nullable=False)  # Which channel this message arrived from
@@ -83,7 +83,7 @@ class ConversationMessage(Base):
     # Intent detection for this message
     detected_intent = Column(String(100), nullable=True)
     intent_confidence = Column(Float, nullable=True)
-    entities = Column(JSON, default={}, nullable=False)
+    entities = Column(JSON, default=dict, nullable=False)
     
     # LLM tracking
     llm_model_used = Column(String(100), nullable=True)
@@ -104,7 +104,7 @@ class ConversationAction(Base):
     
     # Action details
     action_type = Column(String(100), nullable=False)  # create_workflow, form_pod, etc.
-    action_params = Column(JSON, default={}, nullable=False)
+    action_params = Column(JSON, default=dict, nullable=False)
     status = Column(String(20), default="pending", nullable=False)
     
     # Timing
@@ -137,14 +137,14 @@ class ConversationIntent(Base):
     description = Column(Text, nullable=True)
     
     # Parameters required for this intent
-    required_params = Column(JSON, default=[], nullable=False)
-    optional_params = Column(JSON, default=[], nullable=False)
+    required_params = Column(JSON, default=list, nullable=False)
+    optional_params = Column(JSON, default=list, nullable=False)
     
     # Example phrases that trigger this intent
-    example_phrases = Column(JSON, default=[], nullable=False)
+    example_phrases = Column(JSON, default=list, nullable=False)
     
     # Clarification questions to ask
-    clarification_questions = Column(JSON, default=[], nullable=False)
+    clarification_questions = Column(JSON, default=list, nullable=False)
     
     # Routing information
     service_endpoint = Column(String(200), nullable=True)

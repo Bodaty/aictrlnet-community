@@ -51,7 +51,7 @@ class WorkflowExecution(Base):
         default=WorkflowExecutionStatus.PENDING,
         nullable=False
     )
-    context: Mapped[Dict[str, Any]] = mapped_column(JSONB, default={})
+    context: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
     input_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     output_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     error_details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
@@ -145,9 +145,9 @@ class WorkflowCheckpoint(Base):
     # Checkpoint data
     checkpoint_type: Mapped[str] = mapped_column(String(50), nullable=False)  # manual, auto, error
     state_data: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    completed_nodes: Mapped[List[str]] = mapped_column(JSONB, default=[])
-    pending_nodes: Mapped[List[str]] = mapped_column(JSONB, default=[])
-    workflow_variables: Mapped[Dict[str, Any]] = mapped_column(JSONB, default={})
+    completed_nodes: Mapped[List[str]] = mapped_column(JSONB, default=list)
+    pending_nodes: Mapped[List[str]] = mapped_column(JSONB, default=list)
+    workflow_variables: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
     
     # Metadata
     description: Mapped[Optional[str]] = mapped_column(Text)

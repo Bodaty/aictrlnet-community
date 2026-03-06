@@ -172,13 +172,19 @@ async def get_current_active_user(current_user: "User" = Depends(get_current_use
 
 class RoleChecker:
     """Dependency to check user roles."""
-    
+
     def __init__(self, allowed_roles: list[str]):
         self.allowed_roles = allowed_roles
-    
-    def __call__(self, user: dict = Depends(get_current_active_user)) -> dict:
+
+    async def __call__(self, user=Depends(get_current_user)):
         """Check if user has required role."""
-        user_roles = user.get("roles", [])
+        # Handle both User ORM objects and dicts
+        if isinstance(user, dict):
+            user_roles = user.get("roles", [])
+        else:
+            user_roles = getattr(user, "roles", None) or []
+        if isinstance(user_roles, str):
+            user_roles = [user_roles]
         if not any(role in self.allowed_roles for role in user_roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

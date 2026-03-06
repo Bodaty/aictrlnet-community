@@ -27,14 +27,14 @@ class MarketplaceItem(Base):
     category = Column(String(50), nullable=False)  # workflow, template, adapter, agent
     item_type = Column(String(100), nullable=True)  # sub-type within category
     version = Column(String(50), nullable=False, server_default="1.0.0")
-    tags = Column(JSON, default=[])
-    config_schema = Column(JSON, default={})
+    tags = Column(JSON, default=list)
+    config_schema = Column(JSON, default=dict)
     install_count = Column(Integer, nullable=False, server_default="0")
     rating_avg = Column(Float, nullable=True)
     rating_count = Column(Integer, nullable=False, server_default="0")
     status = Column(String(50), nullable=False, server_default="draft")  # draft, published, archived
     visibility = Column(String(50), nullable=False, server_default="public")  # public, private, org
-    resource_metadata = Column("resource_metadata", JSON, default={})
+    resource_metadata = Column("resource_metadata", JSON, default=dict)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

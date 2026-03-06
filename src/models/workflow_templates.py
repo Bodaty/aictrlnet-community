@@ -25,7 +25,7 @@ class WorkflowTemplate(Base):
     name = Column(String(255), nullable=False)
     description = Column(Text)
     category = Column(String(50))
-    tags = Column(ARRAY(Text), default=[])  # Array of tags
+    tags = Column(ARRAY(Text), default=list)  # Array of tags
     edition = Column(String(20), default='community')
     
     # Ownership and permissions
@@ -44,8 +44,8 @@ class WorkflowTemplate(Base):
     # Template metadata
     complexity = Column(Enum('simple', 'moderate', 'complex', 'advanced', name='workflow_complexity'), default='moderate', nullable=False)
     estimated_duration = Column(String(50))
-    required_adapters = Column(ARRAY(Text), default=[])
-    required_capabilities = Column(ARRAY(Text), default=[])
+    required_adapters = Column(ARRAY(Text), default=list)
+    required_capabilities = Column(ARRAY(Text), default=list)
     
     # Usage tracking
     usage_count = Column(Integer, default=0)

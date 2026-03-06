@@ -20,7 +20,7 @@ class User(Base):
     is_superuser = Column(Boolean, default=False)
     tenant_id = Column(String, index=True, nullable=True)  # NULL for Community/Business, required for Enterprise
     edition = Column(String, default="community")
-    preferences = Column(JSON, default={})
+    preferences = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login_at = Column(DateTime)

@@ -30,8 +30,8 @@ class KnowledgeItem(Base):
     content = Column(JSON, nullable=False)  # Full structured content
     
     # Metadata for retrieval
-    tags = Column(JSON, default=[], nullable=False)
-    keywords = Column(JSON, default=[], nullable=False)
+    tags = Column(JSON, default=list, nullable=False)
+    keywords = Column(JSON, default=list, nullable=False)
     semantic_embedding = Column(JSON, nullable=True)  # For future vector search
     
     # Usage and performance
@@ -45,8 +45,8 @@ class KnowledgeItem(Base):
     edition_required = Column(String(20), default="community", nullable=False)
     
     # Relationships and references
-    related_items = Column(JSON, default=[], nullable=False)  # List of item IDs
-    dependencies = Column(JSON, default=[], nullable=False)
+    related_items = Column(JSON, default=list, nullable=False)  # List of item IDs
+    dependencies = Column(JSON, default=list, nullable=False)
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -80,7 +80,7 @@ class KnowledgeIndex(Base):
     
     # Statistics
     total_items = Column(Integer, default=0, nullable=False)
-    item_counts = Column(JSON, default={}, nullable=False)  # Count by type
+    item_counts = Column(JSON, default=dict, nullable=False)  # Count by type
     
     # Build information
     built_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -88,7 +88,7 @@ class KnowledgeIndex(Base):
     last_refresh = Column(DateTime, nullable=True)
     
     # Configuration
-    index_config = Column(JSON, default={}, nullable=False)
+    index_config = Column(JSON, default=dict, nullable=False)
     
     # Status
     is_current = Column(Boolean, default=True, nullable=False)
@@ -104,14 +104,14 @@ class KnowledgeQuery(Base):
     # Query details
     query_text = Column(Text, nullable=False)
     query_type = Column(String(50), nullable=False)  # search, retrieve, suggest
-    context = Column(JSON, default={}, nullable=False)
+    context = Column(JSON, default=dict, nullable=False)
     
     # User information
     user_id = Column(String(36), ForeignKey('users.id'), nullable=True, index=True)
     session_id = Column(UUID(as_uuid=True), ForeignKey('conversation_sessions.id'), nullable=True)
     
     # Results
-    results_returned = Column(JSON, default=[], nullable=False)  # Item IDs returned
+    results_returned = Column(JSON, default=list, nullable=False)  # Item IDs returned
     result_count = Column(Integer, default=0, nullable=False)
     top_result_id = Column(UUID(as_uuid=True), nullable=True)
     
@@ -146,7 +146,7 @@ class SystemManifest(Base):
     manifest_data = Column(JSON, nullable=False)
     
     # Statistics from manifest
-    statistics = Column(JSON, default={}, nullable=False)
+    statistics = Column(JSON, default=dict, nullable=False)
     feature_count = Column(Integer, default=0, nullable=False)
     endpoint_count = Column(Integer, default=0, nullable=False)
     template_count = Column(Integer, default=0, nullable=False)
@@ -200,7 +200,7 @@ class LearnedPattern(Base):
 
     # Pattern content
     pattern_data = Column(JSON, nullable=False)
-    context_requirements = Column(JSON, default={}, nullable=False)
+    context_requirements = Column(JSON, default=dict, nullable=False)
 
     # Learning metrics
     occurrence_count = Column(Integer, default=1, nullable=False)

@@ -53,7 +53,7 @@ class UserAdapterConfig(Base):
     
     # Metadata
     version = Column(String(50), nullable=True)  # Adapter version when configured
-    metadata_field = Column('metadata', JSON, default={})  # Renamed to avoid SQLAlchemy conflict
+    metadata_field = Column('metadata', JSON, default=dict)  # Renamed to avoid SQLAlchemy conflict
     
     # Ensure unique configurations per user/type/name combination
     # Use extend_existing=True to avoid conflicts when table already exists from migrations

@@ -196,11 +196,18 @@ class AICtrlNetApp:
                 # Don't fail startup if adapters can't be registered
             
             yield
-            
+
             # Shutdown
+            try:
+                from api.v1.endpoints.mcp_agent import cleanup_mcp_singletons
+                await cleanup_mcp_singletons()
+                logger.info("MCP singletons cleaned up")
+            except Exception as e:
+                logger.warning(f"MCP cleanup: {e}")
+
             await close_db()
             logger.info("Database connections closed")
-        
+
         self.app = FastAPI(
             title=f"{self.settings.PROJECT_NAME} {self.settings.EDITION.title()} Edition",
             description=self._get_description(),
@@ -210,7 +217,7 @@ class AICtrlNetApp:
             redoc_url=f"{self.settings.API_V1_STR}/redoc",
             lifespan=lifespan,
         )
-        
+
         self._add_middleware()
         self._add_routes()
     

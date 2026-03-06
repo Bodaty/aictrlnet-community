@@ -52,7 +52,7 @@ class PlatformCredential(Base):
     last_error = Column(Text)
     
     # Configuration
-    config_metadata = Column('metadata', JSON, default={})  # Renamed to avoid SQLAlchemy reserved word
+    config_metadata = Column('metadata', JSON, default=dict)  # Renamed to avoid SQLAlchemy reserved word
     
     # Relationships
     user = relationship("User", back_populates="platform_credentials")
@@ -79,8 +79,8 @@ class PlatformExecution(Base):
     credential_id = Column(Integer, ForeignKey("platform_credentials.id"))
     
     # Execution data
-    input_data = Column(JSON, default={})
-    output_data = Column(JSON, default={})
+    input_data = Column(JSON, default=dict)
+    output_data = Column(JSON, default=dict)
     error_data = Column(JSON)
     
     # Timing
@@ -95,7 +95,7 @@ class PlatformExecution(Base):
     estimated_cost = Column(Integer, default=0)  # In cents
     
     # Metadata
-    execution_metadata = Column('metadata', JSON, default={})  # Renamed to avoid SQLAlchemy reserved word
+    execution_metadata = Column('metadata', JSON, default=dict)  # Renamed to avoid SQLAlchemy reserved word
     
     # Relationships
     credential = relationship("PlatformCredential", back_populates="platform_executions")
@@ -113,15 +113,15 @@ class PlatformAdapter(Base):
     version = Column(String(50), nullable=False)
     
     # Capabilities
-    capabilities = Column(JSON, default={})  # What this adapter can do
-    supported_auth_methods = Column(JSON, default=[])  # List of AuthMethod values
+    capabilities = Column(JSON, default=dict)  # What this adapter can do
+    supported_auth_methods = Column(JSON, default=list)  # List of AuthMethod values
     
     # Status
     is_active = Column(Boolean, default=True)
     is_beta = Column(Boolean, default=False)
     
     # Configuration schema
-    config_schema = Column(JSON, default={})  # JSON Schema for configuration
+    config_schema = Column(JSON, default=dict)  # JSON Schema for configuration
     
     # Documentation
     documentation_url = Column(String(500))
@@ -158,7 +158,7 @@ class PlatformHealth(Base):
     p95_response_time_ms = Column(Integer)
     
     # Metadata
-    health_metadata = Column('metadata', JSON, default={})  # Renamed to avoid SQLAlchemy reserved word
+    health_metadata = Column('metadata', JSON, default=dict)  # Renamed to avoid SQLAlchemy reserved word
 
 
 class PlatformWebhook(Base):
@@ -183,7 +183,7 @@ class PlatformWebhook(Base):
     consecutive_failures = Column(Integer, default=0)
     
     # Metadata
-    webhook_metadata = Column('metadata', JSON, default={})  # Renamed to avoid SQLAlchemy reserved word
+    webhook_metadata = Column('metadata', JSON, default=dict)  # Renamed to avoid SQLAlchemy reserved word
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     

@@ -25,7 +25,7 @@ class UsageMetric(Base):
     metric_type: Mapped[str] = mapped_column(String(50), nullable=False)
     value: Mapped[Decimal] = mapped_column(DECIMAL(20, 4), nullable=False, default=1.0)
     count: Mapped[int] = mapped_column(Integer, default=1)
-    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, default={})  # Changed from metadata
+    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, default=dict)  # Changed from metadata
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
     
     __table_args__ = (
@@ -98,8 +98,8 @@ class LicenseCache(Base):
     
     tenant_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     edition: Mapped[str] = mapped_column(String(50), nullable=False)
-    features: Mapped[Dict[str, Any]] = mapped_column(JSONB, default={})
-    limits: Mapped[Dict[str, Any]] = mapped_column(JSONB, default={})
+    features: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+    limits: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     cached_at: Mapped[datetime] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
     
@@ -119,7 +119,7 @@ class BillingEvent(Base):
     amount: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(10, 2))
     currency: Mapped[Optional[str]] = mapped_column(String(3))
     status: Mapped[str] = mapped_column(String(50), nullable=False)
-    event_data: Mapped[Dict[str, Any]] = mapped_column(JSONB, default={})
+    event_data: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
     
     __table_args__ = (

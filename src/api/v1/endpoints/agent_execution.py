@@ -16,13 +16,12 @@ from core.database import get_db
 from core.security import get_current_active_user
 from models.user import User
 from services.agent_config_service import AgentConfigService
-from services.agent_execution_basic import BasicAgentExecutor
+from services.agent_execution_basic import _basic_executor as executor
 
 router = APIRouter()
 
 # Initialize services
 config_service = AgentConfigService()
-executor = BasicAgentExecutor()
 
 
 # Request/Response schemas

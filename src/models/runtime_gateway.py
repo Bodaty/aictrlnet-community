@@ -23,12 +23,12 @@ class RuntimeInstance(Base):
     instance_name = Column(String(255), nullable=False)
     organization_id = Column(String, nullable=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=True)
-    capabilities = Column(JSON, default=[])
+    capabilities = Column(JSON, default=list)
     status = Column(String(50), default="active", nullable=False)  # active, suspended, deregistered
     last_heartbeat = Column(DateTime, nullable=True)
     api_key_hash = Column(String(64), nullable=False)  # SHA-256 hex
-    config = Column(JSON, default={})
-    resource_metadata = Column("resource_metadata", JSON, default={})
+    config = Column(JSON, default=dict)
+    resource_metadata = Column("resource_metadata", JSON, default=dict)
 
     # Denormalized counters
     total_evaluations = Column(Integer, default=0, nullable=False)
@@ -63,13 +63,13 @@ class ActionEvaluation(Base):
     risk_score = Column(Float, default=0.0)
     risk_level = Column(String(50), default="low")
     decision = Column(String(20), nullable=False)  # Community: always ALLOW
-    decision_reasons = Column(JSON, default=[])
-    policies_evaluated = Column(JSON, default=[])
+    decision_reasons = Column(JSON, default=list)
+    policies_evaluated = Column(JSON, default=list)
 
     evaluation_duration_ms = Column(Integer, nullable=True)
-    context_data = Column(JSON, default={})
-    risk_hints = Column(JSON, default={})
-    conditions = Column(JSON, default=[])
+    context_data = Column(JSON, default=dict)
+    risk_hints = Column(JSON, default=dict)
+    conditions = Column(JSON, default=list)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -98,7 +98,7 @@ class ActionReport(Base):
     result_summary = Column(Text, nullable=True)
     quality_score = Column(Float, nullable=True)
     duration_ms = Column(Integer, nullable=True)
-    resource_metadata = Column("resource_metadata", JSON, default={})
+    resource_metadata = Column("resource_metadata", JSON, default=dict)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

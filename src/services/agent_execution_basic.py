@@ -22,17 +22,18 @@ logger = logging.getLogger(__name__)
 
 class BasicAgentExecutor:
     """Basic agent executor for Community Edition."""
-    
+
     def __init__(self):
         self.config_service = AgentConfigService()
         self.execution_count = {}  # Track daily executions
-        
+
     async def execute_agent(
         self,
         db: AsyncSession,
         user_id: str,
         agent_name: str,
-        task: Dict[str, Any]
+        task: Dict[str, Any],
+        mcp_tools: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """Execute a basic agent task.
         
@@ -71,10 +72,15 @@ class BasicAgentExecutor:
                     "url": "/upgrade/business"
                 }
             }
-        
+
+        # Cleanup stale date keys (keep only today)
+        stale_keys = [k for k in self.execution_count if not k.endswith(f":{today}")]
+        for k in stale_keys:
+            del self.execution_count[k]
+
         # Prepare prompt for the agent
         prompt = self._prepare_prompt(agent_name, task)
-        
+
         # Use LLM service for execution with user preference resolution
         user_settings = await get_user_llm_settings(
             db=db,
@@ -83,43 +89,100 @@ class BasicAgentExecutor:
             max_tokens=500,  # Limit response size for Community
             stream_responses=False
         )
-        
+
+        context = {
+            "agent": agent_name,
+            "task_type": task.get("type", "general"),
+            "edition": "community"
+        }
+
         # Execute using LLM service
         try:
-            result = await llm_service.generate(
-                prompt=prompt,
-                user_settings=user_settings,
-                context={
+            if mcp_tools:
+                # Tool-aware execution: convert MCP tools and use generate_with_tools
+                from llm.models import ToolDefinition
+                tool_definitions = []
+                handler_map = {}
+                for tool in mcp_tools:
+                    td = ToolDefinition(
+                        name=tool["name"],
+                        description=tool.get("description", ""),
+                        parameters=tool.get("parameters", {}),
+                        category="mcp"
+                    )
+                    tool_definitions.append(td)
+                    if "handler" in tool and callable(tool["handler"]):
+                        handler_map[tool["name"]] = tool["handler"]
+
+                result = await llm_service.generate_with_tools(
+                    prompt=prompt,
+                    tools=tool_definitions,
+                    user_settings=user_settings,
+                    context=context
+                )
+
+                # Execute any tool calls the LLM made (single-round)
+                tool_results = []
+                if result.tool_calls:
+                    for tc in result.tool_calls:
+                        handler = handler_map.get(tc.name)
+                        if handler:
+                            try:
+                                tool_result = await handler(tc.arguments)
+                                tool_results.append({"tool": tc.name, "result": tool_result})
+                            except Exception as e:
+                                tool_results.append({"tool": tc.name, "error": str(e)})
+
+                output_text = result.text or ""
+                if not output_text and tool_results:
+                    output_text = f"Executed {len(tool_results)} MCP tool(s)"
+
+                self.execution_count[user_key] += 1
+                execution_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+
+                return {
+                    "success": True,
+                    "result": {
+                        "output": output_text,
+                        "model": result.model_used or "unknown",
+                        "tokens": result.tokens_used or 0
+                    },
+                    "mcp_tools_used": [tr["tool"] for tr in tool_results],
+                    "tool_results": tool_results,
                     "agent": agent_name,
-                    "task_type": task.get("type", "general"),
+                    "execution_time_ms": execution_time,
+                    "remaining_executions": 100 - self.execution_count[user_key],
                     "edition": "community"
                 }
-            )
-            
-            # Increment execution count
-            self.execution_count[user_key] += 1
-            
-            # Calculate execution time
-            execution_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-            
-            return {
-                "success": True,
-                "result": {
-                    "output": result.text if hasattr(result, 'text') else str(result),
-                    "model": result.model_used if hasattr(result, 'model_used') else "unknown",
-                    "tokens": result.tokens_used if hasattr(result, 'tokens_used') else 0
-                },
-                "agent": agent_name,
-                "execution_time_ms": execution_time,
-                "remaining_executions": 100 - self.execution_count[user_key],
-                "edition": "community"
-            }
-            
+            else:
+                # Standard execution without tools
+                result = await llm_service.generate(
+                    prompt=prompt,
+                    user_settings=user_settings,
+                    context=context
+                )
+
+                self.execution_count[user_key] += 1
+                execution_time = int((datetime.utcnow() - start_time).total_seconds() * 1000)
+
+                return {
+                    "success": True,
+                    "result": {
+                        "output": result.text if hasattr(result, 'text') else str(result),
+                        "model": result.model_used if hasattr(result, 'model_used') else "unknown",
+                        "tokens": result.tokens_used if hasattr(result, 'tokens_used') else 0
+                    },
+                    "agent": agent_name,
+                    "execution_time_ms": execution_time,
+                    "remaining_executions": 100 - self.execution_count[user_key],
+                    "edition": "community"
+                }
+
         except Exception as e:
             logger.error(f"Agent execution failed: {str(e)}")
             return {
                 "success": False,
-                "error": f"All connection attempts failed",
+                "error": "All connection attempts failed",
                 "agent": agent_name
             }
     
@@ -277,13 +340,17 @@ class BasicAgentExecutor:
         return descriptions.get(agent_name, "AI agent")
 
 
+# Module-level singleton — shared across all callers for rate limit enforcement
+_basic_executor = BasicAgentExecutor()
+
+
 class AgentExecutionService:
     """Config load/save/execute wrapper for MCP agent endpoints."""
 
     def __init__(self, db: AsyncSession, user_id: str = None):
         self.db = db
         self.user_id = user_id
-        self._executor = BasicAgentExecutor()
+        self._executor = _basic_executor
 
     async def get_agent_config(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Load per-agent MCP config from User.preferences."""
@@ -348,9 +415,14 @@ class AgentExecutionService:
         config_override: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Execute agent via BasicAgentExecutor."""
+        mcp_tools = None
+        if config_override and config_override.get("tools"):
+            mcp_tools = config_override["tools"]
+
         return await self._executor.execute_agent(
             db=self.db,
             user_id=self.user_id or "",
             agent_name=agent_id,
-            task=task
+            task=task,
+            mcp_tools=mcp_tools
         )
