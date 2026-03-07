@@ -38,6 +38,7 @@ class KnowledgeItem:
 _shared_keyword_index = None
 _shared_document_frequency = None
 _shared_total_documents = 0
+_shared_indexer_index = None  # Cache the indexer's built index too
 _shared_index_built_at = 0
 _KNOWLEDGE_INDEX_TTL = 300  # 5-minute TTL
 
@@ -67,7 +68,7 @@ class KnowledgeRetrievalService:
 
         import time as _time
 
-        global _shared_keyword_index, _shared_document_frequency, _shared_total_documents, _shared_index_built_at
+        global _shared_keyword_index, _shared_document_frequency, _shared_total_documents, _shared_indexer_index, _shared_index_built_at
 
         # Import here to avoid circular dependencies
         from services.knowledge.system_manifest_service import get_manifest_service
@@ -76,7 +77,6 @@ class KnowledgeRetrievalService:
         # Initialize manifest and indexer
         self.manifest_service = await get_manifest_service(self.db)
         self.indexer = KnowledgeIndexer(self.db)
-        await self.indexer.build_index()
 
         now = _time.time()
         if _shared_keyword_index is not None and (now - _shared_index_built_at) < _KNOWLEDGE_INDEX_TTL:
@@ -84,12 +84,16 @@ class KnowledgeRetrievalService:
             self.keyword_index = _shared_keyword_index
             self.document_frequency = _shared_document_frequency
             self.total_documents = _shared_total_documents
+            if _shared_indexer_index is not None:
+                self.indexer.index = _shared_indexer_index
         else:
             # Build fresh index and cache it
+            await self.indexer.build_index()
             await self._build_keyword_index()
             _shared_keyword_index = self.keyword_index
             _shared_document_frequency = self.document_frequency
             _shared_total_documents = self.total_documents
+            _shared_indexer_index = self.indexer.index
             _shared_index_built_at = now
 
         self._initialized = True

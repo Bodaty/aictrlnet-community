@@ -3017,16 +3017,16 @@ class ToolDispatcher:
         # Build edition-aware general help
         edition_label = edition.capitalize()
         general_help = (
-            f"Welcome to AICtrlNet ({edition_label} Edition) — an AI-powered workflow automation platform. "
-            f"Here's what you can do:\n\n"
-            f"- **Workflow Templates**: Browse ready-made automation templates across categories like sales, marketing, HR, finance, and IT. "
-            f"Ask me to list or search templates to get started.\n"
-            f"- **20+ Integrations**: Connect to AI models (OpenAI, Claude, Ollama), communication tools (Slack, Discord, Email), "
-            f"CRMs (Salesforce, HubSpot), payment processors (Stripe), and more.\n"
-            f"- **Personal AI Agent**: Your agent learns your preferences through an onboarding interview and adapts to your work style.\n"
-            f"- **Task Management**: Create, track, and manage tasks with priority and status tracking.\n"
-            f"- **AI Governance**: Monitor AI model risk, bias, and compliance across your organization.\n\n"
-            f"Try asking: \"Show me workflow templates\", \"What integrations are available?\", or \"Start onboarding\"."
+            f"Hey there! I'm HitLai, your AI assistant on the AICtrlNet {edition_label} Edition. "
+            f"I'm here to help you automate your work and get things done faster.\n\n"
+            f"Here are some things I can help you with:\n\n"
+            f"- **Build workflows** from scratch or choose from 50+ ready-made templates across sales, marketing, HR, finance, IT, and more\n"
+            f"- **Connect your tools** — I support 20+ integrations including AI models, Slack, Email, Salesforce, HubSpot, and Stripe\n"
+            f"- **Manage tasks** with priorities and status tracking to keep your work organized\n"
+            f"- **Set up your personal AI agent** that learns your preferences and adapts to how you work\n"
+            f"- **Monitor AI governance** — track risk, bias, and compliance across your AI models\n\n"
+            f"Want to dive in? You could try \"Show me workflow templates\", \"Create a sales pipeline workflow\", "
+            f"or \"Start onboarding\" to set up your personal agent. What sounds good?"
         )
 
         help_content = {

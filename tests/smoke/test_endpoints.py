@@ -43,6 +43,7 @@ _501_specs = discover_501_routes(_app)
 _external_specs = discover_external_service_routes(_app)
 
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("spec", _specs, ids=[s.test_id for s in _specs])
 async def test_no_500(spec):

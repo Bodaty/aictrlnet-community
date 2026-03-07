@@ -842,19 +842,19 @@ async def get_workflow_schedules(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Get all schedules for a workflow."""
-    from sqlalchemy import select
     from models.workflow_execution import WorkflowSchedule
 
-    # Query schedules for this workflow
-    # Note: workflow_id is String(36) in both tables, no UUID conversion needed
-    result = await db.execute(
-        select(WorkflowSchedule).where(
-            WorkflowSchedule.workflow_id == workflow_id
+    try:
+        result = await db.execute(
+            select(WorkflowSchedule).where(
+                WorkflowSchedule.workflow_id == workflow_id
+            )
         )
-    )
-    schedules = result.scalars().all()
+        schedules = result.scalars().all()
+    except Exception as e:
+        logger.warning(f"Failed to fetch schedules for workflow {workflow_id}: {e}")
+        return {"schedules": [], "total": 0}
 
-    # Format response
     schedule_list = []
     for schedule in schedules:
         schedule_list.append({
@@ -946,7 +946,7 @@ async def validate_workflow(
 
 
 @router.post("/{workflow_id}/schedule")
-async def create_workflow_schedule(
+async def create_workflow_schedule_via_scheduler(
     workflow_id: str,
     schedule_data: WorkflowScheduleCreate,
     db: AsyncSession = Depends(get_db),

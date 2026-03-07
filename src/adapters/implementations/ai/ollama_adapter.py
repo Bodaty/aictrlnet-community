@@ -896,34 +896,37 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
 
                     message = data.get("message", {})
 
-                    # Stream text deltas
+                    # Extract tool calls from ANY chunk (Ollama may send them
+                    # on non-done chunks depending on prompt length/model)
+                    if "tool_calls" in message and message["tool_calls"]:
+                        for tc in message["tool_calls"]:
+                            function = tc.get("function", {})
+                            tool_name = function.get("name")
+                            tool_args = function.get("arguments", {})
+                            if isinstance(tool_args, str):
+                                try:
+                                    tool_args = json.loads(tool_args)
+                                except json.JSONDecodeError:
+                                    tool_args = {}
+                            if tool_name:
+                                tool_calls.append({
+                                    "name": tool_name,
+                                    "arguments": tool_args,
+                                    "id": str(uuid.uuid4())
+                                })
+
+                    # Stream text deltas (only if no tool_calls on this chunk —
+                    # when Ollama falls back to text-based tool output, skip it)
                     content = message.get("content", "")
-                    if content:
+                    if content and not tool_calls:
                         accumulated_text += content
                         yield ToolCallingStreamEvent(type="text_delta", text=content)
 
-                    # Extract tool calls from final message (done: true)
+                    # Capture token counts from done chunk
                     if data.get("done"):
                         input_tokens = data.get("prompt_eval_count", 0)
                         output_tokens = data.get("eval_count", 0)
                         done_reason = data.get("done_reason")
-
-                        if "tool_calls" in message and message["tool_calls"]:
-                            for tc in message["tool_calls"]:
-                                function = tc.get("function", {})
-                                tool_name = function.get("name")
-                                tool_args = function.get("arguments", {})
-                                if isinstance(tool_args, str):
-                                    try:
-                                        tool_args = json.loads(tool_args)
-                                    except json.JSONDecodeError:
-                                        tool_args = {}
-                                if tool_name:
-                                    tool_calls.append({
-                                        "name": tool_name,
-                                        "arguments": tool_args,
-                                        "id": str(uuid.uuid4())
-                                    })
 
             # Yield tool_calls event if any
             if tool_calls:
