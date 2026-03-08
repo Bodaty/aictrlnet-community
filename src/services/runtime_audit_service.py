@@ -71,8 +71,9 @@ class RuntimeAuditService:
         instance_id = str(uuid.uuid4())
         now = datetime.utcnow()
 
-        user_id = user.get("id") or getattr(user, "id", None)
-        org_id = user.get("organization_id") or getattr(user, "organization_id", None)
+        from core.user_utils import get_safe_user_id, get_safe_attr
+        user_id = get_safe_user_id(user)
+        org_id = get_safe_attr(user, 'organization_id')
 
         instance = RuntimeInstance(
             id=instance_id,

@@ -13,7 +13,7 @@ from core.dependencies import get_current_user_safe, require_superuser
 from models.user import User
 from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus
 from schemas.user import UserCreate, UserUpdate, UserResponse
-from api.v1.endpoints._auth_helpers import get_safe_user_id
+from api.v1.endpoints._auth_helpers import get_safe_user_id, get_safe_attr
 
 # Import sub-routers
 from .api_keys import router as api_keys_router
@@ -96,9 +96,9 @@ async def get_current_user(
             "trial_days_remaining": trial_days_remaining,
             "trial_end": trial_end_str,
             "metadata": {
-                "last_login": str(current_user.last_login_at) if hasattr(current_user, 'last_login_at') and current_user.last_login_at else None,
-                "created_at": str(current_user.created_at) if hasattr(current_user, 'created_at') else None,
-                "preferences": current_user.preferences if hasattr(current_user, 'preferences') and current_user.preferences else {
+                "last_login": str(get_safe_attr(current_user, 'last_login_at')) if get_safe_attr(current_user, 'last_login_at') else None,
+                "created_at": str(get_safe_attr(current_user, 'created_at')) if get_safe_attr(current_user, 'created_at') else None,
+                "preferences": get_safe_attr(current_user, 'preferences') or {
                     "language": "en",
                     "timezone": "UTC",
                     "theme": "light"
@@ -164,9 +164,9 @@ async def get_current_user_preferences(
 ):
     """Get current user's preferences."""
     # Handle both User object and dict
-    if hasattr(current_user, 'preferences'):
+    if get_safe_attr(current_user, 'preferences') is not None:
         # User object - return actual preferences from database
-        preferences = current_user.preferences or {}
+        preferences = get_safe_attr(current_user, 'preferences') or {}
         
         # Merge with defaults to ensure all expected fields exist
         default_preferences = {
@@ -506,7 +506,7 @@ async def list_users(
             "is_active": user.is_active,
             "is_superuser": user.is_superuser,
             "created_at": user.created_at.isoformat() if user.created_at else None,
-            "last_login": user.last_login_at.isoformat() if hasattr(user, 'last_login_at') and user.last_login_at else None
+            "last_login": user.last_login_at.isoformat() if get_safe_attr(user, 'last_login_at') else None
         })
     
     return {
@@ -551,7 +551,7 @@ async def get_user(
         "is_active": user.is_active,
         "is_superuser": user.is_superuser,
         "created_at": user.created_at.isoformat() if user.created_at else None,
-        "last_login": user.last_login_at.isoformat() if hasattr(user, 'last_login_at') and user.last_login_at else None,
+        "last_login": user.last_login_at.isoformat() if get_safe_attr(user, 'last_login_at') else None,
         "metadata": {
             "preferences": {
                 "language": "en",
@@ -661,7 +661,7 @@ async def update_user(
         "is_active": user.is_active,
         "is_superuser": user.is_superuser,
         "created_at": user.created_at.isoformat() if user.created_at else None,
-        "last_login": user.last_login_at.isoformat() if hasattr(user, 'last_login_at') and user.last_login_at else None
+        "last_login": user.last_login_at.isoformat() if get_safe_attr(user, 'last_login_at') else None
     }
 
 

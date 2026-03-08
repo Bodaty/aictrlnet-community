@@ -32,6 +32,7 @@ from schemas.conversation import (
     ConversationIntentResponse,
     ConversationPatternResponse
 )
+from api.v1.endpoints._auth_helpers import get_safe_attr
 from core.upgrade_hints import attach_upgrade_hints
 from services.enhanced_conversation_manager import EnhancedConversationService
 from services.action_orchestrator import ActionOrchestrator
@@ -314,9 +315,7 @@ async def send_message(
         raise HTTPException(status_code=400, detail="Session is not active")
     
     service = EnhancedConversationService(db)
-    user_preferences = None
-    if hasattr(current_user, 'preferences') and current_user.preferences:
-        user_preferences = current_user.preferences
+    user_preferences = get_safe_attr(current_user, 'preferences') or None
     response_data = await _collect_v2_response(service, session_id, message.content, str(current_user.id), db, user_preferences=user_preferences)
 
     return response_data
@@ -344,9 +343,7 @@ async def send_message_without_session(
     else:
         session = await service.create_session(current_user.id)
 
-    user_preferences = None
-    if hasattr(current_user, 'preferences') and current_user.preferences:
-        user_preferences = current_user.preferences
+    user_preferences = get_safe_attr(current_user, 'preferences') or None
 
     response_data = await _collect_v2_response(
         service, session.id, message.content, str(current_user.id), db,
@@ -842,9 +839,7 @@ async def chat_v5(
             enhanced_service = EnhancedConversationService(db)
 
             # Extract user model preferences for tier-based selection
-            user_preferences = None
-            if hasattr(current_user, 'preferences') and current_user.preferences:
-                user_preferences = current_user.preferences
+            user_preferences = get_safe_attr(current_user, 'preferences') or None
 
             async for event in enhanced_service.process_message_v2(
                 session_id=session_id,

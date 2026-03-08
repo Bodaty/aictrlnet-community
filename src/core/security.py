@@ -163,11 +163,8 @@ async def get_current_active_user(current_user: "User" = Depends(get_current_use
     This function handles both User objects and special development cases
     to prevent UUID conversion errors in development.
     """
-    # Handle the dev token case where current_user might have special attributes
-    if hasattr(current_user, 'is_active'):
-        if not current_user.is_active:
-            raise HTTPException(status_code=400, detail="Inactive user")
-    # If no is_active attribute (shouldn't happen), assume active
+    if not get_safe_attr(current_user, 'is_active', True):
+        raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
 
