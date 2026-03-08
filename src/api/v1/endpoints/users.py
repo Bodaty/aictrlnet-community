@@ -13,6 +13,7 @@ from core.dependencies import get_current_user_safe, require_superuser
 from models.user import User
 from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus
 from schemas.user import UserCreate, UserUpdate, UserResponse
+from api.v1.endpoints._auth_helpers import get_safe_user_id
 
 # Import sub-routers
 from .api_keys import router as api_keys_router
@@ -391,7 +392,7 @@ async def update_app_settings(
             }
 
     # Fallback for dict or if user not found
-    user_id = current_user.get("sub", "anonymous") if isinstance(current_user, dict) else str(current_user.id)
+    user_id = get_safe_user_id(current_user) or "anonymous"
     return {
         **settings,
         "userId": user_id,

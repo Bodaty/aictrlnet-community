@@ -27,6 +27,7 @@ from schemas.marketplace import (
     MarketplaceUninstallResponse,
 )
 from services.marketplace_service import MarketplaceService
+from api.v1.endpoints._auth_helpers import get_safe_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ async def install_item(
     """Install a marketplace item. Community edition limits to 10 active installs."""
     if request is None:
         request = MarketplaceInstallRequest()
-    user_id = current_user.get("id") or getattr(current_user, "id", None)
+    user_id = get_safe_user_id(current_user)
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -142,7 +143,7 @@ async def uninstall_item(
     current_user: Dict[str, Any] = Depends(get_current_user_safe),
 ):
     """Uninstall a previously installed marketplace item."""
-    user_id = current_user.get("id") or getattr(current_user, "id", None)
+    user_id = get_safe_user_id(current_user)
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -171,7 +172,7 @@ async def my_installations(
     current_user: Dict[str, Any] = Depends(get_current_user_safe),
 ):
     """List the current user's marketplace installations."""
-    user_id = current_user.get("id") or getattr(current_user, "id", None)
+    user_id = get_safe_user_id(current_user)
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -212,7 +213,7 @@ async def create_review(
     current_user: Dict[str, Any] = Depends(get_current_user_safe),
 ):
     """Submit a review for a marketplace item (one review per user per item)."""
-    user_id = current_user.get("id") or getattr(current_user, "id", None)
+    user_id = get_safe_user_id(current_user)
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

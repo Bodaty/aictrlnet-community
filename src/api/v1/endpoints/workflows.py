@@ -36,6 +36,7 @@ from services.workflow_template_service import create_workflow_template_service
 from services.workflow_execution import WorkflowExecutionService
 from services.node_catalog import DynamicNodeCatalogService
 from services.workflow_scheduler import WorkflowScheduler as _CommunityScheduler, TriggerType
+from api.v1.endpoints._auth_helpers import get_safe_user_id, get_safe_attr
 
 # Edition-aware scheduler: use Business scheduler if available (has cron/webhook/event support)
 try:
@@ -69,7 +70,7 @@ async def get_workflow_create_info(
     
     from schemas.workflow_templates import TemplateListRequest
     request = TemplateListRequest(
-        edition=getattr(current_user, "edition", "community"),
+        edition=get_safe_attr(current_user, "edition", "community"),
         include_system=True,
         include_public=True,
         include_private=False,
@@ -77,7 +78,7 @@ async def get_workflow_create_info(
     )
     
     templates, total = await template_service.list_templates(
-        db, current_user.get("id", "unknown"), request
+        db, get_safe_user_id(current_user) or "unknown", request
     )
     
     # Get available node types from registry
@@ -101,9 +102,9 @@ async def get_workflow_catalog(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Get the dynamic workflow node catalog with available components."""
-    tenant_id = getattr(current_user, "tenant_id", None) or get_current_tenant_id()
-    edition = getattr(current_user, "edition", "community")
-    
+    tenant_id = get_safe_attr(current_user, "tenant_id", None) or get_current_tenant_id()
+    edition = get_safe_attr(current_user, "edition", "community")
+
     # Use dynamic catalog service
     catalog_service = DynamicNodeCatalogService(db)
     catalog = await catalog_service.get_catalog(tenant_id, edition)
@@ -200,7 +201,7 @@ async def create_workflow(
 ):
     """Create a new workflow."""
     # Check workflow limit
-    tenant_id = getattr(current_user, "tenant_id", None) or get_current_tenant_id()
+    tenant_id = get_safe_attr(current_user, "tenant_id", None) or get_current_tenant_id()
     enforcer = LicenseEnforcer(db)
     await enforcer.check_limit(
         tenant_id=tenant_id,
@@ -226,7 +227,7 @@ async def create_workflow(
         result = await template_service.instantiate_template(
             db=db,
             template_id=workflow_data.template_id,
-            user_id=current_user.id,
+            user_id=get_safe_user_id(current_user),
             request=instantiate_request
         )
 
@@ -297,7 +298,7 @@ async def create_workflow_from_template(
 ):
     """Create a workflow from a template."""
     # Check workflow limit
-    tenant_id = getattr(current_user, "tenant_id", None) or get_current_tenant_id()
+    tenant_id = get_safe_attr(current_user, "tenant_id", None) or get_current_tenant_id()
     enforcer = LicenseEnforcer(db)
     await enforcer.check_limit(
         tenant_id=tenant_id,
@@ -326,7 +327,7 @@ async def create_workflow_from_template(
     result = await template_service.instantiate_template(
         db=db,
         template_id=template_uuid,
-        user_id=current_user.id if hasattr(current_user, 'id') else current_user.get('id'),
+        user_id=get_safe_user_id(current_user),
         request=instantiate_request
     )
 
@@ -564,7 +565,7 @@ async def execute_workflow(
 ):
     """Execute a workflow."""
     # Check execution limit
-    tenant_id = getattr(current_user, "tenant_id", None) or get_current_tenant_id()
+    tenant_id = get_safe_attr(current_user, "tenant_id", None) or get_current_tenant_id()
     enforcer = LicenseEnforcer(db)
     await enforcer.check_limit(
         tenant_id=tenant_id,
@@ -593,7 +594,7 @@ async def execute_workflow(
     trigger_metadata = {**(request.trigger_metadata or {}), "is_dry_run": request.dry_run}
 
     # Create execution with tenant/user context for RLS
-    user_id = getattr(current_user, "id", None) or (current_user.get("id") if isinstance(current_user, dict) else None)
+    user_id = get_safe_user_id(current_user)
 
     execution = await execution_service.create_execution(
         workflow_id=workflow_id,  # Already a string
@@ -629,12 +630,7 @@ async def execute_workflow(
         initiated_by = "ai_agent" if is_ai_agent else "human"
         
         # Get initiator ID safely
-        if hasattr(current_user, "get"):
-            user_id = current_user.get("id", "unknown")
-        elif hasattr(current_user, "id"):
-            user_id = str(current_user.id)
-        else:
-            user_id = "unknown"
+        user_id = get_safe_user_id(current_user) or "unknown"
         
         # Convert to UUID or use default
         if user_id == "unknown" or not user_id:
@@ -909,7 +905,7 @@ async def validate_workflow(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Validate a workflow definition before saving or executing."""
-    edition = getattr(current_user, "edition", "community")
+    edition = get_safe_attr(current_user, "edition", "community")
     
     nodes = workflow_definition.get("nodes", [])
     edges = workflow_definition.get("edges", [])
@@ -1042,8 +1038,8 @@ async def trigger_workflow_manual(
     scheduler = WorkflowScheduler(db)
 
     import uuid
-    user_id = getattr(current_user, "id", None) or (current_user.get("id") if isinstance(current_user, dict) else None)
-    tenant_id = getattr(current_user, "tenant_id", None) or get_current_tenant_id()
+    user_id = get_safe_user_id(current_user)
+    tenant_id = get_safe_attr(current_user, "tenant_id", None) or get_current_tenant_id()
     try:
         execution = await scheduler.trigger_workflow(
             workflow_id=uuid.UUID(workflow_id),
@@ -1111,7 +1107,7 @@ async def create_manual_workflow(
                 'user_options': user_options,
                 'context': {
                     'category': workflow_category,
-                    'user_id': getattr(current_user, 'id', 'anonymous'),
+                    'user_id': get_safe_user_id(current_user) or 'anonymous',
                     'edition': 'community'  # Will be overridden by pipeline based on actual edition
                 }
             }
@@ -1157,7 +1153,7 @@ async def create_manual_workflow(
             definition=final_definition,
             active=True,
             tags=["manual_created", workflow_category],
-            tenant_id=getattr(current_user, 'tenant_id', None) or get_current_tenant_id()
+            tenant_id=get_safe_attr(current_user, 'tenant_id', None) or get_current_tenant_id()
         )
         
         db.add(workflow)
@@ -1174,7 +1170,7 @@ async def create_manual_workflow(
                 workflow_id=workflow.id,
                 workflow_config=final_definition,
                 initiated_by='human',  # Manual creation is human-initiated
-                initiator_id=getattr(current_user, 'id', None),
+                initiator_id=get_safe_user_id(current_user),
                 modifications_made={
                     'source': 'manual',
                     'category': workflow_category,
@@ -1221,10 +1217,10 @@ async def create_manual_workflow(
         # Track usage
         usage_tracker = await get_usage_tracker(db)
         await usage_tracker.track_usage(
-            tenant_id=getattr(current_user, 'tenant_id', None) or get_current_tenant_id(),
+            tenant_id=get_safe_attr(current_user, 'tenant_id', None) or get_current_tenant_id(),
             metric_type='workflow_manual_creation',
             value=1.0,
-            metadata={'workflow_id': str(workflow.id), 'user_id': getattr(current_user, 'id', 'anonymous')}
+            metadata={'workflow_id': str(workflow.id), 'user_id': get_safe_user_id(current_user) or 'anonymous'}
         )
         
         return WorkflowResponse.model_validate(workflow)

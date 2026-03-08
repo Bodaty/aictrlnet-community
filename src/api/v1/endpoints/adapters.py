@@ -17,6 +17,7 @@ from schemas.adapter import (
     AdapterAvailabilityResponse,
 )
 from services.adapter import AdapterService
+from api.v1.endpoints._auth_helpers import get_safe_attr
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -46,7 +47,7 @@ async def discover_adapters(
     This endpoint will be removed in a future version.
     """
     # Log usage of deprecated endpoint for monitoring
-    user_email = getattr(current_user, 'email', 'unknown') if hasattr(current_user, 'email') else current_user.get('email', 'unknown') if isinstance(current_user, dict) else 'unknown'
+    user_email = get_safe_attr(current_user, 'email', 'unknown')
     logger.warning(
         f"DEPRECATED endpoint /adapters/discover called by user {user_email} "
         f"with params: category={category}, search={search}, edition={edition}"
