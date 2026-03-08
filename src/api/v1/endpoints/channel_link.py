@@ -24,6 +24,7 @@ from schemas.channel_link import (
     ChannelLinkResponse,
     ChannelUnlinkRequest,
 )
+from api.v1.endpoints._auth_helpers import get_safe_user_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -60,7 +61,7 @@ async def request_link_code(
 
     The user must then send this code via the target channel within 10 minutes.
     """
-    user_id = current_user.id if hasattr(current_user, "id") else current_user.get("id")
+    user_id = get_safe_user_id(current_user)
 
     if body.channel_type not in VALID_CHANNELS:
         raise HTTPException(status_code=400, detail=f"Invalid channel. Must be one of: {', '.join(sorted(VALID_CHANNELS))}")
@@ -102,7 +103,7 @@ async def list_linked_channels(
     current_user=Depends(get_current_user),
 ):
     """List all active channel links for the current user."""
-    user_id = current_user.id if hasattr(current_user, "id") else current_user.get("id")
+    user_id = get_safe_user_id(current_user)
 
     result = await db.execute(
         select(ChannelLink).filter(
@@ -119,7 +120,7 @@ async def unlink_channel(
     current_user=Depends(get_current_user),
 ):
     """Unlink a channel identity from the current user's account."""
-    user_id = current_user.id if hasattr(current_user, "id") else current_user.get("id")
+    user_id = get_safe_user_id(current_user)
 
     result = await db.execute(
         select(ChannelLink).filter(

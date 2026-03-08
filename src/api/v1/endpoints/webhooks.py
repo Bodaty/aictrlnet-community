@@ -13,6 +13,7 @@ from schemas import (
     SuccessResponse
 )
 from services.webhook_service import WebhookService
+from api.v1.endpoints._auth_helpers import get_safe_user_id
 
 router = APIRouter()
 
@@ -35,7 +36,7 @@ async def list_webhooks(
     - * - All events
     """
     service = WebhookService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     return await service.list_user_webhooks(
         user_id=user_id,
         is_active=is_active,
@@ -61,7 +62,7 @@ async def create_webhook(
     - * - All events
     """
     service = WebhookService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     return await service.create_webhook(
         user_id=user_id,
         data=data
@@ -76,7 +77,7 @@ async def get_webhook(
 ):
     """Get details of a specific webhook."""
     service = WebhookService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     webhook = await service.get_webhook(
         user_id=user_id,
         webhook_id=webhook_id
@@ -101,7 +102,7 @@ async def update_webhook(
     Note: Changing the URL will reset failure statistics.
     """
     service = WebhookService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     webhook = await service.update_webhook(
         user_id=user_id,
         webhook_id=webhook_id,
@@ -128,7 +129,7 @@ async def test_webhook(
     The test delivery is not recorded in the delivery history.
     """
     service = WebhookService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     
     # Verify ownership
     webhook = await service.get_webhook(user_id=user_id, webhook_id=webhook_id)
@@ -166,7 +167,7 @@ async def enable_webhook(
 ):
     """Enable a disabled webhook."""
     service = WebhookService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     success = await service.enable_webhook(
         user_id=user_id,
         webhook_id=webhook_id
@@ -189,7 +190,7 @@ async def disable_webhook(
 ):
     """Disable a webhook without deleting it."""
     service = WebhookService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     success = await service.disable_webhook(
         user_id=user_id,
         webhook_id=webhook_id
@@ -218,7 +219,7 @@ async def list_webhook_deliveries(
     Returns the most recent deliveries first.
     """
     service = WebhookService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     
     # Verify ownership
     webhook = await service.get_webhook(user_id=user_id, webhook_id=webhook_id)
@@ -244,7 +245,7 @@ async def delete_webhook(
     This will also delete all delivery history for the webhook.
     """
     service = WebhookService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     
     # Verify ownership
     webhook = await service.get_webhook(user_id=user_id, webhook_id=webhook_id)

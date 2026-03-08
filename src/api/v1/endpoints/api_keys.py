@@ -12,6 +12,7 @@ from schemas import (
     SuccessResponse
 )
 from services.api_key_service import APIKeyService
+from api.v1.endpoints._auth_helpers import get_safe_user_id
 
 router = APIRouter()
 
@@ -28,7 +29,7 @@ async def list_api_keys(
     Returns active keys by default. Set include_inactive=true to see all keys.
     """
     service = APIKeyService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     return await service.list_user_api_keys(
         user_id=user_id,
         include_inactive=include_inactive
@@ -56,7 +57,7 @@ async def create_api_key(
     - admin - Full administrative access
     """
     service = APIKeyService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     return await service.create_api_key(
         user_id=user_id,
         data=data
@@ -71,7 +72,7 @@ async def get_api_key(
 ):
     """Get details of a specific API key."""
     service = APIKeyService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     api_key = await service.get_api_key(
         user_id=user_id,
         key_id=key_id
@@ -96,7 +97,7 @@ async def update_api_key(
     Note: The key value itself cannot be changed.
     """
     service = APIKeyService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     api_key = await service.update_api_key(
         user_id=user_id,
         key_id=key_id,
@@ -122,7 +123,7 @@ async def revoke_api_key(
     Revoked keys cannot be used but are kept for audit purposes.
     """
     service = APIKeyService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     success = await service.revoke_api_key(
         user_id=user_id,
         key_id=key_id,
@@ -151,7 +152,7 @@ async def regenerate_api_key(
     **Important**: The new key is only shown once!
     """
     service = APIKeyService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     
     # Get old key
     old_key = await service.get_api_key(user_id=user_id, key_id=key_id)
@@ -192,7 +193,7 @@ async def delete_api_key(
     This action cannot be undone. Consider revoking instead.
     """
     service = APIKeyService(db)
-    user_id = current_user.id if hasattr(current_user, 'id') else current_user.get("id", current_user.get("sub"))
+    user_id = get_safe_user_id(current_user)
     
     # Verify ownership
     api_key = await service.get_api_key(user_id=user_id, key_id=key_id)

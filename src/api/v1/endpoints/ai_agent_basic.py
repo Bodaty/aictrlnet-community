@@ -34,7 +34,7 @@ def check_rate_limit(user_id: str, endpoint: str, daily_limit: int) -> bool:
 async def get_ai_agent_status_basic(
     response: Response,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user),
+    current_user=Depends(get_current_active_user),
 ):
     """
     Get basic AI agent system status (Community Edition).
@@ -100,7 +100,7 @@ async def get_ai_agent_status_basic(
 @router.get("/capabilities", response_model=Dict[str, Any])
 async def get_ai_agent_capabilities_basic(
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user),
+    current_user=Depends(get_current_active_user),
 ):
     """
     List available AI agent capabilities (Community Edition).
@@ -153,7 +153,7 @@ async def get_ai_agent_capabilities_basic(
 async def analyze_text_basic(
     request: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user),
+    current_user=Depends(get_current_active_user),
 ):
     """
     Basic NLP analysis (Community Edition).
@@ -209,7 +209,7 @@ async def analyze_text_basic(
 async def suggest_workflow_basic(
     request: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user),
+    current_user=Depends(get_current_active_user),
 ):
     """
     Basic workflow suggestions (Community Edition).

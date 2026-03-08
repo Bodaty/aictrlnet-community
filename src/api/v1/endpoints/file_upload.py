@@ -16,6 +16,7 @@ from core.security import get_current_user
 from core.tenant_context import get_current_tenant_id
 from models.staged_file import StagedFile
 from schemas.file_upload import FileUploadResponse, StagedFileResponse
+from api.v1.endpoints._auth_helpers import get_safe_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ async def upload_file(
     Optionally pass ``workflow_id`` to trigger a workflow execution with the
     uploaded file as input (``triggered_by="file_upload"``).
     """
-    user_id = current_user.id if hasattr(current_user, "id") else current_user.get("id", "unknown")
+    user_id = get_safe_user_id(current_user) or "unknown"
 
     # Sanitize filename
     safe_filename = _sanitize_filename(file.filename or "unnamed")
@@ -218,7 +219,7 @@ async def get_staged_file(
     current_user=Depends(get_current_user),
 ):
     """Get details of a staged file."""
-    user_id = current_user.id if hasattr(current_user, "id") else current_user.get("id", "unknown")
+    user_id = get_safe_user_id(current_user) or "unknown"
 
     result = await db.execute(
         select(StagedFile).filter(StagedFile.id == file_id, StagedFile.user_id == str(user_id))
