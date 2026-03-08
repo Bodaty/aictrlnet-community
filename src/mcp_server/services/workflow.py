@@ -183,17 +183,17 @@ class MCPWorkflowService:
         workflows = await self.workflow_service.list_workflows(
             filters={"metadata.created_via": "mcp"},
             limit=limit,
-            offset=offset
+            offset=offset,
         )
-        
+
         return {
             "workflows": [
                 {
                     "workflow_id": str(wf.id),
                     "name": wf.name,
-                    "status": wf.status,
+                    "status": "active" if wf.active else "inactive",
                     "created_at": wf.created_at.isoformat(),
-                    "metadata": wf.metadata
+                    "metadata": wf.workflow_metadata or {}
                 }
                 for wf in workflows
             ],
