@@ -21,10 +21,14 @@ from core.security import (
 from core.config import get_settings
 from core.cache import get_cache
 from core.tenant_context import DEFAULT_TENANT_ID, get_current_tenant_id
+import logging
+
 from models import User
-from models.subscription import Subscription, SubscriptionStatus, BillingPeriod
+from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus, BillingPeriod
 from services.mfa_service import MFAService
 from schemas.mfa import LoginRequest, LoginResponse, MFAVerifyRequest, MFAVerifyResponse
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
@@ -120,22 +124,33 @@ async def register(
         email_verification_token=verification_token,
     )
 
-    # Auto-create 14-day Business trial subscription (no credit card required)
-    trial_subscription = Subscription(
-        id=str(uuid.uuid4()),
-        user_id=user_id,
-        tenant_id=DEFAULT_TENANT_ID,
-        plan_id="business_starter",
-        status=SubscriptionStatus.TRIALING,
-        billing_period=BillingPeriod.MONTHLY,
-        started_at=now,
-        current_period_start=now,
-        current_period_end=trial_end,
-        trial_end=trial_end,
-    )
-
     db.add(user)
-    db.add(trial_subscription)
+
+    # Auto-create 14-day Business trial subscription (no credit card required)
+    try:
+        plan_result = await db.execute(
+            select(SubscriptionPlan).where(SubscriptionPlan.name == "business_starter")
+        )
+        plan = plan_result.scalar_one_or_none()
+        if plan:
+            trial_subscription = Subscription(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                plan_id=plan.id,
+                status=SubscriptionStatus.TRIALING,
+                billing_period=BillingPeriod.MONTHLY,
+                started_at=now,
+                current_period_start=now,
+                current_period_end=trial_end,
+                trial_end=trial_end,
+            )
+            db.add(trial_subscription)
+        else:
+            logger.warning("Could not create trial subscription — business_starter plan not seeded")
+    except Exception:
+        logger.warning("Could not create trial subscription — plan lookup failed")
+
     await db.commit()
     await db.refresh(user)
 

@@ -44,6 +44,7 @@ from .endpoints import (
     canvas,  # A2UI Canvas (render, auto-detect, templates)
     marketplace,  # Marketplace (browse, search, install)
     personal_agent,  # Personal Agent Hub
+    pricing,  # Public pricing/plans endpoint
 )
 from . import platform_integration
 
@@ -144,11 +145,56 @@ api_router.include_router(runtime_gateway_basic.router, prefix="/runtime", tags=
 # A2UI Canvas endpoints
 api_router.include_router(canvas.router, prefix="/canvas", tags=["canvas"])
 
+# Credentials alias — re-mount platform-integration credentials at /credentials
+from fastapi import Depends as _Depends
+from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
+from core.database import get_db as _get_db
+from core.dependencies import get_current_user_safe as _get_current_user_safe
+
+_credentials_router = APIRouter(tags=["credentials"])
+
+@_credentials_router.get("/")
+async def list_credentials_alias(
+    current_user=_Depends(_get_current_user_safe),
+    db: _AsyncSession = _Depends(_get_db),
+):
+    """List credentials (alias for /platform-integration/credentials)."""
+    from services.platform_credential_service import PlatformCredentialService
+    from core.user_utils import get_safe_user_id
+    if not current_user:
+        return []
+    user_id = get_safe_user_id(current_user)
+    if not user_id:
+        return []
+    service = PlatformCredentialService(db)
+    return await service.list_credentials(user_id=user_id)
+
+api_router.include_router(_credentials_router, prefix="/credentials")
+
+# Integrations alias — list available platform integration types
+_integrations_router = APIRouter(tags=["integrations"])
+
+@_integrations_router.get("/")
+async def list_integrations(
+    current_user=_Depends(_get_current_user_safe),
+    db: _AsyncSession = _Depends(_get_db),
+):
+    """List available platform integrations."""
+    from services.platform_adapters import PlatformAdapterService
+    service = PlatformAdapterService(db)
+    await service.sync_adapters_to_db()
+    return await service.list_adapters(active_only=True)
+
+api_router.include_router(_integrations_router, prefix="/integrations")
+
 # Marketplace endpoints (Community: browse, search, install with limit)
 api_router.include_router(marketplace.router, prefix="/marketplace", tags=["marketplace"])
 
 # Personal Agent Hub endpoints
 api_router.include_router(personal_agent.router, prefix="/personal-agent", tags=["personal-agent"])
+
+# Pricing/plans endpoint (public)
+api_router.include_router(pricing.router, prefix="/pricing", tags=["pricing"])
 
 # LLM endpoints (Community feature)
 try:

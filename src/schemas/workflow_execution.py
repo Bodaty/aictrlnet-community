@@ -17,6 +17,14 @@ class WorkflowExecuteRequest(BaseModel):
     trigger_source: Optional[str] = None
     agent_id: Optional[str] = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_dry_run(cls, data):
+        """Accept is_dry_run as an alias for dry_run to prevent silent live execution."""
+        if isinstance(data, dict) and data.get("is_dry_run") and not data.get("dry_run"):
+            data["dry_run"] = data.pop("is_dry_run")
+        return data
+
 
 class WorkflowExecutionCreate(BaseModel):
     """Schema for creating a workflow execution."""

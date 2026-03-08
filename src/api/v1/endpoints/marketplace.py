@@ -70,6 +70,90 @@ async def search_marketplace(
     return await service.search(request)
 
 
+@router.get(
+    "/search",
+    response_model=MarketplaceItemListResponse,
+)
+async def search_marketplace_get(
+    q: Optional[str] = Query(None, description="Search query"),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Search marketplace items via GET (convenience alias for POST /search)."""
+    service = MarketplaceService(db)
+    request = MarketplaceSearchRequest(query=q or "", category=category, limit=limit, offset=offset)
+    return await service.search(request)
+
+
+# ── Category convenience routes (placed BEFORE /{item_id} catch-all) ─────────
+
+
+@router.get(
+    "/categories",
+    response_model=Dict[str, Any],
+)
+async def list_categories(
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """List available marketplace categories."""
+    return {
+        "categories": [
+            {"name": "workflow", "label": "Workflows", "description": "Automation workflows"},
+            {"name": "template", "label": "Templates", "description": "Workflow templates"},
+            {"name": "adapter", "label": "Adapters", "description": "Platform adapters"},
+            {"name": "agent", "label": "Agents", "description": "AI agents"},
+        ]
+    }
+
+
+@router.get(
+    "/templates",
+    response_model=MarketplaceItemListResponse,
+)
+async def browse_templates(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Browse marketplace templates."""
+    service = MarketplaceService(db)
+    return await service.browse(category="template", limit=limit, offset=offset)
+
+
+@router.get(
+    "/adapters",
+    response_model=MarketplaceItemListResponse,
+)
+async def browse_adapters(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Browse marketplace adapters."""
+    service = MarketplaceService(db)
+    return await service.browse(category="adapter", limit=limit, offset=offset)
+
+
+@router.get(
+    "/agents",
+    response_model=MarketplaceItemListResponse,
+)
+async def browse_agents(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: Dict[str, Any] = Depends(get_current_user_safe),
+):
+    """Browse marketplace agents."""
+    service = MarketplaceService(db)
+    return await service.browse(category="agent", limit=limit, offset=offset)
+
+
 # ── Get Item ─────────────────────────────────────────────────────────────────
 
 
