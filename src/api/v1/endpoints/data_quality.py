@@ -22,24 +22,21 @@ from schemas.data_quality import (
 from services.data_quality_service import DataQualityService
 from core.usage_tracker import UsageTracker
 from models.data_quality import QualityDimension, QualityDimensionCategory
+from api.v1.endpoints._auth_helpers import get_safe_attr, get_safe_user_id
 
 router = APIRouter()
 
 
 def user_to_dict(user) -> dict:
     """Convert User object to dict, handling both dict and object inputs"""
-    if isinstance(user, dict):
-        return user
-    
-    # Convert User object to dict
     return {
-        'id': str(getattr(user, 'id', 'unknown')),
-        'user_id': str(getattr(user, 'id', 'unknown')),
-        'email': getattr(user, 'email', 'unknown@example.com'),
-        'tenant_id': str(getattr(user, 'tenant_id', '00000000-0000-0000-0000-000000000000')),
-        'edition': getattr(user, 'edition', 'community'),
-        'is_active': getattr(user, 'is_active', True),
-        'is_superuser': getattr(user, 'is_superuser', False),
+        'id': str(get_safe_user_id(user) or 'unknown'),
+        'user_id': str(get_safe_user_id(user) or 'unknown'),
+        'email': get_safe_attr(user, 'email', 'unknown@example.com'),
+        'tenant_id': str(get_safe_attr(user, 'tenant_id', '00000000-0000-0000-0000-000000000000')),
+        'edition': get_safe_attr(user, 'edition', 'community'),
+        'is_active': get_safe_attr(user, 'is_active', True),
+        'is_superuser': get_safe_attr(user, 'is_superuser', False),
     }
 
 

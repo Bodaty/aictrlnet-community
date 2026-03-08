@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.user_utils import get_safe_attr
 from services.action_planner import ActionPlan, ActionStep, StepType
 
 logger = logging.getLogger(__name__)
@@ -496,7 +497,7 @@ class ProgressiveExecutor:
             # Try to get from session if available
             user = context.get('user')
             if user:
-                user_id = user.get('id') if isinstance(user, dict) else getattr(user, 'id', None)
+                user_id = get_safe_attr(user, 'id')
 
         if not user_id:
             logger.warning("No user_id in context, using anonymous")

@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, status
 from .config import get_settings
 from .security import get_current_active_user, get_current_user
 from .tenant_context import get_current_tenant_id
+from .user_utils import get_safe_attr, get_safe_user_id
 
 
 async def get_current_user_safe(
@@ -13,43 +14,25 @@ async def get_current_user_safe(
 ) -> Dict[str, Any]:
     """
     Get current user as a dictionary, handling both User objects and dicts.
-    
+
     This ensures consistent handling across all endpoints
     regardless of whether we get a User model or dict.
     """
-    # Use getattr to safely access attributes regardless of type
-    if isinstance(current_user, dict):
-        # Already a dict, just ensure all expected keys exist
-        return {
-            'id': current_user.get('id', 'unknown'),
-            'sub': current_user.get('sub', current_user.get('id', 'unknown')),
-            'email': current_user.get('email', 'unknown@example.com'),
-            'name': current_user.get('name', 'Test User'),
-            'username': current_user.get('username', 'unknown'),
-            'is_active': current_user.get('is_active', True),
-            'is_superuser': current_user.get('is_superuser', False),
-            'is_admin': current_user.get('is_superuser', False),  # Alias
-            'tenant_id': current_user.get('tenant_id') or get_current_tenant_id(),
-            'edition': current_user.get('edition', 'community'),
-            'roles': current_user.get('roles', ['user']),
-            'permissions': current_user.get('permissions', [])
-        }
-    else:
-        # It's a User object, extract attributes
-        return {
-            'id': str(getattr(current_user, 'id', 'unknown')),
-            'sub': str(getattr(current_user, 'id', 'unknown')),
-            'email': getattr(current_user, 'email', 'unknown@example.com'),
-            'name': getattr(current_user, 'name', getattr(current_user, 'username', 'Test User')),
-            'username': getattr(current_user, 'username', 'unknown'),
-            'is_active': getattr(current_user, 'is_active', True),
-            'is_superuser': getattr(current_user, 'is_superuser', False),
-            'is_admin': getattr(current_user, 'is_superuser', False),  # Alias
-            'tenant_id': getattr(current_user, 'tenant_id', None) or get_current_tenant_id(),
-            'edition': getattr(current_user, 'edition', 'community'),
-            'roles': getattr(current_user, 'roles', ['user']),
-            'permissions': getattr(current_user, 'permissions', [])
-        }
+    uid = str(get_safe_user_id(current_user) or 'unknown')
+    return {
+        'id': uid,
+        'sub': get_safe_attr(current_user, 'sub', uid),
+        'email': get_safe_attr(current_user, 'email', 'unknown@example.com'),
+        'name': get_safe_attr(current_user, 'name', None) or get_safe_attr(current_user, 'username', 'Test User'),
+        'username': get_safe_attr(current_user, 'username', 'unknown'),
+        'is_active': get_safe_attr(current_user, 'is_active', True),
+        'is_superuser': get_safe_attr(current_user, 'is_superuser', False),
+        'is_admin': get_safe_attr(current_user, 'is_superuser', False),
+        'tenant_id': get_safe_attr(current_user, 'tenant_id', None) or get_current_tenant_id(),
+        'edition': get_safe_attr(current_user, 'edition', 'community'),
+        'roles': get_safe_attr(current_user, 'roles', ['user']),
+        'permissions': get_safe_attr(current_user, 'permissions', [])
+    }
 
 
 async def require_superuser(current_user: Dict[str, Any] = Depends(get_current_user_safe)) -> None:
@@ -92,10 +75,7 @@ class EditionChecker:
     ) -> Any:
         """Check edition access."""
         # Handle both dict and User object
-        if hasattr(current_user, 'edition'):
-            user_edition = current_user.edition.lower() if current_user.edition else "community"
-        else:
-            user_edition = current_user.get("edition", "community").lower()
+        user_edition = (get_safe_attr(current_user, 'edition', 'community') or 'community').lower()
         current_level = self.edition_hierarchy.get(edition, 0)
         user_level = self.edition_hierarchy.get(user_edition, 0)
         

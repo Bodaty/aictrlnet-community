@@ -8,6 +8,7 @@ from core.database import get_db
 from core.security import get_current_active_user
 from models.user import User
 from services.mfa_service import MFAService
+from api.v1.endpoints._auth_helpers import get_safe_attr
 from schemas.mfa import (
     MFAInitRequest,
     MFACompleteRequest,
@@ -27,12 +28,7 @@ router = APIRouter(prefix="/users", tags=["mfa"])
 
 async def is_admin(user, db: AsyncSession) -> bool:
     """Check if user is admin."""
-    # Simple check - in real implementation would check roles/permissions
-    # Handle both dict and User object
-    if hasattr(user, 'is_superuser'):
-        return user.is_superuser
-    return user.get("is_superuser", False) if isinstance(user, dict) else False
-
+    return bool(get_safe_attr(user, 'is_superuser', False))
 
 
 

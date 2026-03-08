@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from .config import get_settings
 from .database import get_db
+from .user_utils import get_safe_attr
 
 # Avoid circular import
 if TYPE_CHECKING:
@@ -178,11 +179,7 @@ class RoleChecker:
 
     async def __call__(self, user=Depends(get_current_user)):
         """Check if user has required role."""
-        # Handle both User ORM objects and dicts
-        if isinstance(user, dict):
-            user_roles = user.get("roles", [])
-        else:
-            user_roles = getattr(user, "roles", None) or []
+        user_roles = get_safe_attr(user, "roles", []) or []
         if isinstance(user_roles, str):
             user_roles = [user_roles]
         if not any(role in self.allowed_roles for role in user_roles):
