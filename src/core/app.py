@@ -5,6 +5,7 @@ This module provides the base FastAPI application that can be extended
 by Business and Enterprise editions.
 """
 
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -175,7 +176,7 @@ class AICtrlNetApp:
                                 version="1.0.0",
                                 description="Internal ML Service Adapter",
                                 required_edition="business",
-                                base_url="http://ml-service:8003",
+                                base_url=os.getenv("ML_SERVICE_URL", "http://ml-service:8003"),
                                 timeout_seconds=60,
                                 parameters={}
                             )

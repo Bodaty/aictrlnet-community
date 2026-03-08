@@ -1,5 +1,6 @@
 """Dynamic node catalog service for workflows."""
 
+import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +39,7 @@ class DynamicNodeCatalogService:
                 version="1.0.0",
                 description="ML Service adapter for node catalog",
                 required_edition=Edition.COMMUNITY,  # Available in Community with limited features
-                base_url="http://ml-service:8003",
+                base_url=os.getenv("ML_SERVICE_URL", "http://ml-service:8003"),
                 timeout_seconds=30,
                 custom_config={"discovery_only": True}  # Community uses discovery mode
             )

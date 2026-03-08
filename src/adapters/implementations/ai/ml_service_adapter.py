@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from typing import Dict, Any, List, Optional
 import httpx
 from datetime import datetime
@@ -36,7 +37,7 @@ class MLServiceAdapter(BaseAdapter):
         # Check for discovery mode
         self.discovery_only = config.custom_config.get("discovery_only", False) if config.custom_config else False
         
-        self.service_url = config.base_url or "http://ml-service:8003"
+        self.service_url = config.base_url or os.getenv("ML_SERVICE_URL", "http://ml-service:8003")
         self.timeout = config.timeout_seconds or 60  # ML ops can take longer
         self.api_prefix = "/ml"
         self._client = None
