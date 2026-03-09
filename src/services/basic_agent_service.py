@@ -218,6 +218,136 @@ class BasicAgentService:
             logger.error(f"Failed to execute agent {agent_id}: {str(e)}")
             raise ValueError(f"Agent execution failed: {str(e)}")
 
+    # ------------------------------------------------------------------
+    # Bridge methods for tool_dispatcher dynamic routing
+    # Accept individual kwargs → construct schemas → call underlying CRUD
+    # ------------------------------------------------------------------
+
+    async def create_agent_tool(
+        self,
+        user_id: str,
+        name: str,
+        agent_type: str = "assistant",
+        capabilities: Optional[List[str]] = None,
+        description: Optional[str] = None
+    ) -> dict:
+        """Bridge for create_agent tool — translates kwargs to BasicAgentCreate."""
+        valid_types = ["assistant", "support", "task"]
+        agent_data = BasicAgentCreate(
+            name=name,
+            description=description or f"A {agent_type} agent",
+            agent_type=agent_type if agent_type in valid_types else "assistant",
+            capabilities=capabilities or ["chat", "assist"]
+        )
+        try:
+            agent = await self.create_agent(user_id, agent_data)
+            return {
+                "agent_id": str(agent.id),
+                "name": agent.name,
+                "type": agent.agent_type,
+                "model": agent.model,
+                "capabilities": agent.capabilities,
+                "message": f"Created agent '{agent.name}'"
+            }
+        except ValueError as e:
+            return {"error": str(e), "success": False}
+
+    async def list_agents_tool(
+        self,
+        user_id: str,
+        status: Optional[str] = None,
+        agent_type: Optional[str] = None,
+        limit: int = 20
+    ) -> dict:
+        """Bridge for list_agents tool."""
+        agents = await self.list_agents(user_id)
+        items = []
+        for a in agents:
+            if status:
+                is_active_status = status == "active"
+                if a.is_active != is_active_status:
+                    continue
+            if agent_type and a.agent_type != agent_type:
+                continue
+            items.append({
+                "id": str(a.id),
+                "name": a.name,
+                "type": a.agent_type,
+                "model": a.model,
+                "is_active": a.is_active,
+                "capabilities": a.capabilities,
+                "execution_count": a.execution_count
+            })
+            if len(items) >= limit:
+                break
+        return {"agents": items, "count": len(items)}
+
+    async def get_status(
+        self,
+        user_id: str,
+        agent_id: str,
+        include_metrics: bool = False
+    ) -> dict:
+        """Bridge for get_agent_status tool."""
+        try:
+            agent_uuid = UUID(agent_id)
+        except (ValueError, AttributeError):
+            return {"error": f"Invalid agent_id: {agent_id}"}
+        agent = await self.get_agent(agent_uuid, user_id)
+        if not agent:
+            return {"error": f"Agent {agent_id} not found"}
+        result = {
+            "agent_id": str(agent.id),
+            "name": agent.name,
+            "status": "active" if agent.is_active else "inactive",
+            "agent_type": agent.agent_type,
+            "model": agent.model
+        }
+        if include_metrics:
+            result["execution_count"] = agent.execution_count
+            result["last_executed"] = agent.last_executed.isoformat() if agent.last_executed else None
+        return result
+
+    async def update_agent_tool(
+        self,
+        user_id: str,
+        agent_id: str,
+        name: Optional[str] = None,
+        capabilities: Optional[List[str]] = None,
+        settings: Optional[dict] = None
+    ) -> dict:
+        """Bridge for update_agent tool."""
+        try:
+            agent_uuid = UUID(agent_id)
+        except (ValueError, AttributeError):
+            return {"error": f"Invalid agent_id: {agent_id}"}
+        update_fields = {}
+        if name is not None:
+            update_fields["name"] = name
+        if capabilities is not None:
+            update_fields["capabilities"] = capabilities
+        update_data = BasicAgentUpdate(**update_fields)
+        agent = await self.update_agent(agent_uuid, user_id, update_data)
+        if not agent:
+            return {"error": f"Agent {agent_id} not found"}
+        return {
+            "agent_id": str(agent.id),
+            "name": agent.name,
+            "capabilities": agent.capabilities,
+            "message": f"Updated agent '{agent.name}'"
+        }
+
+    async def delete_agent_tool(self, user_id: str, agent_id: str) -> dict:
+        """Bridge for delete_agent tool."""
+        try:
+            agent_uuid = UUID(agent_id)
+        except (ValueError, AttributeError):
+            return {"error": f"Invalid agent_id: {agent_id}"}
+        deleted = await self.delete_agent(agent_uuid, user_id)
+        if not deleted:
+            return {"error": f"Agent {agent_id} not found"}
+        return {"agent_id": agent_id, "message": "Agent deleted successfully"}
+
     async def create_agent_from_progressive_executor(
         self,
         user_id: str,

@@ -285,7 +285,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["name", "agent_type"]
         },
         editions=["community", "business", "enterprise"],
-        handler="agent_service.create_agent",
+        handler="agent_service.create_agent_tool",
         requires_confirmation=True
     ),
     "list_agents": ToolDefinition(
@@ -301,7 +301,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": []
         },
         editions=["community", "business", "enterprise"],
-        handler="agent_service.list_agents"
+        handler="agent_service.list_agents_tool"
     ),
     "get_agent_status": ToolDefinition(
         name="get_agent_status",
@@ -331,7 +331,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["agent_id"]
         },
         editions=["community", "business", "enterprise"],
-        handler="agent_service.update_agent"
+        handler="agent_service.update_agent_tool"
     ),
     "delete_agent": ToolDefinition(
         name="delete_agent",
@@ -344,7 +344,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["agent_id"]
         },
         editions=["community", "business", "enterprise"],
-        handler="agent_service.delete_agent",
+        handler="agent_service.delete_agent_tool",
         requires_confirmation=True,
         is_destructive=True
     ),
@@ -1689,12 +1689,7 @@ class ToolDispatcher:
         "list_templates": "_list_templates",
         "get_template_detail": "_get_template_detail",
         "list_template_categories": "_list_template_categories",
-        # Agent tools
-        "create_agent": "_create_agent",
-        "list_agents": "_list_agents",
-        "get_agent_status": "_get_agent_status",
-        "update_agent": "_update_agent",
-        "delete_agent": "_delete_agent",
+        # Agent tools — handled by dynamic routing via agent_service
         # MCP tools
         "list_mcp_servers": "_list_mcp_servers",
         "discover_mcp_tools": "_discover_mcp_tools",
@@ -1795,6 +1790,13 @@ class ToolDispatcher:
                 self._services['template_service'] = WorkflowTemplateService()
             except ImportError:
                 logger.warning("[v4] Template service not available")
+
+            # Basic Agent service (agent tool bridge)
+            try:
+                from services.basic_agent_service import BasicAgentService
+                self._services['agent_service'] = BasicAgentService(self.db)
+            except ImportError:
+                logger.warning("[v4] BasicAgentService not available")
 
             self._initialized = True
             logger.info(f"[v4] Services loaded: {list(self._services.keys())}")
@@ -2090,17 +2092,7 @@ class ToolDispatcher:
         elif tool_name == "list_template_categories":
             return await self._list_template_categories()
 
-        # Agent tools
-        elif tool_name == "create_agent":
-            return await self._create_agent(arguments, user_id)
-        elif tool_name == "list_agents":
-            return await self._list_agents(arguments, user_id)
-        elif tool_name == "get_agent_status":
-            return await self._get_agent_status(arguments)
-        elif tool_name == "update_agent":
-            return await self._update_agent(arguments, user_id)
-        elif tool_name == "delete_agent":
-            return await self._delete_agent(arguments, user_id)
+        # Agent tools — handled by dynamic routing via agent_service
 
         # MCP tools
         elif tool_name == "list_mcp_servers":
@@ -2871,59 +2863,6 @@ class ToolDispatcher:
         except Exception as e:
             logger.warning(f"[v4] list_template_categories failed: {e}")
             return ToolResult(success=False, error=str(e))
-
-    async def _create_agent(self, args: Dict, user_id: str) -> ToolResult:
-        """Create an agent."""
-        return ToolResult(
-            success=True,
-            data={
-                "agent_id": "new-agent-id",
-                "name": args.get('name'),
-                "message": f"Agent '{args.get('name')}' would be created here"
-            }
-        )
-
-    async def _list_agents(self, args: Dict, user_id: str) -> ToolResult:
-        """List agents."""
-        return ToolResult(
-            success=True,
-            data={
-                "agents": [],
-                "count": 0,
-                "message": "Agent listing would return results here"
-            }
-        )
-
-    async def _get_agent_status(self, args: Dict) -> ToolResult:
-        """Get agent status."""
-        return ToolResult(
-            success=True,
-            data={
-                "agent_id": args.get('agent_id'),
-                "status": "active",
-                "message": "Agent status would be returned here"
-            }
-        )
-
-    async def _update_agent(self, args: Dict, user_id: str) -> ToolResult:
-        """Update an agent."""
-        return ToolResult(
-            success=True,
-            data={
-                "agent_id": args.get('agent_id'),
-                "message": "Agent would be updated here"
-            }
-        )
-
-    async def _delete_agent(self, args: Dict, user_id: str) -> ToolResult:
-        """Delete an agent."""
-        return ToolResult(
-            success=True,
-            data={
-                "agent_id": args.get('agent_id'),
-                "message": "Agent would be deleted here"
-            }
-        )
 
     async def _list_mcp_servers(self, args: Dict) -> ToolResult:
         """List MCP servers."""
