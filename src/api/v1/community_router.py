@@ -45,6 +45,7 @@ from .endpoints import (
     marketplace,  # Marketplace (browse, search, install)
     personal_agent,  # Personal Agent Hub
     pricing,  # Public pricing/plans endpoint
+    subscription_plans,  # Subscription plan listing for frontend
 )
 from . import platform_integration
 
@@ -195,6 +196,9 @@ api_router.include_router(personal_agent.router, prefix="/personal-agent", tags=
 
 # Pricing/plans endpoint (public)
 api_router.include_router(pricing.router, prefix="/pricing", tags=["pricing"])
+
+# Subscription plan listing (public — frontend subscriptionService.js uses /subscription/plans)
+api_router.include_router(subscription_plans.router, prefix="/subscription", tags=["subscription"])
 
 # LLM endpoints (Community feature)
 try:
