@@ -62,7 +62,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["name"]
         },
         editions=["community", "business", "enterprise"],
-        handler="workflow_service.create_workflow",
+        handler="",
         requires_confirmation=True
     ),
     "discover_workflows": ToolDefinition(
@@ -93,7 +93,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["template_id", "workflow_name"]
         },
         editions=["community", "business", "enterprise"],
-        handler="template_service.instantiate_template",
+        handler="",
         requires_confirmation=True
     ),
     "list_workflows": ToolDefinition(
@@ -124,7 +124,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["workflow_id"]
         },
         editions=["community", "business", "enterprise"],
-        handler="workflow_service.execute_workflow",
+        handler="",
         requires_confirmation=True,
         is_destructive=False
     ),
@@ -156,7 +156,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": []
         },
         editions=["community", "business", "enterprise"],
-        handler="workflow_service.update_workflow"
+        handler=""
     ),
 
     # -------------------------------------------------------------------------
@@ -2022,6 +2022,9 @@ class ToolDispatcher:
                 return ToolResult(success=True, data=result)
             else:
                 return ToolResult(success=True, data={"result": result})
+        except TypeError as e:
+            logger.warning(f"[v4] Dynamic route signature mismatch for {tool.name}: {e}, falling back to legacy")
+            return None
         except Exception as e:
             logger.error(f"[v4] Dynamic route failed for {tool.name}: {e}")
             return ToolResult(

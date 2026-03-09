@@ -55,7 +55,14 @@ async def get_billing_portal(
         return BillingPortalResponse(portal_url=portal_url)
     except ValueError as e:
         # User doesn't have billing info (e.g., community edition)
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "no_subscription",
+                "message": str(e),
+                "redirect": "/pricing"
+            }
+        )
     except Exception as e:
         logger.error(f"Error getting billing portal URL: {e}")
         raise HTTPException(status_code=500, detail="Failed to get billing portal URL")

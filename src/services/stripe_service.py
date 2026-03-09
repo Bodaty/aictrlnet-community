@@ -561,7 +561,7 @@ class StripeService:
         subscription = result.scalar_one_or_none()
 
         if not subscription or not subscription.stripe_customer_id:
-            raise ValueError("No billing information found")
+            raise ValueError("No active subscription. Subscribe to a plan first to manage billing.")
 
         try:
             session = stripe.billing_portal.Session.create(
@@ -654,7 +654,7 @@ class StripeService:
         subscription = result.scalar_one_or_none()
 
         if not subscription or not subscription.stripe_customer_id:
-            raise ValueError("No billing information found")
+            raise ValueError("No active subscription. Subscribe to a plan first to manage billing.")
 
         try:
             inv = stripe.Invoice.retrieve(invoice_id)
