@@ -30,6 +30,22 @@ from llm.models import ToolDefinition, ToolResult, ToolRecoveryStrategy, ChainRe
 
 logger = logging.getLogger(__name__)
 
+# Tools where the legacy if/elif handler has richer behavior than the dynamic route.
+# These MUST skip dynamic routing and go straight to the legacy chain.
+# As Phase 3 migrates each tool's enrichment into its service, remove it from this set.
+_LEGACY_REQUIRED_TOOLS = {
+    # Workflow tools — legacy has NLP generation, template instantiation, conversation trigger
+    "create_workflow", "execute_workflow", "update_workflow", "instantiate_template",
+    # MCP — legacy has action-based branching (register/update/remove)
+    "configure_mcp_server",
+    # Integrations — legacy calls list_adapters (correct method), dynamic calls list_integrations (wrong)
+    "list_integrations",
+    # Tasks — legacy does user scoping, field remapping (title<->name)
+    "list_tasks", "update_task", "get_task_status",
+    # API introspection — legacy calls _ensure_initialized() first
+    "list_api_endpoints", "get_endpoint_detail", "search_api_capabilities",
+}
+
 
 class Edition(str, Enum):
     """Edition enumeration for tool filtering."""
@@ -62,7 +78,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["name"]
         },
         editions=["community", "business", "enterprise"],
-        handler="",
+        handler="nlp_service.create_workflow",
         requires_confirmation=True
     ),
     "discover_workflows": ToolDefinition(
@@ -93,7 +109,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["template_id", "workflow_name"]
         },
         editions=["community", "business", "enterprise"],
-        handler="",
+        handler="workflow_template_service.instantiate_template",
         requires_confirmation=True
     ),
     "list_workflows": ToolDefinition(
@@ -124,7 +140,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": ["workflow_id"]
         },
         editions=["community", "business", "enterprise"],
-        handler="",
+        handler="workflow_service.execute_workflow",
         requires_confirmation=True,
         is_destructive=False
     ),
@@ -156,7 +172,7 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
             "required": []
         },
         editions=["community", "business", "enterprise"],
-        handler=""
+        handler="workflow_service.update_workflow"
     ),
 
     # -------------------------------------------------------------------------
@@ -1733,6 +1749,7 @@ class ToolDispatcher:
         self._initialized = False
 
         logger.info(f"[v4] ToolDispatcher initialized for {edition.value} edition")
+        logger.info(f"[v4] Legacy-required tools ({len(_LEGACY_REQUIRED_TOOLS)}): {sorted(_LEGACY_REQUIRED_TOOLS)}")
 
         # Validate tool handlers once per process (expensive: iterates ~90 tools)
         if not ToolDispatcher._handlers_validated:
@@ -2045,12 +2062,13 @@ class ToolDispatcher:
     ) -> ToolResult:
         """Route tool call to appropriate service method.
 
-        First attempts dynamic routing via the handler field on ToolDefinition.
-        Falls back to legacy explicit if/elif routing for existing tools.
+        Tools in _LEGACY_REQUIRED_TOOLS skip dynamic routing and go straight
+        to the legacy if/elif chain where richer behavior lives.
+        All other tools try dynamic routing first.
         """
-        # Try dynamic routing first for tools with handler fields
+        # Gate: tools that MUST use legacy routing skip dynamic dispatch
         tool = CORE_TOOLS.get(tool_name)
-        if tool:
+        if tool and tool_name not in _LEGACY_REQUIRED_TOOLS:
             result = await self._dynamic_route(tool, arguments, user_id, context)
             if result is not None:
                 return result
