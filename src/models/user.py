@@ -11,15 +11,15 @@ class User(Base):
     """User account model."""
     __tablename__ = "users"
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    email = Column(String, nullable=False, unique=True, index=True)
-    username = Column(String, unique=True, index=True)
-    hashed_password = Column(String, nullable=False)
-    full_name = Column(String)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String(254), nullable=False, unique=True, index=True)
+    username = Column(String(50), unique=True, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(100))
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
-    tenant_id = Column(String, index=True, nullable=True)  # NULL for Community/Business, required for Enterprise
-    edition = Column(String, default="community")
+    tenant_id = Column(String(100), index=True, nullable=True)  # NULL for Community/Business, required for Enterprise
+    edition = Column(String(20), default="community")
     preferences = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

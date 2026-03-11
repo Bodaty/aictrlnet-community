@@ -27,19 +27,12 @@ from models import User
 from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus, BillingPeriod
 from services.mfa_service import MFAService
 from schemas.mfa import LoginRequest, LoginResponse, MFAVerifyRequest, MFAVerifyResponse
+from schemas.user import UserCreate
 
 logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
-
-
-class UserCreate(BaseModel):
-    """User registration schema."""
-    email: EmailStr
-    password: str = Field(..., min_length=8, description="Password must be at least 8 characters")
-    username: Optional[str] = None
-    full_name: Optional[str] = None
 
 
 class UserResponse(BaseModel):

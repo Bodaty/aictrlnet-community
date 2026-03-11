@@ -1,34 +1,63 @@
 """User schemas for request/response validation."""
 
+import re
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 from datetime import datetime
 
 
 class UserBase(BaseModel):
     """Base user schema."""
-    email: EmailStr
-    username: Optional[str] = None
-    full_name: Optional[str] = None
+    email: EmailStr = Field(..., max_length=254)
+    username: Optional[str] = Field(None, max_length=50, pattern=r'^[a-zA-Z0-9_\-]+$')
+    full_name: Optional[str] = Field(None, max_length=100)
     edition: Optional[str] = Field(default="community", description="User edition")
     is_active: bool = True
+
+    @field_validator('full_name')
+    @classmethod
+    def validate_full_name(cls, v):
+        if v is not None and not re.match(r"^[a-zA-Z \-'.]+$", v):
+            raise ValueError('Full name must contain only letters, spaces, hyphens, or apostrophes')
+        return v
+
+    @field_validator('email')
+    @classmethod
+    def validate_email_ascii(cls, v):
+        if v and not all(ord(c) < 128 for c in v):
+            raise ValueError('Email must contain only ASCII characters')
+        return v
 
 
 class UserCreate(UserBase):
     """Schema for creating a user."""
-    password: str = Field(..., min_length=8, description="User password")
+    password: str = Field(..., min_length=8, max_length=128, description="User password")
     is_superuser: bool = False
 
 
 class UserUpdate(BaseModel):
     """Schema for updating a user."""
-    email: Optional[EmailStr] = None
-    username: Optional[str] = None
-    full_name: Optional[str] = None
-    password: Optional[str] = Field(None, min_length=8)
+    email: Optional[EmailStr] = Field(None, max_length=254)
+    username: Optional[str] = Field(None, max_length=50, pattern=r'^[a-zA-Z0-9_\-]+$')
+    full_name: Optional[str] = Field(None, max_length=100)
+    password: Optional[str] = Field(None, min_length=8, max_length=128)
     edition: Optional[str] = None
     is_active: Optional[bool] = None
     is_superuser: Optional[bool] = None
+
+    @field_validator('full_name')
+    @classmethod
+    def validate_full_name(cls, v):
+        if v is not None and not re.match(r"^[a-zA-Z \-'.]+$", v):
+            raise ValueError('Full name must contain only letters, spaces, hyphens, or apostrophes')
+        return v
+
+    @field_validator('email')
+    @classmethod
+    def validate_email_ascii(cls, v):
+        if v and not all(ord(c) < 128 for c in v):
+            raise ValueError('Email must contain only ASCII characters')
+        return v
 
 
 class UserResponse(UserBase):
