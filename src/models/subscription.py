@@ -49,6 +49,7 @@ class SubscriptionPlan(Base):
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False, unique=True)  # community, business_starter, etc
     display_name = Column(String, nullable=False)
+    edition = Column(String(20), default="community", server_default="community")  # community, business, enterprise
     description = Column(Text)
     price_monthly = Column(Float, nullable=False)
     price_annual = Column(Float)  # Discounted annual price

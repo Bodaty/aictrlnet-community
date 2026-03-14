@@ -47,6 +47,7 @@ class UserResponse(BaseModel):
     trial_active: Optional[bool] = None
     trial_days_remaining: Optional[int] = None
     trial_end: Optional[str] = None
+    subscription_mismatch: Optional[bool] = None
     created_at: datetime
 
     class Config:
@@ -100,7 +101,7 @@ async def register(
     )
     
     now = datetime.utcnow()
-    trial_end = now + timedelta(days=14)
+    trial_end = now + timedelta(days=settings.TRIAL_DAYS)
     user_id = str(uuid.uuid4())
 
     user = User(
@@ -177,7 +178,45 @@ async def login(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Inactive user"
         )
-    
+
+    # Check tenant MFA policy — require enrollment if tenant mandates MFA
+    if user.tenant_id and not user.mfa_enabled:
+        try:
+            from models.tenant import Tenant
+            tenant = await db.get(Tenant, user.tenant_id)
+            if tenant and getattr(tenant, 'mfa_required', False):
+                # Check grace period
+                mfa_grace_days = getattr(tenant, 'mfa_grace_period_days', 7)
+                user_created = getattr(user, 'created_at', None)
+                grace_expired = True
+                if user_created and mfa_grace_days > 0:
+                    from datetime import timezone
+                    created = user_created if user_created.tzinfo else user_created.replace(tzinfo=timezone.utc)
+                    grace_expired = datetime.now(timezone.utc) > created + timedelta(days=mfa_grace_days)
+                if grace_expired:
+                    session_token = secrets.token_urlsafe(32)
+                    session_data = {
+                        "user_id": str(user.id),
+                        "email": user.email,
+                        "expires_at": (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+                    }
+                    cache = await get_cache()
+                    await cache.set(f"mfa_enrollment:{session_token}", session_data, expire=600)
+                    return LoginResponse(
+                        mfa_required=True,
+                        mfa_enrollment_required=True,
+                        session_token=session_token,
+                        expires_in=600
+                    )
+        except ImportError:
+            logger.debug("Tenant model not available for MFA policy check")
+        except Exception as e:
+            logger.error(f"Error checking tenant MFA policy: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="Error verifying security policy"
+            )
+
     # Check if MFA is enabled
     if user.mfa_enabled:
         # Create temporary session
@@ -215,16 +254,19 @@ async def login(
             "is_superuser": user.is_superuser,
             "mfa_verified": False,
             "tenant_id": user.tenant_id or get_current_tenant_id(),
+            "token_version": user.token_version or 0,
         },
         expires_delta=access_token_expires
     )
     refresh_token = create_refresh_token(data={
         "sub": str(user.id),
         "tenant_id": user.tenant_id or get_current_tenant_id(),
+        "token_version": user.token_version or 0,
     })
     
     return LoginResponse(
         access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
         mfa_required=False
     )
@@ -255,6 +297,20 @@ async def read_users_me(
         trial_days = max(0, (trial_sub.trial_end - now).days) if trial_active else 0
         trial_end_str = trial_sub.trial_end.isoformat()
 
+    # Check for edition/subscription mismatch
+    subscription_mismatch = None
+    if current_user.edition in ("business", "enterprise"):
+        # Check if there's an active subscription backing this edition
+        active_sub_result = await db.execute(
+            select(Subscription).where(
+                Subscription.user_id == current_user.id,
+                Subscription.status.in_([SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING])
+            )
+        )
+        active_sub = active_sub_result.scalar_one_or_none()
+        if not active_sub:
+            subscription_mismatch = True
+
     return UserResponse(
         id=current_user.id,
         email=current_user.email,
@@ -266,6 +322,7 @@ async def read_users_me(
         trial_active=trial_active,
         trial_days_remaining=trial_days,
         trial_end=trial_end_str,
+        subscription_mismatch=subscription_mismatch,
         created_at=current_user.created_at,
     )
 
@@ -310,8 +367,7 @@ async def request_password_reset(
         )
         
         # In production, send email with reset link
-        # For now, we'll just log it
-        print(f"Password reset token for {user.email}: {reset_token}")
+        logger.debug(f"Password reset token generated for {user.email}")
         
         # Store token in database for validation
         user.password_reset_token = reset_token
@@ -366,8 +422,9 @@ async def confirm_password_reset(
             detail="Reset token has expired"
         )
     
-    # Update password
+    # Update password and invalidate all existing tokens
     user.hashed_password = get_password_hash(reset_data.new_password)
+    user.token_version = (user.token_version or 0) + 1
     user.password_reset_token = None
     user.password_reset_expires = None
     await db.commit()
@@ -395,10 +452,11 @@ async def change_password(
             detail="Incorrect current password"
         )
     
-    # Update password
+    # Update password and invalidate existing tokens
     current_user.hashed_password = get_password_hash(password_data.new_password)
+    current_user.token_version = (current_user.token_version or 0) + 1
     await db.commit()
-    
+
     return {"message": "Password successfully changed"}
 
 
@@ -473,7 +531,7 @@ async def resend_verification_email(
     await db.commit()
     
     # In production, send email with verification link
-    print(f"Email verification token for {current_user.email}: {verification_token}")
+    logger.debug(f"Email verification token generated for {current_user.email}")
     
     return {"message": "Verification email sent"}
 
@@ -520,16 +578,37 @@ async def refresh_access_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive"
         )
-    
+
+    # Validate token_version — reject old tokens after rotation
+    token_version = payload.get("token_version", 0)
+    if token_version != (user.token_version or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked"
+        )
+
+    # Increment token_version to invalidate the old refresh token
+    user.token_version = (user.token_version or 0) + 1
+    await db.commit()
+
     # Create new access token
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.id}, expires_delta=access_token_expires
+        data={
+            "sub": user.id,
+            "tenant_id": user.tenant_id or payload.get("tenant_id"),
+            "token_version": user.token_version,
+        },
+        expires_delta=access_token_expires
     )
-    
-    # Optionally create new refresh token (rotating refresh tokens)
-    new_refresh_token = create_refresh_token(data={"sub": user.id})
-    
+
+    # Create new refresh token with updated version
+    new_refresh_token = create_refresh_token(data={
+        "sub": user.id,
+        "tenant_id": user.tenant_id or payload.get("tenant_id"),
+        "token_version": user.token_version,
+    })
+
     return Token(access_token=access_token, refresh_token=new_refresh_token)
 
 
@@ -563,20 +642,29 @@ async def verify_mfa_login(
             "sub": session_data["user_id"],
             "email": user.email,
             "is_superuser": user.is_superuser,
-            "mfa_verified": True
+            "mfa_verified": True,
+            "tenant_id": user.tenant_id or get_current_tenant_id(),
+            "token_version": user.token_version or 0,
         },
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     
+    refresh_token = create_refresh_token(data={
+        "sub": session_data["user_id"],
+        "tenant_id": user.tenant_id or get_current_tenant_id(),
+        "token_version": user.token_version or 0,
+    })
+
     # Clear temporary session
     await cache.delete(f"mfa_session:{request.session_token}")
 
     # Update last login (user already fetched above)
     user.last_login_at = datetime.utcnow()
     await db.commit()
-    
+
     return MFAVerifyResponse(
         access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
         backup_code_used=result.get("backup_code_used", False),
         remaining_backup_codes=result.get("remaining_codes")

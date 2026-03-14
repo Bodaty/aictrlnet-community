@@ -7,7 +7,7 @@ editions use what they need.
 """
 
 from typing import Optional, Dict, Any
-from sqlalchemy import String, Boolean, JSON, Text
+from sqlalchemy import String, Boolean, JSON, Text, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, UUIDMixin, TimestampMixin
@@ -80,6 +80,18 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
         JSON,
         default=dict,
         comment="[Enterprise] Additional metadata (contacts, billing info, etc.)"
+    )
+
+    # MFA enforcement policy
+    mfa_required: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        comment="Whether MFA is required for all users in this tenant"
+    )
+    mfa_grace_period_days: Mapped[int] = mapped_column(
+        Integer,
+        default=7,
+        comment="Days before MFA enforcement after enabling policy"
     )
 
     # For self-hosted single-tenant mode

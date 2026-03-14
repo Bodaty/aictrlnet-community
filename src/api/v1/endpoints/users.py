@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from core.database import get_db
 from core.security import get_current_active_user, get_password_hash
 from core.dependencies import get_current_user_safe, require_superuser
+from core.enforcement_dependency import enforce_user_limit
 from models.user import User
 from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus
 from schemas.user import UserCreate, UserUpdate, UserResponse
@@ -567,7 +568,8 @@ async def create_user(
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db),
     current_user: Dict[str, Any] = Depends(get_current_user_safe),
-    _: None = Depends(require_superuser)
+    _: None = Depends(require_superuser),
+    _limit=Depends(enforce_user_limit),
 ):
     """
     Create a new user.

@@ -46,6 +46,7 @@ from .endpoints import (
     personal_agent,  # Personal Agent Hub
     pricing,  # Public pricing/plans endpoint
     subscription_plans,  # Subscription plan listing for frontend
+    oauth2_login,  # OAuth2 social login (delegates to Business if available)
 )
 from . import platform_integration
 
@@ -200,12 +201,8 @@ api_router.include_router(pricing.router, prefix="/pricing", tags=["pricing"])
 # Subscription plan listing (public — frontend subscriptionService.js uses /subscription/plans)
 api_router.include_router(subscription_plans.router, prefix="/subscription", tags=["subscription"])
 
-# LLM endpoints (Community feature)
-try:
-    from llm.api import endpoints as llm_endpoints
-    api_router.include_router(llm_endpoints.router, prefix="/llm", tags=["llm"])
-except ImportError:
-    print("Warning: LLM module not available")
+# OAuth2 social login (delegates to Business edition service if available)
+api_router.include_router(oauth2_login.router, prefix="/oauth2", tags=["oauth2"])
 
 # WebSocket endpoints
 api_router.include_router(websocket.router, tags=["websocket"])

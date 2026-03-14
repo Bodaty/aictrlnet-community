@@ -5,7 +5,10 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
-import stripe
+try:
+    import stripe
+except ImportError:
+    stripe = None
 import logging
 
 from core.database import get_db
@@ -244,7 +247,7 @@ async def start_feature_trial(
             tenant_id=tenant_id,
             feature_name=f"{request.target_edition}_trial",
             edition_required=request.target_edition,
-            expires_at=datetime.utcnow() + timedelta(days=request.trial_days or 14)
+            expires_at=datetime.utcnow() + timedelta(days=request.trial_days or get_settings().TRIAL_DAYS)
         )
         db.add(trial)
 
@@ -252,7 +255,7 @@ async def start_feature_trial(
         prompt = UpgradePrompt(
             tenant_id=tenant_id,
             prompt_type="trial_started",
-            prompt_message=f"Started {request.target_edition} trial for {request.trial_days or 14} days",
+            prompt_message=f"Started {request.target_edition} trial for {request.trial_days or get_settings().TRIAL_DAYS} days",
             target_edition=request.target_edition
         )
         db.add(prompt)
@@ -297,20 +300,39 @@ async def create_subscription(
 ):
     """Create a new subscription or upgrade existing one."""
     
+    from models.subscription import Subscription as SubModel, SubscriptionStatus as SubStatus, SubscriptionPlan as SubPlan
+
     tenant_id = current_user.get("tenant_id") or get_current_tenant_id()
-    
-    # In Community Edition, we use simplified tenant handling
-    # For upgrade flow, we'll work with tenant_id directly
+    user_id = current_user.get("sub") or current_user.get("id")
+
+    # Look up existing subscription from database
+    existing_sub_result = await db.execute(
+        select(SubModel).where(
+            SubModel.user_id == user_id,
+            SubModel.status.in_([SubStatus.ACTIVE, SubStatus.TRIALING, SubStatus.PAST_DUE]),
+        ).limit(1)
+    )
+    existing_sub = existing_sub_result.scalar_one_or_none()
+
+    # Resolve plan_id from DB instead of using raw edition string
+    plan_lookup = await db.execute(
+        select(SubPlan).where(SubPlan.name.ilike(f"%{request.target_edition}%")).limit(1)
+    )
+    plan_record = plan_lookup.scalar_one_or_none()
+    resolved_plan_id = plan_record.id if plan_record else request.target_edition
+
     tenant_info = {
         "id": tenant_id,
-        "stripe_customer_id": None,  # Would be stored in env or config
-        "stripe_subscription_id": None,
+        "stripe_customer_id": existing_sub.stripe_customer_id if existing_sub else None,
+        "stripe_subscription_id": existing_sub.stripe_subscription_id if existing_sub else None,
         "billing_email": current_user.get("email"),
         "edition": Edition.COMMUNITY.value,
         "trial_ends_at": None
     }
-    
+
     # Initialize Stripe if not already done
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="Payment processing not available")
     settings = get_settings()
     if settings.STRIPE_SECRET_KEY:
         stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -376,7 +398,7 @@ async def create_subscription(
             subscription = stripe.Subscription.create(
                 customer=customer.id,
                 items=[{"price": price_id}],
-                trial_period_days=14 if request.start_trial else 0,
+                trial_period_days=get_settings().TRIAL_DAYS if request.start_trial else 0,
                 metadata={"tenant_id": str(tenant_id)}
             )
             tenant_info["stripe_subscription_id"] = subscription.id
@@ -384,18 +406,44 @@ async def create_subscription(
         # Update tenant edition
         old_edition = tenant_info["edition"]
         tenant_info["edition"] = request.target_edition
-        
+
         if request.start_trial:
-            tenant_info["trial_ends_at"] = datetime.utcnow() + timedelta(days=14)
-        
+            tenant_info["trial_ends_at"] = datetime.utcnow() + timedelta(days=get_settings().TRIAL_DAYS)
+
+        # Persist Stripe IDs to the subscription record in database
+        if existing_sub:
+            existing_sub.stripe_customer_id = tenant_info["stripe_customer_id"]
+            existing_sub.stripe_subscription_id = tenant_info["stripe_subscription_id"]
+            existing_sub.plan_id = resolved_plan_id
+            existing_sub.status = SubStatus.TRIALING if request.start_trial else SubStatus.ACTIVE
+        else:
+            import uuid as _uuid
+            from models.subscription import BillingPeriod as _BillingPeriod
+            new_sub = SubModel(
+                id=str(_uuid.uuid4()),
+                user_id=user_id,
+                tenant_id=tenant_id,
+                plan_id=resolved_plan_id,
+                status=SubStatus.TRIALING if request.start_trial else SubStatus.ACTIVE,
+                billing_period=_BillingPeriod(request.billing_period) if request.billing_period in ("monthly", "annual", "quarterly") else _BillingPeriod.MONTHLY,
+                started_at=datetime.utcnow(),
+                current_period_start=datetime.fromtimestamp(subscription.current_period_start),
+                current_period_end=datetime.fromtimestamp(subscription.current_period_end),
+                trial_end=datetime.fromtimestamp(subscription.trial_end) if getattr(subscription, 'trial_end', None) else None,
+                stripe_customer_id=tenant_info["stripe_customer_id"],
+                stripe_subscription_id=tenant_info["stripe_subscription_id"],
+            )
+            db.add(new_sub)
+
         # Create billing event
         billing_event = BillingEvent(
             tenant_id=tenant_id,
-            event_type="subscription_created" if not old_edition else "upgraded",
+            event_type="subscription_created" if not existing_sub else "upgraded",
             stripe_event_id=subscription.id,
-            previous_edition=old_edition,
-            new_edition=request.target_edition,
-            metadata={
+            status="completed",
+            event_data={
+                "previous_edition": old_edition,
+                "new_edition": request.target_edition,
                 "price_id": price_id,
                 "billing_period": request.billing_period
             }
@@ -442,22 +490,34 @@ async def cancel_subscription(
     db: AsyncSession = Depends(get_db)
 ):
     """Cancel current subscription."""
-    
+    from models.subscription import Subscription as SubModel, SubscriptionStatus as SubStatus
+
     tenant_id = current_user.get("tenant_id") or get_current_tenant_id()
-    
-    # In Community Edition, we use simplified tenant handling
-    tenant_info = {
-        "id": tenant_id,
-        "stripe_subscription_id": None,  # Would be retrieved from config/env
-        "edition": Edition.COMMUNITY.value
-    }
-    
-    if not tenant_info["stripe_subscription_id"]:
+    user_id = current_user.get("sub") or current_user.get("id")
+
+    # Look up the user's actual subscription from the database
+    sub_result = await db.execute(
+        select(SubModel).where(
+            SubModel.user_id == user_id,
+            SubModel.status.in_([SubStatus.ACTIVE, SubStatus.TRIALING, SubStatus.PAST_DUE]),
+        ).limit(1)
+    )
+    existing_sub = sub_result.scalar_one_or_none()
+
+    if not existing_sub or not existing_sub.stripe_subscription_id:
         raise HTTPException(
             status_code=400,
             detail="No active subscription found"
         )
-    
+
+    tenant_info = {
+        "id": tenant_id,
+        "stripe_subscription_id": existing_sub.stripe_subscription_id,
+        "edition": existing_sub.plan_id or Edition.COMMUNITY.value,
+    }
+
+    if stripe is None:
+        raise HTTPException(status_code=500, detail="Payment processing not available")
     settings = get_settings()
     if settings.STRIPE_SECRET_KEY:
         stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -471,6 +531,9 @@ async def cancel_subscription(
         if immediately:
             # Cancel immediately
             subscription = stripe.Subscription.delete(tenant_info["stripe_subscription_id"])
+            existing_sub.status = SubStatus.CANCELED
+            existing_sub.canceled_at = datetime.utcnow()
+            existing_sub.stripe_subscription_id = None
             tenant_info["edition"] = Edition.COMMUNITY.value
             tenant_info["stripe_subscription_id"] = None
         else:
@@ -479,15 +542,17 @@ async def cancel_subscription(
                 tenant_info["stripe_subscription_id"],
                 cancel_at_period_end=True
             )
+            existing_sub.cancel_at_period_end = True
         
         # Create billing event
         billing_event = BillingEvent(
             tenant_id=tenant_id,
             event_type="cancelled",
             stripe_event_id=subscription.id,
-            previous_edition=tenant_info["edition"],
-            new_edition=Edition.COMMUNITY.value if immediately else tenant_info["edition"],
-            metadata={
+            status="completed",
+            event_data={
+                "previous_edition": tenant_info["edition"],
+                "new_edition": Edition.COMMUNITY.value if immediately else tenant_info["edition"],
                 "immediate": immediately,
                 "cancel_at": subscription.cancel_at
             }
@@ -618,15 +683,22 @@ def _get_stripe_price_id(edition: str, billing_period: str) -> Optional[str]:
 
     # Map edition names to config price IDs
     # Note: Community is free, so no price ID needed
-    # Annual pricing would need separate config vars (not yet implemented)
-    price_mapping = {
-        "business_starter": settings.STRIPE_PRICE_BUSINESS_STARTER,
-        "business_pro": settings.STRIPE_PRICE_BUSINESS_PRO,
-        "business_scale": settings.STRIPE_PRICE_BUSINESS_SCALE,
-        "enterprise": settings.STRIPE_PRICE_ENTERPRISE,
-        # Legacy names for backwards compatibility
-        "business_growth": settings.STRIPE_PRICE_BUSINESS_PRO,
-    }
+    if billing_period == "annual":
+        price_mapping = {
+            "business_starter": settings.STRIPE_PRICE_BUSINESS_STARTER_ANNUAL,
+            "business_pro": settings.STRIPE_PRICE_BUSINESS_PRO_ANNUAL,
+            "business_scale": settings.STRIPE_PRICE_BUSINESS_SCALE_ANNUAL,
+            "enterprise": settings.STRIPE_PRICE_ENTERPRISE_ANNUAL,
+            "business_growth": settings.STRIPE_PRICE_BUSINESS_PRO_ANNUAL,
+        }
+    else:
+        price_mapping = {
+            "business_starter": settings.STRIPE_PRICE_BUSINESS_STARTER,
+            "business_pro": settings.STRIPE_PRICE_BUSINESS_PRO,
+            "business_scale": settings.STRIPE_PRICE_BUSINESS_SCALE,
+            "enterprise": settings.STRIPE_PRICE_ENTERPRISE,
+            "business_growth": settings.STRIPE_PRICE_BUSINESS_PRO,
+        }
 
     price_id = price_mapping.get(edition)
 

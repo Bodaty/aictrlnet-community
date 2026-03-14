@@ -40,7 +40,7 @@ async def list_api_keys(
 async def create_api_key(
     data: APIKeyCreate,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(get_current_active_user)
+    current_user = Depends(get_current_active_user),
 ):
     """
     Create a new API key.

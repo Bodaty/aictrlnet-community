@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Boolean, DateTime, JSON
+from sqlalchemy import Column, String, Boolean, DateTime, JSON, Integer
 from sqlalchemy.orm import relationship
 from .base import Base
 
@@ -39,7 +39,10 @@ class User(Base):
     mfa_backup_codes = Column(String, nullable=True)  # Encrypted JSON array
     mfa_enrolled_at = Column(DateTime, nullable=True)
     mfa_last_used_at = Column(DateTime, nullable=True)
-    
+
+    # Token versioning for refresh token invalidation
+    token_version = Column(Integer, default=0, nullable=False, server_default="0")
+
     # Relationships
     subscriptions = relationship("Subscription", back_populates="user", lazy="select")
     platform_credentials = relationship("PlatformCredential", back_populates="user", lazy="select")

@@ -8,6 +8,7 @@ import uuid
 
 from core.database import get_db
 from core.security import get_current_active_user
+from core.enforcement_dependency import enforce_agent_limit
 from services.iam import IAMService
 from schemas.iam import (
     IAMAgentCreate, IAMAgentUpdate, IAMAgentResponse,
@@ -26,7 +27,8 @@ router = APIRouter()
 async def create_agent(
     agent_data: IAMAgentCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: dict = Depends(get_current_active_user),
+    _limit=Depends(enforce_agent_limit),
 ):
     """Create a new IAM agent."""
     service = IAMService(db)

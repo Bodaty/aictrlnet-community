@@ -25,11 +25,10 @@ from schemas.billing import (
     StartTrialResponse,
 )
 from services.stripe_service import StripeService
+from core.config import get_settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-TRIAL_DAYS = 14
 
 
 @router.get("/portal", response_model=BillingPortalResponse)
@@ -101,15 +100,15 @@ async def start_trial(
         result = await stripe_service.create_checkout_session(
             user_id=user_id,
             plan=request.plan,
-            trial_days=TRIAL_DAYS
+            trial_days=get_settings().TRIAL_DAYS
         )
 
-        trial_end = (datetime.utcnow() + timedelta(days=TRIAL_DAYS)).isoformat()
+        trial_end = (datetime.utcnow() + timedelta(days=get_settings().TRIAL_DAYS)).isoformat()
 
         return StartTrialResponse(
             checkout_url=result["checkout_url"],
             session_id=result["session_id"],
-            trial_days=TRIAL_DAYS,
+            trial_days=get_settings().TRIAL_DAYS,
             trial_end=trial_end
         )
     except ValueError as e:
@@ -172,7 +171,11 @@ async def get_invoice(
         invoice = await stripe_service.get_invoice(user_id, invoice_id)
         return InvoiceDetailItem(**invoice)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        else:
+            raise HTTPException(status_code=403, detail="Access denied")
     except Exception as e:
         logger.error(f"Error getting invoice {invoice_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to get invoice")

@@ -125,7 +125,12 @@ class Settings(BaseSettings):
     STRIPE_PRICE_BUSINESS_PRO: str = Field(default="")
     STRIPE_PRICE_BUSINESS_SCALE: str = Field(default="")
     STRIPE_PRICE_ENTERPRISE: str = Field(default="")
+    STRIPE_PRICE_BUSINESS_STARTER_ANNUAL: str = Field(default="")
+    STRIPE_PRICE_BUSINESS_PRO_ANNUAL: str = Field(default="")
+    STRIPE_PRICE_BUSINESS_SCALE_ANNUAL: str = Field(default="")
+    STRIPE_PRICE_ENTERPRISE_ANNUAL: str = Field(default="")
     FRONTEND_URL: str = Field(default="http://localhost:3000")
+    TRIAL_DAYS: int = Field(default=14)
     
     # Feature Flags
     FEATURES: Dict[str, Any] = Field(default_factory=lambda: {

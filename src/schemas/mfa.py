@@ -25,7 +25,7 @@ class MFAVerifyRequest(BaseModel):
 
 class MFADisableRequest(BaseModel):
     """Request to disable MFA."""
-    password: str = Field(..., description="User's password for verification")
+    password: Optional[str] = Field(None, description="User's password for verification")
 
 
 class MFAResetRequest(BaseModel):
@@ -62,6 +62,7 @@ class MFACompleteResponse(BaseModel):
 class MFAVerifyResponse(BaseModel):
     """MFA verification response."""
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     backup_code_used: bool = False
     remaining_backup_codes: Optional[int] = None
@@ -105,5 +106,6 @@ class LoginResponse(BaseModel):
     refresh_token: Optional[str] = None
     token_type: Optional[str] = None
     mfa_required: bool = False
+    mfa_enrollment_required: bool = False
     session_token: Optional[str] = None
     expires_in: Optional[int] = None
