@@ -7,6 +7,7 @@ Create Date: 2026-03-11 12:00:00.000000
 """
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import text
 
 
 # revision identifiers, used by Alembic.
@@ -17,11 +18,25 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # PostgreSQL ALTER TYPE for varchar length is safe on existing data —
-    # it only adds a constraint check, no rewrite needed for widening.
-    # Narrowing (String -> String(N)) on existing data will fail if any
-    # row exceeds N, but our Pydantic schemas have been enforcing these
-    # limits so existing data should be within bounds.
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+
+    # Check if RLS policies exist on users table that would block ALTER TYPE
+    existing_policies = set()
+    try:
+        result = conn.execute(text(
+            "SELECT tablename, policyname FROM pg_policies WHERE tablename = 'users'"
+        ))
+        existing_policies = {(row[0], row[1]) for row in result}
+    except Exception:
+        pass
+
+    # Drop RLS policies that reference tenant_id before altering column type
+    if ('users', 'tenant_isolation_users') in existing_policies:
+        op.execute(text("DROP POLICY tenant_isolation_users ON users"))
+    if ('users', 'admin_bypass_users') in existing_policies:
+        op.execute(text("DROP POLICY admin_bypass_users ON users"))
+
     op.alter_column('users', 'id', type_=sa.String(36), existing_type=sa.String())
     op.alter_column('users', 'email', type_=sa.String(254), existing_type=sa.String())
     op.alter_column('users', 'username', type_=sa.String(50), existing_type=sa.String())
@@ -29,6 +44,21 @@ def upgrade() -> None:
     op.alter_column('users', 'full_name', type_=sa.String(100), existing_type=sa.String())
     op.alter_column('users', 'tenant_id', type_=sa.String(100), existing_type=sa.String())
     op.alter_column('users', 'edition', type_=sa.String(20), existing_type=sa.String())
+
+    # Recreate RLS policies after column type change
+    if ('users', 'tenant_isolation_users') in existing_policies:
+        op.execute(text("""
+            CREATE POLICY tenant_isolation_users ON users
+            FOR ALL
+            USING (tenant_id::text = current_setting('app.current_tenant_id', true))
+            WITH CHECK (tenant_id::text = current_setting('app.current_tenant_id', true))
+        """))
+    if ('users', 'admin_bypass_users') in existing_policies:
+        op.execute(text("""
+            CREATE POLICY admin_bypass_users ON users
+            FOR ALL
+            USING (current_setting('app.is_admin', true)::boolean = true)
+        """))
 
 
 def downgrade() -> None:
