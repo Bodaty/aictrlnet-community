@@ -9,10 +9,10 @@ from enum import Enum
 class SubscriptionStatus(str, Enum):
     """Subscription status types."""
     ACTIVE = "active"
-    TRIAL = "trial"
+    TRIALING = "trialing"
+    PAST_DUE = "past_due"
+    CANCELED = "canceled"
     EXPIRED = "expired"
-    SUSPENDED = "suspended"
-    CANCELLED = "cancelled"
 
 
 class BillingPeriod(str, Enum):

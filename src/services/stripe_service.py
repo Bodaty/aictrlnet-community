@@ -7,6 +7,7 @@ Production-ready implementation that:
 """
 
 import logging
+import uuid
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -14,19 +15,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from core.config import get_settings
-from models.subscription import Subscription, SubscriptionPlan, PaymentMethod
+from models.subscription import Subscription, SubscriptionPlan, PaymentMethod, SubscriptionStatus
 from models import User
 
 logger = logging.getLogger(__name__)
 
 
-# Plan to Stripe Price ID mapping
-# These must be configured in environment variables after creating prices in Stripe Dashboard
+# Plan to Stripe Price ID mapping (monthly)
 PLAN_PRICE_MAP = {
     "business_starter": "STRIPE_PRICE_BUSINESS_STARTER",
     "business_pro": "STRIPE_PRICE_BUSINESS_PRO",
     "business_scale": "STRIPE_PRICE_BUSINESS_SCALE",
     "enterprise": "STRIPE_PRICE_ENTERPRISE",
+}
+
+# Plan to Stripe Price ID mapping (annual)
+PLAN_PRICE_MAP_ANNUAL = {
+    "business_starter": "STRIPE_PRICE_BUSINESS_STARTER_ANNUAL",
+    "business_pro": "STRIPE_PRICE_BUSINESS_PRO_ANNUAL",
+    "business_scale": "STRIPE_PRICE_BUSINESS_SCALE_ANNUAL",
+    "enterprise": "STRIPE_PRICE_ENTERPRISE_ANNUAL",
 }
 
 
@@ -55,8 +63,17 @@ class StripeService:
                 raise RuntimeError("stripe package not installed. Run: pip install stripe")
         return self._stripe
 
-    def _get_price_id(self, plan: str) -> str:
-        """Get Stripe Price ID for a plan from configuration."""
+    def _get_price_id(self, plan: str, billing_period: str = "monthly") -> str:
+        """Get Stripe Price ID for a plan and billing period from configuration."""
+        if billing_period in ("annual", "yearly"):
+            env_var = PLAN_PRICE_MAP_ANNUAL.get(plan)
+            if env_var:
+                price_id = getattr(self.settings, env_var, "")
+                if price_id:
+                    return price_id
+            # Fall back to monthly if annual not configured
+            logger.warning(f"Annual price not configured for {plan}, falling back to monthly")
+
         env_var = PLAN_PRICE_MAP.get(plan)
         if not env_var:
             raise ValueError(f"Unknown plan: {plan}")
@@ -96,7 +113,7 @@ class StripeService:
             raise ValueError("User not found")
 
         # Get the pre-created Price ID from configuration
-        price_id = self._get_price_id(plan)
+        price_id = self._get_price_id(plan, billing_period)
 
         # Check if user already has a Stripe customer ID
         existing_sub = await self.db.execute(
@@ -116,7 +133,7 @@ class StripeService:
             "metadata": {
                 "user_id": user_id,
                 "plan": plan,
-                "tenant_id": getattr(user, 'tenant_id', None) or ""
+                "tenant_id": getattr(user, 'tenant_id', None) or f"tenant_{user_id}"
             },
             "subscription_data": {
                 "metadata": {
@@ -193,6 +210,17 @@ class StripeService:
             logger.error("Missing user_id or plan in checkout session metadata")
             return
 
+        # Resolve tenant_id from user if not in metadata
+        if not tenant_id:
+            user_result = await self.db.execute(
+                select(User).where(User.id == user_id)
+            )
+            user_obj = user_result.scalar_one_or_none()
+            if user_obj:
+                tenant_id = user_obj.tenant_id or f"tenant_{user_id}"
+            else:
+                tenant_id = f"tenant_{user_id}"
+
         stripe_subscription_id = session_data.get("subscription")
         stripe_customer_id = session_data.get("customer")
 
@@ -215,25 +243,49 @@ class StripeService:
             except Exception:
                 logger.warning(f"Could not fetch subscription {stripe_subscription_id} details")
 
+        # Map Stripe status string to SubscriptionStatus enum
+        status_map = {
+            "active": SubscriptionStatus.ACTIVE,
+            "trialing": SubscriptionStatus.TRIALING,
+            "past_due": SubscriptionStatus.PAST_DUE,
+            "canceled": SubscriptionStatus.CANCELED,
+            "unpaid": SubscriptionStatus.PAST_DUE,
+        }
+        mapped_status = status_map.get(stripe_sub_status, SubscriptionStatus.ACTIVE)
+
+        now = datetime.utcnow()
+
+        # Look up actual plan ID from subscription_plans table
+        plan_result = await self.db.execute(
+            select(SubscriptionPlan).where(
+                SubscriptionPlan.name.ilike(f"%{plan}%")
+            ).limit(1)
+        )
+        plan_record = plan_result.scalar_one_or_none()
+        if not plan_record:
+            logger.warning(f"No SubscriptionPlan found matching '{plan}' — using raw string as plan_id fallback")
+        resolved_plan_id = plan_record.id if plan_record else plan
+
         if not subscription:
             subscription = Subscription(
-                id=f"sub_{user_id}",
+                id=str(uuid.uuid4()),
                 user_id=user_id,
-                tenant_id=tenant_id if tenant_id else None,
+                tenant_id=tenant_id,
                 stripe_subscription_id=stripe_subscription_id,
                 stripe_customer_id=stripe_customer_id,
-                plan_id=f"plan_{plan}",
-                status=stripe_sub_status,
-                current_period_start=datetime.utcnow(),
-                current_period_end=datetime.utcnow() + timedelta(days=30),
-                trial_end=trial_end_ts
+                plan_id=resolved_plan_id,
+                status=mapped_status,
+                started_at=now,
+                current_period_start=now,
+                current_period_end=now + timedelta(days=30),
+                trial_end=trial_end_ts,
             )
             self.db.add(subscription)
         else:
             subscription.stripe_subscription_id = stripe_subscription_id
             subscription.stripe_customer_id = stripe_customer_id
-            subscription.plan_id = f"plan_{plan}"
-            subscription.status = stripe_sub_status
+            subscription.plan_id = resolved_plan_id
+            subscription.status = mapped_status
             subscription.trial_end = trial_end_ts
             subscription.payment_failed_at = None  # Clear any previous failure
 
@@ -252,17 +304,95 @@ class StripeService:
         This is redundant with checkout.session.completed for new subscriptions,
         but useful for subscriptions created via API or Stripe Dashboard.
         """
-        # Most logic is handled in checkout.session.completed
-        # This handler ensures we catch subscriptions created outside checkout flow
         stripe_subscription_id = subscription_data.get("id")
         metadata = subscription_data.get("metadata", {})
         user_id = metadata.get("user_id")
+        plan = metadata.get("plan")
 
         if not user_id:
             logger.debug(f"Subscription {stripe_subscription_id} created without user_id metadata")
             return
 
-        logger.info(f"Subscription created event for user {user_id}: {stripe_subscription_id}")
+        # Check if we already have a local record (from checkout.session.completed)
+        existing = await self.db.execute(
+            select(Subscription).where(
+                Subscription.stripe_subscription_id == stripe_subscription_id
+            )
+        )
+        if existing.scalar_one_or_none():
+            logger.debug(f"Subscription {stripe_subscription_id} already exists locally, skipping")
+            return
+
+        # Resolve tenant_id from user
+        user = await self.db.get(User, user_id)
+        tenant_id = (getattr(user, 'tenant_id', None) or f"tenant_{user_id}") if user else f"tenant_{user_id}"
+
+        # Map Stripe status
+        stripe_status = subscription_data.get("status", "active")
+        status_map = {
+            "active": SubscriptionStatus.ACTIVE,
+            "trialing": SubscriptionStatus.TRIALING,
+            "past_due": SubscriptionStatus.PAST_DUE,
+            "canceled": SubscriptionStatus.CANCELED,
+            "unpaid": SubscriptionStatus.PAST_DUE,
+        }
+        mapped_status = status_map.get(stripe_status, SubscriptionStatus.ACTIVE)
+
+        # Parse period dates
+        now = datetime.utcnow()
+        period_start = now
+        period_end = now + timedelta(days=30)
+        if subscription_data.get("current_period_start"):
+            period_start = datetime.fromtimestamp(subscription_data["current_period_start"])
+        if subscription_data.get("current_period_end"):
+            period_end = datetime.fromtimestamp(subscription_data["current_period_end"])
+
+        trial_end_ts = None
+        if subscription_data.get("trial_end"):
+            trial_end_ts = datetime.fromtimestamp(subscription_data["trial_end"])
+
+        # Look up plan ID from DB
+        resolved_plan_id = plan
+        plan_record = None
+        if plan:
+            plan_result = await self.db.execute(
+                select(SubscriptionPlan).where(
+                    SubscriptionPlan.name.ilike(f"%{plan}%")
+                ).limit(1)
+            )
+            plan_record = plan_result.scalar_one_or_none()
+            if plan_record:
+                resolved_plan_id = plan_record.id
+
+        if not resolved_plan_id:
+            logger.warning(f"No plan in metadata for subscription {stripe_subscription_id}")
+            return
+
+        # Create local subscription record
+        subscription = Subscription(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            tenant_id=tenant_id,
+            stripe_subscription_id=stripe_subscription_id,
+            stripe_customer_id=subscription_data.get("customer"),
+            plan_id=resolved_plan_id,
+            status=mapped_status,
+            started_at=now,
+            current_period_start=period_start,
+            current_period_end=period_end,
+            trial_end=trial_end_ts,
+        )
+        self.db.add(subscription)
+
+        # Set user edition
+        if user:
+            if plan:
+                user.edition = self._get_edition_from_plan(plan)
+            elif plan_record:
+                user.edition = plan_record.edition or self._get_edition_from_plan(plan_record.name)
+
+        await self.db.commit()
+        logger.info(f"Subscription created: user={user_id}, plan={plan}, subscription={stripe_subscription_id}")
 
     async def _handle_subscription_updated(self, subscription_data: Dict[str, Any]) -> None:
         """Handle subscription updates (plan changes, status changes)."""
@@ -280,8 +410,16 @@ class StripeService:
             return
 
         # Update subscription status
-        new_status = subscription_data.get("status", "active")
-        subscription.status = new_status
+        new_status_str = subscription_data.get("status", "active")
+        status_map = {
+            "active": SubscriptionStatus.ACTIVE,
+            "trialing": SubscriptionStatus.TRIALING,
+            "past_due": SubscriptionStatus.PAST_DUE,
+            "canceled": SubscriptionStatus.CANCELED,
+            "unpaid": SubscriptionStatus.PAST_DUE,
+        }
+        subscription.status = status_map.get(new_status_str, SubscriptionStatus.ACTIVE)
+        new_status = new_status_str
 
         # Update period dates
         current_period_end = subscription_data.get("current_period_end")
@@ -296,9 +434,15 @@ class StripeService:
         user = await self.db.get(User, subscription.user_id)
         if user:
             if new_status in ("active", "trialing"):
-                # Ensure user has correct edition
-                plan = subscription.plan_id.replace("plan_", "")
-                user.edition = self._get_edition_from_plan(plan)
+                # Ensure user has correct edition via DB plan lookup
+                plan_result = await self.db.execute(
+                    select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
+                )
+                plan_obj = plan_result.scalar_one_or_none()
+                if plan_obj:
+                    user.edition = plan_obj.edition or self._get_edition_from_plan(plan_obj.name)
+                else:
+                    user.edition = self._get_edition_from_plan(subscription.plan_id)
             elif new_status in ("past_due", "unpaid"):
                 # Keep edition but mark subscription as problematic
                 logger.warning(f"Subscription {stripe_subscription_id} is {new_status}")
@@ -324,7 +468,7 @@ class StripeService:
             logger.warning(f"Subscription not found for Stripe ID {stripe_subscription_id}")
             return
 
-        subscription.status = "canceled"
+        subscription.status = SubscriptionStatus.CANCELED
         subscription.canceled_at = datetime.utcnow()
 
         # Downgrade user to community edition
@@ -403,7 +547,7 @@ class StripeService:
             return
 
         # Update subscription status to active (in case it was past_due)
-        subscription.status = "active"
+        subscription.status = SubscriptionStatus.ACTIVE
         subscription.payment_failed_at = None
 
         # Update period from invoice lines
@@ -416,18 +560,24 @@ class StripeService:
                 subscription.current_period_start = datetime.fromtimestamp(period["start"])
             break  # Just use the first line item
 
-        # Ensure user has access
+        # Ensure user has access via DB plan lookup
         user = await self.db.get(User, subscription.user_id)
         if user:
-            plan = subscription.plan_id.replace("plan_", "")
-            user.edition = self._get_edition_from_plan(plan)
+            plan_result = await self.db.execute(
+                select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
+            )
+            plan_obj = plan_result.scalar_one_or_none()
+            if plan_obj:
+                user.edition = plan_obj.edition or self._get_edition_from_plan(plan_obj.name)
+            else:
+                user.edition = self._get_edition_from_plan(subscription.plan_id)
 
         await self.db.commit()
 
         amount_paid = invoice_data.get("amount_paid", 0) / 100  # Convert from cents
         logger.info(
             f"Invoice paid: subscription={stripe_subscription_id}, "
-            f"amount=${amount_paid:.2f}, user={subscription.user_id}"
+            f"amount={amount_paid:.2f}, user={subscription.user_id}"
         )
 
     async def _handle_invoice_payment_failed(self, invoice_data: Dict[str, Any]) -> None:
@@ -457,7 +607,7 @@ class StripeService:
             return
 
         # Mark payment as failed
-        subscription.status = "past_due"
+        subscription.status = SubscriptionStatus.PAST_DUE
         if not subscription.payment_failed_at:
             subscription.payment_failed_at = datetime.utcnow()
 
@@ -523,12 +673,17 @@ class StripeService:
             if immediate:
                 # Cancel immediately
                 stripe.Subscription.delete(subscription.stripe_subscription_id)
+                subscription.status = SubscriptionStatus.CANCELED
+                subscription.canceled_at = datetime.utcnow()
             else:
                 # Cancel at period end
                 stripe.Subscription.modify(
                     subscription.stripe_subscription_id,
                     cancel_at_period_end=True
                 )
+                subscription.cancel_at_period_end = True
+
+            await self.db.commit()
 
             logger.info(
                 f"Subscription cancellation requested: user={user_id}, "

@@ -13,7 +13,7 @@ class SubscriptionStatus(str, Enum):
     ACTIVE = "active"
     TRIALING = "trialing"
     PAST_DUE = "past_due"
-    CANCELLED = "cancelled"
+    CANCELED = "canceled"
     EXPIRED = "expired"
 
 
@@ -30,6 +30,8 @@ class SubscriptionCreate(BaseModel):
     """Subscription creation request."""
     plan_id: str = Field(..., description="Subscription plan ID")
     payment_method_id: Optional[str] = Field(None, description="Payment method ID")
+    billing_period: Optional[str] = Field("monthly", description="Billing period: monthly, annual, quarterly")
+    tenant_id: Optional[str] = Field(None, description="Tenant ID")
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -84,6 +86,7 @@ class PaymentMethodCreate(BaseModel):
     card_last4: Optional[str] = Field(None, description="Last 4 digits (for card type)")
     card_exp_month: Optional[int] = Field(None, description="Expiration month (for card type)")
     card_exp_year: Optional[int] = Field(None, description="Expiration year (for card type)")
+    stripe_payment_method_id: Optional[str] = Field(None, description="Stripe payment method ID")
     metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -102,7 +105,7 @@ class BillingHistoryResponse(BaseModel):
     amount: float
     currency: str
     status: str
-    description: str
+    description: Optional[str] = None
     created_at: datetime
     metadata: Optional[Dict[str, Any]] = None
 

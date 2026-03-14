@@ -328,7 +328,7 @@ class UsageTracker:
                 func.sum(UsageMetric.value).label("total_value"),
                 func.sum(UsageMetric.count).label("total_count"),
                 func.date_trunc("day", UsageMetric.timestamp).label("day"),
-                func.array_agg(UsageMetric.metadata).label("metadata_list")
+                func.array_agg(UsageMetric.meta_data).label("metadata_list")
             ).where(
                 and_(
                     UsageMetric.timestamp >= start_date,

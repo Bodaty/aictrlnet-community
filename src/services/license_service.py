@@ -87,17 +87,17 @@ class LicenseService:
             
             # Calculate trial days remaining if in trial
             trial_days_remaining = None
-            if subscription.trial_end_date:
-                remaining = subscription.trial_end_date - datetime.utcnow()
+            if subscription.trial_end:
+                remaining = subscription.trial_end - datetime.utcnow()
                 trial_days_remaining = max(0, remaining.days)
             
             return {
                 "subscription_id": subscription.id,
                 "plan_name": plan.name if plan else "Unknown",
                 "edition": plan.edition if plan else "community",
-                "status": subscription.status.value,
+                "status": subscription.status.value if hasattr(subscription.status, 'value') else str(subscription.status),
                 "trial_days_remaining": trial_days_remaining,
-                "next_billing_date": subscription.next_billing_date.isoformat() if subscription.next_billing_date else None,
+                "next_billing_date": subscription.current_period_end.isoformat() if subscription.current_period_end else None,
                 "features": plan.features if plan else {},
                 "limits": plan.limits if plan else {}
             }
@@ -155,10 +155,10 @@ class LicenseService:
             total_usage = 0
             for row in usage_data:
                 usage_by_feature[row.feature_name] = {
-                    "total_usage": int(row.total_usage),
-                    "usage_events": int(row.usage_events)
+                    "total_usage": int(row.total_usage or 0),
+                    "usage_events": int(row.usage_events or 0)
                 }
-                total_usage += int(row.total_usage)
+                total_usage += int(row.total_usage or 0)
             
             # Get analytics overview for additional context (Business+ only)
             analytics_overview = {}
@@ -495,7 +495,7 @@ class LicenseService:
                         func.sum(UsageTracking.quantity).label("total")
                     ).where(and_(*usage_conditions)).group_by(UsageTracking.resource_type)
                 )
-                usage_summary = {row.resource_type: int(row.total) for row in usage_result}
+                usage_summary = {row.resource_type: int(row.total or 0) for row in usage_result}
 
                 history.append({
                     "period": record.billing_period_start.strftime("%Y-%m"),

@@ -63,8 +63,8 @@ async def get_current_license(
                 "plan": user_edition or "community",
                 "plan_name": plan.display_name,
                 "status": subscription.status.value if hasattr(subscription.status, 'value') else str(subscription.status),
-                "current_period_start": subscription.current_period_start.isoformat() + "Z",
-                "current_period_end": subscription.current_period_end.isoformat() + "Z",
+                "current_period_start": subscription.current_period_start.isoformat(),
+                "current_period_end": subscription.current_period_end.isoformat(),
                 "features": plan.features or {}
             }
         )
@@ -93,8 +93,8 @@ async def get_current_license(
             "plan": edition,
             "plan_name": plan_name,
             "status": status,
-            "current_period_start": period_start.isoformat() + "Z",
-            "current_period_end": period_end.isoformat() + "Z",
+            "current_period_start": period_start.isoformat(),
+            "current_period_end": period_end.isoformat(),
             "features": {}
         }
     )
@@ -122,8 +122,8 @@ async def upgrade_license(
                 "id": "enterprise_inquiry",
                 "plan": "enterprise",
                 "status": "contact_sales",
-                "current_period_start": datetime.utcnow().isoformat() + "Z",
-                "current_period_end": datetime.utcnow().isoformat() + "Z",
+                "current_period_start": datetime.utcnow().isoformat(),
+                "current_period_end": datetime.utcnow().isoformat(),
                 "features": {
                     "unlimited_users": True,
                     "unlimited_workflows": True,
@@ -148,8 +148,8 @@ async def upgrade_license(
                 "id": f"sub_upgraded",
                 "plan": request.target_plan,
                 "status": "pending_payment",
-                "current_period_start": datetime.utcnow().isoformat() + "Z",
-                "current_period_end": (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z",
+                "current_period_start": datetime.utcnow().isoformat(),
+                "current_period_end": (datetime.utcnow() + timedelta(days=30)).isoformat(),
                 "features": {}
             },
             payment_intent=None,
@@ -172,8 +172,8 @@ async def upgrade_license(
                 "id": checkout_data.get("session_id"),
                 "plan": request.target_plan,
                 "status": "pending_payment",
-                "current_period_start": datetime.utcnow().isoformat() + "Z",
-                "current_period_end": (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z",
+                "current_period_start": datetime.utcnow().isoformat(),
+                "current_period_end": (datetime.utcnow() + timedelta(days=30)).isoformat(),
                 "features": {}
             },
             payment_intent=checkout_data.get("session_id"),
