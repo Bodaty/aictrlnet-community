@@ -500,16 +500,29 @@ class IAMService:
         )
         last_activity = last_message_result.scalar() or agent.created_at
         
+        # Calculate average response time for this agent's sent messages
+        avg_response_result = await self.db.scalar(
+            select(func.avg(
+                func.extract('epoch', IAMMessage.delivered_at) -
+                func.extract('epoch', IAMMessage.created_at)
+            )).where(
+                IAMMessage.sender_id == agent_id,
+                IAMMessage.delivered_at.isnot(None),
+                IAMMessage.status == IAMMessageStatus.DELIVERED
+            )
+        )
+        avg_response_ms = int(avg_response_result * 1000) if avg_response_result and avg_response_result > 0 else 0
+
         # Calculate health score
         health_score = 1.0 - error_rate
         if agent.status != IAMAgentStatus.ACTIVE:
             health_score *= 0.5
-        
+
         return IAMAgentMetrics(
             agent_id=agent_id,
             messages_sent=sent_count,
             messages_received=received_count,
-            avg_response_time_ms=1250,  # Placeholder
+            avg_response_time_ms=avg_response_ms,
             error_rate=error_rate,
             last_activity=last_activity,
             health_score=health_score

@@ -143,6 +143,39 @@ class ControlPlaneService:
             return component_with_health
         return None
     
+    async def update_component(
+        self,
+        component_id: str,
+        update_data
+    ) -> Optional[Dict[str, Any]]:
+        """Update component details."""
+        if component_id not in self._components:
+            return None
+
+        component = self._components[component_id]
+
+        # Update fields if provided
+        if hasattr(update_data, 'name') and update_data.name is not None:
+            component["name"] = update_data.name
+        if hasattr(update_data, 'description') and update_data.description is not None:
+            component["description"] = update_data.description
+        if hasattr(update_data, 'endpoint') and update_data.endpoint is not None:
+            component["endpoint"] = update_data.endpoint
+        if hasattr(update_data, 'capabilities') and update_data.capabilities is not None:
+            component["capabilities"] = update_data.capabilities
+        if hasattr(update_data, 'health_check_endpoint') and update_data.health_check_endpoint is not None:
+            component["health_check_endpoint"] = update_data.health_check_endpoint
+        if hasattr(update_data, 'version') and update_data.version is not None:
+            component["version"] = update_data.version
+        if hasattr(update_data, 'metadata') and update_data.metadata is not None:
+            component["metadata"] = update_data.metadata
+
+        component["updated_at"] = datetime.utcnow().isoformat()
+        self._save_registry()
+
+        logger.info(f"Updated component: {component['name']} ({component_id})")
+        return component
+
     async def update_component_status(
         self,
         component_id: str,
@@ -152,13 +185,13 @@ class ControlPlaneService:
         """Update component status."""
         if component_id not in self._components:
             return False
-        
+
         self._components[component_id]["status"] = status
         self._components[component_id]["status_message"] = message
         self._components[component_id]["updated_at"] = datetime.utcnow().isoformat()
-        
+
         self._save_registry()
-        
+
         return True
     
     async def deregister_component(self, component_id: str) -> bool:
