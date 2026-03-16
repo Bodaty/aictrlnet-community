@@ -1901,19 +1901,34 @@ async def create_elicitation_request(
     the URL in a new tab/window for user interaction.
     """
     import uuid
+    import json
+    from core.cache import get_cache
 
     try:
         # Generate a unique request ID for tracking
         request_id = f"elicit_{uuid.uuid4().hex[:12]}"
 
-        # In production, this would:
-        # 1. Store the request in the database
-        # 2. Notify the frontend via WebSocket/SSE
-        # 3. Wait for callback from the URL
-        # 4. Return the result
+        # Store the elicitation request in Redis with TTL
+        cache = await get_cache()
+        elicitation_data = {
+            "request_id": request_id,
+            "url": request.url,
+            "message": request.message,
+            "timeout_seconds": request.timeout_seconds,
+            "status": "pending",
+            "created_at": datetime.utcnow().isoformat(),
+            "user_id": str(current_user.id) if hasattr(current_user, 'id') else "unknown"
+        }
 
-        # For now, return a pending response that the frontend can poll
-        logger.info(f"Elicitation request created: {request_id} -> {request.url}")
+        # Store in Redis with timeout_seconds as TTL (default 5 min)
+        ttl = request.timeout_seconds if request.timeout_seconds else 300
+        await cache._redis_client.setex(
+            f"mcp:elicitation:{request_id}",
+            ttl,
+            json.dumps(elicitation_data)
+        )
+
+        logger.info(f"Elicitation request stored: {request_id} -> {request.url}")
 
         return MCPElicitationResponse(
             status=MCPElicitationStatus.pending,
@@ -1943,13 +1958,42 @@ async def get_elicitation_status(
     The frontend polls this endpoint to check if the user
     has completed the action at the elicitation URL.
     """
-    # In production, this would check the database for the result
-    # For now, return pending as a placeholder
+    import json
+    from core.cache import get_cache
 
-    return MCPElicitationResponse(
-        status=MCPElicitationStatus.pending,
-        result={"request_id": request_id, "message": "Waiting for user action"}
-    )
+    try:
+        cache = await get_cache()
+        data = await cache._redis_client.get(f"mcp:elicitation:{request_id}")
+
+        if not data:
+            # Request not found or expired
+            return MCPElicitationResponse(
+                status=MCPElicitationStatus.timeout,
+                result={"request_id": request_id, "message": "Request not found or expired"}
+            )
+
+        elicitation_data = json.loads(data)
+        status_str = elicitation_data.get("status", "pending")
+
+        # Map string status to enum
+        if status_str == "completed":
+            status = MCPElicitationStatus.completed
+        elif status_str == "cancelled":
+            status = MCPElicitationStatus.cancelled
+        else:
+            status = MCPElicitationStatus.pending
+
+        return MCPElicitationResponse(
+            status=status,
+            result=elicitation_data.get("result", {"request_id": request_id})
+        )
+
+    except Exception as e:
+        logger.error(f"Error checking elicitation status: {e}")
+        return MCPElicitationResponse(
+            status=MCPElicitationStatus.pending,
+            result={"request_id": request_id, "message": "Error checking status"}
+        )
 
 
 @router.post("/elicitation/{request_id}/complete", response_model=MCPElicitationResponse)
@@ -1962,9 +2006,40 @@ async def complete_elicitation(
 
     Called by the callback URL after user completes the action.
     """
-    logger.info(f"Elicitation completed: {request_id}")
+    import json
+    from core.cache import get_cache
 
-    return MCPElicitationResponse(
-        status=MCPElicitationStatus.completed,
-        result=result
-    )
+    try:
+        cache = await get_cache()
+        key = f"mcp:elicitation:{request_id}"
+        data = await cache._redis_client.get(key)
+
+        if not data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Elicitation request '{request_id}' not found or expired"
+            )
+
+        elicitation_data = json.loads(data)
+        elicitation_data["status"] = "completed"
+        elicitation_data["result"] = result
+        elicitation_data["completed_at"] = datetime.utcnow().isoformat()
+
+        # Update in Redis (keep for 1 hour after completion for polling)
+        await cache._redis_client.setex(key, 3600, json.dumps(elicitation_data))
+
+        logger.info(f"Elicitation completed: {request_id}")
+
+        return MCPElicitationResponse(
+            status=MCPElicitationStatus.completed,
+            result=result
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error completing elicitation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to complete elicitation: {str(e)}"
+        )

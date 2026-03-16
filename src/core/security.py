@@ -195,8 +195,14 @@ class RoleChecker:
 # No need for separate dev function - it's integrated above
 
 
-def verify_token(token: str) -> Optional[dict]:
-    """Verify a token and return user info without raising exceptions."""
+async def verify_token(token: str, db=None) -> Optional[dict]:
+    """Verify a token and return user info without raising exceptions.
+
+    Args:
+        token: JWT token to verify
+        db: Optional AsyncSession for database lookup. If provided, verifies
+            user exists and is active in database.
+    """
     from core.tenant_context import DEFAULT_TENANT_ID
 
     settings = get_settings()
@@ -223,8 +229,33 @@ def verify_token(token: str) -> Optional[dict]:
         if user_id is None:
             return None
 
-        # For development, return mock user
-        # In production, fetch from database
+        # If database session provided, verify user exists and is active
+        if db:
+            from sqlalchemy import select
+            from models.user import User
+
+            result = await db.execute(select(User).where(User.id == user_id))
+            user = result.scalar_one_or_none()
+
+            if not user:
+                return None  # User not found in database
+
+            if not user.is_active:
+                return None  # User is deactivated
+
+            # Return real user data from database
+            return {
+                "id": str(user.id),
+                "username": user.username,
+                "email": user.email,
+                "is_active": user.is_active,
+                "edition": settings.EDITION,
+                "role": getattr(user, 'role', 'user'),
+                "roles": getattr(user, 'roles', ['user']),
+                "tenant_id": getattr(user, 'tenant_id', DEFAULT_TENANT_ID),
+            }
+
+        # Fallback: return data from JWT payload (no DB verification)
         return {
             "id": user_id,
             "username": payload.get("username", "user"),

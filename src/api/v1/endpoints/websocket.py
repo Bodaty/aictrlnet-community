@@ -119,7 +119,7 @@ async def websocket_endpoint(
     """Main WebSocket endpoint for real-time updates."""
     # Verify token
     try:
-        user = verify_token(token)
+        user = await verify_token(token)
         if not user:
             await websocket.close(code=1008, reason="Invalid token")
             return
