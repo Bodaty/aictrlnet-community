@@ -1922,11 +1922,7 @@ async def create_elicitation_request(
 
         # Store in Redis with timeout_seconds as TTL (default 5 min)
         ttl = request.timeout_seconds if request.timeout_seconds else 300
-        await cache._redis_client.setex(
-            f"mcp:elicitation:{request_id}",
-            ttl,
-            json.dumps(elicitation_data)
-        )
+        await cache.set(f"mcp:elicitation:{request_id}", elicitation_data, expire=ttl)
 
         logger.info(f"Elicitation request stored: {request_id} -> {request.url}")
 
@@ -1963,7 +1959,7 @@ async def get_elicitation_status(
 
     try:
         cache = await get_cache()
-        data = await cache._redis_client.get(f"mcp:elicitation:{request_id}")
+        data = await cache.get(f"mcp:elicitation:{request_id}")
 
         if not data:
             # Request not found or expired
@@ -1972,7 +1968,7 @@ async def get_elicitation_status(
                 result={"request_id": request_id, "message": "Request not found or expired"}
             )
 
-        elicitation_data = json.loads(data)
+        elicitation_data = data
         status_str = elicitation_data.get("status", "pending")
 
         # Map string status to enum
@@ -2012,7 +2008,7 @@ async def complete_elicitation(
     try:
         cache = await get_cache()
         key = f"mcp:elicitation:{request_id}"
-        data = await cache._redis_client.get(key)
+        data = await cache.get(key)
 
         if not data:
             raise HTTPException(
@@ -2020,13 +2016,13 @@ async def complete_elicitation(
                 detail=f"Elicitation request '{request_id}' not found or expired"
             )
 
-        elicitation_data = json.loads(data)
+        elicitation_data = data
         elicitation_data["status"] = "completed"
         elicitation_data["result"] = result
         elicitation_data["completed_at"] = datetime.utcnow().isoformat()
 
         # Update in Redis (keep for 1 hour after completion for polling)
-        await cache._redis_client.setex(key, 3600, json.dumps(elicitation_data))
+        await cache.set(key, elicitation_data, expire=3600)
 
         logger.info(f"Elicitation completed: {request_id}")
 
