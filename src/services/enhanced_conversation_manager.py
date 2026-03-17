@@ -1599,8 +1599,10 @@ Response (just the sentence, no quotes):"""
                         inferred_tool_call.get('arguments', {})
                     )]
 
-                # Deduplicate create_workflow calls by name to prevent LLM double-creation
+                # Deduplicate workflow tool calls to prevent LLM over-generation
                 seen_creates = set()
+                seen_node_adds = 0
+                max_node_adds_per_turn = 5  # Safety cap per conversation turn
                 deduplicated = []
                 for tc in tool_calls_to_execute:
                     if tc.name == 'create_workflow':
@@ -1608,6 +1610,10 @@ Response (just the sentence, no quotes):"""
                         if key in seen_creates:
                             continue
                         seen_creates.add(key)
+                    elif tc.name in ('add_workflow_node', 'add_node'):
+                        seen_node_adds += 1
+                        if seen_node_adds > max_node_adds_per_turn:
+                            continue
                     deduplicated.append(tc)
                 tool_calls_to_execute = deduplicated
 

@@ -458,17 +458,33 @@ async def update_workflow(
     
     # Update fields
     update_data = workflow_update.model_dump(exclude_unset=True)
-    
-    # If updating definition, increment version
-    if "definition" in update_data:
+
+    # Validate definition if provided
+    if "definition" in update_data and update_data["definition"]:
+        definition = update_data["definition"]
+        if not isinstance(definition, dict):
+            raise HTTPException(status_code=400, detail="Definition must be a JSON object")
+        nodes = definition.get("nodes", [])
+        node_ids = {n.get("id") for n in nodes if isinstance(n, dict)}
+        for edge in definition.get("edges", []):
+            source = edge.get("source")
+            target = edge.get("target")
+            if source and source not in node_ids:
+                raise HTTPException(status_code=400, detail=f"Edge references missing source node: {source}")
+            if target and target not in node_ids:
+                raise HTTPException(status_code=400, detail=f"Edge references missing target node: {target}")
         workflow.version += 1
-    
+
     for field, value in update_data.items():
         setattr(workflow, field, value)
-    
-    await db.commit()
-    await db.refresh(workflow)
-    
+
+    try:
+        await db.commit()
+        await db.refresh(workflow)
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save workflow: {str(e)}")
+
     return WorkflowResponse.model_validate(workflow)
 
 
