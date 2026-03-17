@@ -1599,6 +1599,18 @@ Response (just the sentence, no quotes):"""
                         inferred_tool_call.get('arguments', {})
                     )]
 
+                # Deduplicate create_workflow calls by name to prevent LLM double-creation
+                seen_creates = set()
+                deduplicated = []
+                for tc in tool_calls_to_execute:
+                    if tc.name == 'create_workflow':
+                        key = (tc.arguments or {}).get('name', '')
+                        if key in seen_creates:
+                            continue
+                        seen_creates.add(key)
+                    deduplicated.append(tc)
+                tool_calls_to_execute = deduplicated
+
                 if stream:
                     yield {
                         "event": "tools_identified",
