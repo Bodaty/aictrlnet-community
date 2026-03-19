@@ -135,6 +135,7 @@ async def revoke_api_key(
     
     return SuccessResponse(
         success=True,
+        data={"key_id": key_id, "revoked": True},
         message="API key revoked successfully"
     )
 
@@ -204,5 +205,6 @@ async def delete_api_key(
     
     return SuccessResponse(
         success=True,
+        data={"key_id": key_id, "deleted": True},
         message="API key deleted successfully"
     )

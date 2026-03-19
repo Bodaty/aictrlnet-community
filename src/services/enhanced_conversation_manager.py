@@ -1338,8 +1338,26 @@ Response (just the sentence, no quotes):"""
         'list_api_endpoints', 'list_integrations', 'update_onboarding',
     }
 
-    def _prune_tools_for_ollama(self, tools: list, user_message: str, max_tools: int = 25) -> list:
-        """Prune tools to stay within Ollama's native tool calling limit (~35).
+    _NO_TOOL_PHRASES = frozenset({
+        'hello', 'hi', 'hey', 'hi there', 'hey there', 'hello there',
+        'what can you do', 'what can you help me with',
+        'who are you', 'how are you', 'what are you',
+        'good morning', 'good afternoon', 'good evening',
+        'thanks', 'thank you', 'thank you so much',
+        'bye', 'goodbye', 'see you', 'talk later',
+    })
+
+    def _needs_tools(self, message: str) -> bool:
+        words = message.strip().split()
+        if len(words) < 3:
+            return False
+        lower = message.lower().strip().rstrip('?!.')
+        if lower in self._NO_TOOL_PHRASES:
+            return False
+        return True
+
+    def _prune_tools(self, tools: list, user_message: str, max_tools: int = 25) -> list:
+        """Prune tools to stay within the LLM's effective tool limit.
 
         Uses keyword overlap scoring to select the most relevant tools.
         """
@@ -1422,6 +1440,10 @@ Response (just the sentence, no quotes):"""
         from typing import AsyncGenerator
         from services.tool_dispatcher import ToolDispatcher, Edition
 
+        # Yield thinking IMMEDIATELY so the client sees "Thinking..." in <1s
+        if stream:
+            yield {"event": "thinking", "data": {"message": "Understanding your request..."}}
+
         await self.initialize_knowledge()
 
         # =====================================================================
@@ -1431,9 +1453,6 @@ Response (just the sentence, no quotes):"""
         if not session:
             yield {"event": "error", "data": {"message": f"Session {session_id} not found"}}
             return
-
-        if stream:
-            yield {"event": "thinking", "data": {"message": "Understanding your request..."}}
 
         logger.info(f"[v5] Loaded {len(conversation_history)} messages from history")
 
@@ -1506,10 +1525,13 @@ Response (just the sentence, no quotes):"""
             personal_agent_config=personal_agent_config,
         )
 
-        # Get available tools (prune if too many for Ollama's native tool calling)
+        # Get available tools (prune if too many for the LLM's effective tool limit)
         tool_dispatcher = ToolDispatcher(self.db, Edition.COMMUNITY)
         all_tools = tool_dispatcher.get_available_tools()
-        tools = self._prune_tools_for_ollama(all_tools, content) if len(all_tools) > 35 else all_tools
+        if self._needs_tools(content):
+            tools = self._prune_tools(all_tools, content) if len(all_tools) > 35 else all_tools
+        else:
+            tools = []  # Greeting/farewell — skip tool definitions entirely
 
         if stream:
             yield {
