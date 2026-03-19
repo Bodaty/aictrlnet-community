@@ -1,6 +1,7 @@
 """Workflow-related endpoints."""
 
 import logging
+import time
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -200,6 +201,7 @@ async def create_workflow(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Create a new workflow."""
+    t0 = time.monotonic()
     # Check workflow limit
     tenant_id = get_safe_attr(current_user, "tenant_id", None) or get_current_tenant_id()
     enforcer = LicenseEnforcer(db)
@@ -208,9 +210,10 @@ async def create_workflow(
         limit_type=LimitType.WORKFLOWS,
         increment=1
     )
-    
+    logger.info(f"[TIMING] create_workflow license_check={time.monotonic() - t0:.3f}s")
+
     workflow_service = WorkflowService(db)
-    
+
     # Check if creating from template
     if workflow_data.template_id:
         # Use the template service's instantiate method which properly handles everything
@@ -255,6 +258,7 @@ async def create_workflow(
 
         # Apply Q/G/S/M metadata before saving (Business/Enterprise)
         # Prefer dynamic (risk-driven) path when db is available
+        t_qgsm = time.monotonic()
         try:
             from aictrlnet_business.services.qgsm import apply_qgsm_dynamic
             from schemas.workflow import WorkflowDefinitionSchema
@@ -276,8 +280,11 @@ async def create_workflow(
             pass  # Community edition — Q/G/S/M not available
         except Exception as qgsm_err:
             logger.warning(f"Q/G/S/M pre-save failed (non-critical): {qgsm_err}")
+        logger.info(f"[TIMING] create_workflow qgsm={time.monotonic() - t_qgsm:.3f}s")
 
+        t_db = time.monotonic()
         workflow = await workflow_service.create_workflow(workflow_data, tenant_id=tenant_id)
+        logger.info(f"[TIMING] create_workflow db_insert={time.monotonic() - t_db:.3f}s")
     
     # Track usage
     tracker = await get_usage_tracker(db)
@@ -286,7 +293,8 @@ async def create_workflow(
         metric_type="workflows_created",
         metadata={"workflow_id": str(workflow.id), "name": workflow.name}
     )
-    
+
+    logger.info(f"[TIMING] create_workflow total={time.monotonic() - t0:.3f}s workflow_id={workflow.id}")
     return WorkflowResponse.model_validate(workflow)
 
 
