@@ -12,8 +12,8 @@ from llm.models import ModelTier
 logger = logging.getLogger(__name__)
 
 
-# Environment-configured default model (for Cloud Run/non-Ollama deployments)
-# Using Vertex AI for enterprise features (SLA, IAM, audit logging)
+# GCP production fallback. Locally, docker-compose.yml sets DEFAULT_LLM_MODEL=llama3.2:3b.
+# core/config.py has a separate default (llama3.1:8b) for running outside Docker.
 DEFAULT_LLM_MODEL = os.environ.get('DEFAULT_LLM_MODEL', 'gemini-2.0-flash-vertex')
 
 
@@ -29,6 +29,35 @@ def get_environment_default_model() -> str:
         if not set.
     """
     return os.environ.get('DEFAULT_LLM_MODEL', 'gemini-2.0-flash-vertex')
+
+
+def get_environment_default_provider() -> str:
+    """
+    Get the provider string for the environment-configured default model.
+
+    Derives the provider from DEFAULT_LLM_MODEL so that services don't need
+    to hardcode 'ollama' — they get the right provider for the environment.
+
+    Returns:
+        Provider string: 'ollama' locally, 'vertex_ai' on GCP, etc.
+    """
+    model = get_environment_default_model()
+    if is_ollama_model(model):
+        return "ollama"
+    model_lower = model.lower()
+    if "vertex" in model_lower:
+        return "vertex_ai"
+    if "gemini" in model_lower:
+        return "gemini"
+    if "gpt" in model_lower:
+        return "openai"
+    if "claude" in model_lower:
+        return "anthropic"
+    if "deepseek" in model_lower:
+        return "deepseek"
+    if "qwen" in model_lower:
+        return "dashscope"
+    return "ollama"
 
 
 def is_ollama_model(model: str) -> bool:

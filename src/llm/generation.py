@@ -324,6 +324,18 @@ class LLMGenerationEngine:
 
         return model, tier
 
+    async def get_system_tier_defaults(self) -> Dict[str, Optional[str]]:
+        """Return resolved system default model for each tier (what the system actually uses)."""
+        from llm.tier_resolver import get_dynamic_system_default_for_tier
+        available = await self._get_ollama_models()
+        defaults = {}
+        for tier in [ModelTier.FAST, ModelTier.BALANCED, ModelTier.QUALITY]:
+            model = get_dynamic_system_default_for_tier(tier, available)
+            if not model:
+                model = get_environment_default_model()
+            defaults[tier.value] = model
+        return defaults
+
     def _determine_tier_for_task(self, request: LLMRequest) -> ModelTier:
         """
         Determine the appropriate model tier for a given task.

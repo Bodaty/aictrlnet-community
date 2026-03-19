@@ -69,7 +69,6 @@ async def generate_text(
         user_settings = UserLLMSettings(
             user_id=str(current_user.id),
             selected_model=request.model or settings.DEFAULT_LLM_MODEL,
-            provider="ollama",
             temperature=request.temperature or 0.7,
             max_tokens=request.max_tokens or 1000,
             stream_responses=request.stream
@@ -93,6 +92,14 @@ async def generate_text(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Generation failed: {str(e)}"
         )
+
+
+@router.get("/models/system-defaults")
+async def get_system_defaults(
+    current_user: User = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """Get the system default model for each tier."""
+    return await llm_service.generation_engine.get_system_tier_defaults()
 
 
 @router.get("/models", response_model=List[ModelInfo])
@@ -159,7 +166,6 @@ async def generate_workflow_steps(
         user_settings = UserLLMSettings(
             user_id=str(current_user.id),
             selected_model=settings.DEFAULT_LLM_MODEL,
-            provider="ollama"
         )
         
         steps = await llm_service.generate_workflow_steps(

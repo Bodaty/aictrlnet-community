@@ -1561,7 +1561,6 @@ Response (just the sentence, no quotes):"""
                 user_settings = UserLLMSettings(
                     user_id=user_id,
                     selected_model=user_preferences.get('preferredQualityModel', ''),
-                    provider="ollama",
                     preferredFastModel=user_preferences.get('preferredFastModel'),
                     preferredBalancedModel=user_preferences.get('preferredBalancedModel'),
                     preferredQualityModel=user_preferences.get('preferredQualityModel'),

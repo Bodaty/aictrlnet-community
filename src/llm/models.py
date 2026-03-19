@@ -50,11 +50,13 @@ class UserLLMSettings(BaseModel):
     """User's LLM preferences from UI settings."""
     user_id: str
     selected_model: str  # e.g., "llama3.2:1b", "claude-3-haiku" (legacy, set to preferredQualityModel)
-    provider: ModelProvider
+    provider: Optional[ModelProvider] = None  # Derived from model name by generation engine
     api_keys: Dict[str, str] = {}  # Provider-specific API keys
     temperature: float = 0.7
     max_tokens: int = 1000
     stream_responses: bool = False
+    # Default is an Ollama model for local dev; callers via get_user_llm_settings()
+    # override with settings.DEFAULT_LLM_MODEL (which respects the environment).
     fallback_model: Optional[str] = "llama3.2:3b"
 
     # Tier-based model preferences (new)

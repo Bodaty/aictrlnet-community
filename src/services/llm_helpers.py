@@ -75,7 +75,6 @@ async def get_user_llm_settings(
         return UserLLMSettings(
             user_id=user_id,
             selected_model=model_override,
-            provider="ollama",  # Will be determined by model name in LLM service
             temperature=temperature or 0.7,
             max_tokens=max_tokens or 1000,
             stream_responses=stream_responses,
@@ -131,7 +130,6 @@ async def get_user_llm_settings(
     return UserLLMSettings(
         user_id=user_id,
         selected_model=selected_model,
-        provider="ollama",
         temperature=temperature or 0.7,
         max_tokens=max_tokens or 1000,
         stream_responses=stream_responses,
@@ -167,10 +165,13 @@ def get_system_llm_settings(
     Returns:
         UserLLMSettings configured for system use
     """
+    from llm.tier_resolver import is_ollama_model
+    selected = model or settings.DEFAULT_LLM_MODEL
+    provider = "ollama" if is_ollama_model(selected) else "vertex_ai"
     return UserLLMSettings(
         user_id="system",
-        selected_model=model or settings.DEFAULT_LLM_MODEL,
-        provider="ollama",
+        selected_model=selected,
+        provider=provider,
         temperature=temperature,
         max_tokens=max_tokens,
         stream_responses=False,

@@ -24,7 +24,7 @@ MODEL_CONFIGS = {
         "timeout": 30
     },
     ModelTier.BALANCED: {
-        "models": ["llama3.2:3b", "mistral:7b", "llama3.1:8b-instruct-q4_K_M"],
+        "models": ["llama3.2:3b", "mistral:7b"],
         "temperature": 0.3,
         "max_tokens": 1000,
         "timeout": 60
@@ -553,7 +553,7 @@ def classify_model_tier(model_name: str) -> ModelTier:
     if size is not None:
         if size <= 2.0:
             return ModelTier.FAST
-        elif size <= 8.0:
+        elif size < 8.0:
             return ModelTier.BALANCED
         else:
             return ModelTier.QUALITY
