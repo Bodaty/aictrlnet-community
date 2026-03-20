@@ -217,6 +217,7 @@ class AICtrlNetApp:
             docs_url=f"{self.settings.API_V1_STR}/docs",
             redoc_url=f"{self.settings.API_V1_STR}/redoc",
             lifespan=lifespan,
+            redirect_slashes=False,
         )
 
         self._add_middleware()

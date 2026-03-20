@@ -280,6 +280,7 @@ async def create_workflow(
             pass  # Community edition — Q/G/S/M not available
         except Exception as qgsm_err:
             logger.warning(f"Q/G/S/M pre-save failed (non-critical): {qgsm_err}")
+            await db.rollback()  # Clear any dirty session state from failed Q/G/S/M
         logger.info(f"[TIMING] create_workflow qgsm={time.monotonic() - t_qgsm:.3f}s")
 
         t_db = time.monotonic()
