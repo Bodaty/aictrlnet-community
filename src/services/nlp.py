@@ -159,13 +159,51 @@ class NLPService:
             if ai_result:
                 ai_workflow = ai_result['workflow']
                 ai_model_used = ai_result.get('model', settings.DEFAULT_LLM_MODEL)
-                
+                # Preserve edition-specific metadata (Business RAG, etc.)
+                extra_metadata = {
+                    k: v for k, v in ai_result.items()
+                    if k not in ('workflow', 'model', 'model_tier', 'provider') and not k.startswith('_')
+                }
+
                 processing_steps.append({
                     "step": "ai_generation",
                     "success": bool(ai_workflow),
                     "model": ai_model_used
                 })
-                
+
+                # ── EDIT MODE: Return immediately without DB insert ──
+                if is_edit_mode:
+                    logger.info(f"Edit mode: returning modified workflow without DB insert (model={ai_model_used})")
+                    processing_steps.append({
+                        "step": "edit_mode_return",
+                        "result": "returning_modified_definition",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    return {
+                        "workflow": {
+                            "definition": ai_workflow,
+                            "nodes": ai_workflow.get("nodes", []),
+                            "edges": ai_workflow.get("edges", []),
+                        },
+                        "edit_mode": True,
+                        "edit_intent": edit_intent,
+                        "generation_method": extra_metadata.get('generation_method', 'ai_generated'),
+                        "confidence_score": 0.85,
+                        "intent_analysis": intent_analysis,
+                        "ai_model_used": ai_model_used,
+                        "processing_steps": processing_steps,
+                        **extra_metadata,
+                        "plan": {
+                            "intent": intent_analysis,
+                            "steps": [
+                                {"action": n.get("name", n.get("type", "step")), "type": n.get("type", "task")}
+                                for n in ai_workflow.get("nodes", [])
+                            ],
+                            "confidence": 0.85,
+                            "edit_intent": edit_intent,
+                        }
+                    }
+
                 if ai_workflow and self._is_complete_workflow(ai_workflow):
                     # AI generated a complete workflow
                     generation_method = "ai_generated"
@@ -270,38 +308,6 @@ class NLPService:
                                 "timestamp": datetime.utcnow().isoformat()
                             })
                     
-                    # Edit mode: return modified definition without creating a new DB record
-                    if is_edit_mode:
-                        logger.info("Edit mode: returning modified workflow definition without DB insert")
-                        processing_steps.append({
-                            "step": "edit_mode_return",
-                            "result": "returning_modified_definition",
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
-                        return {
-                            "workflow": {
-                                "definition": ai_workflow,
-                                "nodes": ai_workflow.get("nodes", []),
-                                "edges": ai_workflow.get("edges", []),
-                            },
-                            "edit_mode": True,
-                            "edit_intent": edit_intent,
-                            "generation_method": generation_method,
-                            "confidence_score": confidence_score,
-                            "intent_analysis": intent_analysis,
-                            "ai_model_used": ai_model_used,
-                            "processing_steps": processing_steps,
-                            "plan": {
-                                "intent": intent_analysis,
-                                "steps": [
-                                    {"action": n.get("name", n.get("type", "step")), "type": n.get("type", "task")}
-                                    for n in ai_workflow.get("nodes", [])
-                                ],
-                                "confidence": confidence_score,
-                                "edit_intent": edit_intent,
-                            }
-                        }
-
                     workflow = await self._create_workflow_from_nlp(
                         prompt, ai_workflow, generation_method,
                         tenant_id=context.get('tenant_id') or get_current_tenant_id() if context else get_current_tenant_id(),
@@ -309,11 +315,13 @@ class NLPService:
                     )
 
                     if return_transparency:
-                        return await self._build_transparency_response(
+                        response = await self._build_transparency_response(
                             workflow, generation_method, templates_used,
                             extracted_parameters, intent_analysis, confidence_score,
                             processing_steps, ai_model_used, prompt, edit_intent
                         )
+                        response.update(extra_metadata)
+                        return response
                     return workflow
                 
                 # Step 2: Enhance with templates if AI workflow is incomplete
@@ -362,6 +370,30 @@ class NLPService:
                             )
                         return workflow
             
+            # ── EDIT MODE: Handle AI failure — return original workflow unchanged ──
+            if is_edit_mode:
+                logger.warning("Edit mode: AI generation returned None, returning original workflow")
+                processing_steps.append({
+                    "step": "edit_mode_ai_failure",
+                    "result": "returning_original_workflow",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                return {
+                    "workflow": {
+                        "definition": current_workflow or {},
+                        "nodes": (current_workflow or {}).get("nodes", []),
+                        "edges": (current_workflow or {}).get("edges", []),
+                    },
+                    "edit_mode": True,
+                    "edit_intent": edit_intent,
+                    "error": "Could not process edit. AI generation failed. Try again or use a more specific command.",
+                    "generation_method": "edit_unchanged",
+                    "confidence_score": 0.0,
+                    "intent_analysis": intent_analysis,
+                    "processing_steps": processing_steps,
+                    "plan": {"intent": intent_analysis, "steps": [], "confidence": 0.0, "edit_intent": edit_intent}
+                }
+
             # Step 3: Try template matching if AI fails
             template_result = await self._match_templates_tracked(prompt, context)
             if template_result:
@@ -495,9 +527,13 @@ class NLPService:
                 current_wf = context['current_workflow']
                 current_wf_json = json.dumps(current_wf, indent=2, default=str)
                 enhanced_prompt = (
-                    f"EDIT MODE: Modify the existing workflow below based on the user's request.\n"
-                    f"Current workflow definition:\n{current_wf_json}\n\n"
-                    f"User's edit request: {enhanced_prompt}"
+                    f"EDIT MODE: You are modifying an EXISTING workflow. "
+                    f"DO NOT create a new workflow from scratch. "
+                    f"Make ONLY the requested change.\n\n"
+                    f"Current workflow:\n{current_wf_json}\n\n"
+                    f"Requested change: {enhanced_prompt}\n\n"
+                    f"Return the COMPLETE modified workflow with the change applied. "
+                    f"Keep ALL existing nodes and edges unless the user asked to remove them."
                 )
 
             # Use LLM service to generate workflow steps
