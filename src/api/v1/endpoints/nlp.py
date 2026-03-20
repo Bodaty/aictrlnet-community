@@ -373,42 +373,25 @@ async def convert_plan_to_workflow(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user_safe),
 ):
-    """Convert an NLP-generated plan to an executable workflow."""
-    nlp_service = NLPService(db)
-    
+    """Convert plan to workflow definition (structure only, no DB persist)."""
     try:
-        # Handle different plan formats
-        if "plan" in plan:
-            # Frontend sends the plan inside a plan field
-            actual_plan = plan["plan"]
-        else:
-            actual_plan = plan
-            
-        # Extract workflow configuration from plan
-        workflow_config = {
-            "nodes": actual_plan.get("nodes", actual_plan.get("steps", [])),
-            "edges": actual_plan.get("edges", actual_plan.get("connections", []))
-        }
-        
-        # Get tenant_id from current_user
-        tenant_id = current_user.get('tenant_id')
-        if not tenant_id:
-            # If current_user doesn't have tenant_id, check if they have a tenant object
-            tenant = current_user.get('tenant')
-            if tenant and isinstance(tenant, dict):
-                tenant_id = tenant.get('id') or get_current_tenant_id()
-            else:
-                tenant_id = get_current_tenant_id()
-
-        # Create workflow from plan
-        workflow = await nlp_service._create_workflow_from_nlp(
-            actual_plan.get("name", actual_plan.get("description", "Converted from plan")),
-            workflow_config,
-            "plan_conversion",
-            tenant_id=tenant_id
-        )
-        
-        return jsonable_encoder(WorkflowResponse.model_validate(workflow))
+        actual_plan = plan.get("plan", plan)
+        steps = actual_plan.get("nodes", actual_plan.get("steps", []))
+        nodes = []
+        for i, step in enumerate(steps):
+            if isinstance(step, dict):
+                nodes.append({
+                    "id": step.get("id", f"node_{i}"),
+                    "type": step.get("type", "task"),
+                    "name": step.get("action", step.get("name", f"Step {i+1}")),
+                    "data": {
+                        "label": step.get("action", step.get("name", f"Step {i+1}")),
+                        "description": step.get("description", "")
+                    },
+                    "position": {"x": 250 + (i % 3) * 200, "y": 100 + (i // 3) * 150}
+                })
+        edges = actual_plan.get("edges", actual_plan.get("connections", []))
+        return {"nodes": nodes, "edges": edges}
     except Exception as e:
         raise HTTPException(
             status_code=500,

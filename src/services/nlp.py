@@ -2572,6 +2572,20 @@ Return ONLY a single number (the index). Example: 5
         - Still leverage AI agents, governance, and quality features
         - Add Q/G/M as capabilities ON nodes, not generic standalone nodes
         """
+        # Edit mode: preserve edit instructions, only append available tools
+        if prompt.strip().startswith("# EDIT MODE"):
+            tool_info = []
+            if available_tools and available_tools.get("total", 0) > 0:
+                for category, adapters in available_tools.get("by_category", {}).items():
+                    available_adapters = [a for a in adapters if a.get("available", True)]
+                    if available_adapters:
+                        tool_info.append(f"\n{category.title()} tools:")
+                        for adapter in available_adapters[:3]:
+                            tool_info.append(f"- {adapter['name']} (ID: {adapter['id']})")
+            if tool_info:
+                return prompt + "\n\n# Available Tools\n" + "\n".join(tool_info)
+            return prompt
+
         # Build tool information
         tool_info = []
         if available_tools and available_tools.get("total", 0) > 0:
