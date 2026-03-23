@@ -117,7 +117,7 @@ async def get_workflow_catalog(
 async def list_workflows(
     response: Response,
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(500, ge=1, le=5000),
     category: Optional[str] = None,
     is_template: Optional[bool] = None,
     search: Optional[str] = None,
