@@ -1,14 +1,57 @@
 """Authentication endpoints."""
 
 from datetime import datetime, timedelta
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Optional, Dict, Tuple
+from collections import defaultdict
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel, EmailStr, Field
 import uuid
 import secrets
+import time
+
+# Simple in-memory login rate limiter
+# Tracks failed attempts per IP and per username
+_login_attempts: Dict[str, Tuple[int, float]] = {}  # key -> (count, first_attempt_time)
+_RATE_LIMIT_WINDOW = 300  # 5 minutes
+_RATE_LIMIT_MAX_ATTEMPTS = 10  # max failures before lockout
+
+
+def _check_login_rate_limit(key: str):
+    """Check if login attempts for this key are rate limited."""
+    now = time.time()
+    if key in _login_attempts:
+        count, first_time = _login_attempts[key]
+        if now - first_time > _RATE_LIMIT_WINDOW:
+            # Window expired, reset
+            del _login_attempts[key]
+        elif count >= _RATE_LIMIT_MAX_ATTEMPTS:
+            remaining = int(_RATE_LIMIT_WINDOW - (now - first_time))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many login attempts. Try again in {remaining} seconds.",
+                headers={"Retry-After": str(remaining)}
+            )
+
+
+def _record_failed_login(key: str):
+    """Record a failed login attempt."""
+    now = time.time()
+    if key in _login_attempts:
+        count, first_time = _login_attempts[key]
+        if now - first_time > _RATE_LIMIT_WINDOW:
+            _login_attempts[key] = (1, now)
+        else:
+            _login_attempts[key] = (count + 1, first_time)
+    else:
+        _login_attempts[key] = (1, now)
+
+
+def _clear_login_attempts(key: str):
+    """Clear failed attempts on successful login."""
+    _login_attempts.pop(key, None)
 
 from core.database import get_db
 from core.security import (
@@ -153,20 +196,28 @@ async def register(
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ) -> LoginResponse:
     """Login and get access token - with MFA support."""
+    # Rate limit check — by username and by IP
+    client_ip = request.client.host if request.client else "unknown"
+    _check_login_rate_limit(f"ip:{client_ip}")
+    _check_login_rate_limit(f"user:{form_data.username}")
+
     # Find user by email or username
     result = await db.execute(
         select(User).where(
-            (User.email == form_data.username) | 
+            (User.email == form_data.username) |
             (User.username == form_data.username)
         )
     )
     user = result.scalar_one_or_none()
-    
+
     if not user or not verify_password(form_data.password, user.hashed_password):
+        _record_failed_login(f"ip:{client_ip}")
+        _record_failed_login(f"user:{form_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -264,6 +315,10 @@ async def login(
         "token_version": user.token_version or 0,
     })
     
+    # Clear rate limit on successful login
+    _clear_login_attempts(f"ip:{client_ip}")
+    _clear_login_attempts(f"user:{form_data.username}")
+
     return LoginResponse(
         access_token=access_token,
         refresh_token=refresh_token,
