@@ -159,10 +159,20 @@ class SystemPromptAssembler:
         style = personality.get("style", "")
         expertise_areas = personality.get("expertise_areas", [])
 
-        if not (tone or style or expertise_areas):
+        # Get agent name
+        agent_name = ""
+        if hasattr(personal_agent_config, "agent_name"):
+            agent_name = personal_agent_config.agent_name or ""
+        elif isinstance(personal_agent_config, dict):
+            agent_name = personal_agent_config.get("agent_name", "")
+
+        if not (tone or style or expertise_areas or agent_name):
             return ""
 
         lines = ["## Your Personality\n"]
+        if agent_name and agent_name != "My Assistant":
+            lines.append(f"- Your name is: {agent_name}")
+            lines.append(f"- When introducing yourself, use the name \"{agent_name}\"")
         if tone:
             lines.append(f"- Tone: {tone}")
         if style:

@@ -137,8 +137,8 @@ class MFAService:
         
         # Verify the code
         totp = pyotp.TOTP(enrollment["secret"])
-        if not totp.verify(verification_code, valid_window=1):
-            raise HTTPException(400, "Invalid verification code")
+        if not totp.verify(verification_code, valid_window=2):
+            raise HTTPException(400, "Invalid verification code. Make sure the code is current and your device clock is synced.")
         
         # Save to database
         user = await self.get_user(user_id)
@@ -202,7 +202,7 @@ class MFAService:
             secret = self._decrypt(user.mfa_secret)
             totp = pyotp.TOTP(secret)
             
-            if totp.verify(code, valid_window=1):
+            if totp.verify(code, valid_window=2):
                 user.mfa_last_used_at = datetime.utcnow()
                 await self._audit_log(user_id, "verified", success=True)
                 await self.db.commit()

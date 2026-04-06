@@ -275,20 +275,20 @@ async def login(
         session_data = {
             "user_id": str(user.id),
             "email": user.email,
-            "expires_at": (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+            "expires_at": (datetime.utcnow() + timedelta(minutes=10)).isoformat()
         }
-        
+
         cache = await get_cache()
         await cache.set(
             f"mfa_session:{session_token}",
             session_data,
-            expire=300  # 5 minutes
+            expire=600  # 10 minutes — enough time to open authenticator app
         )
-        
+
         return LoginResponse(
             mfa_required=True,
             session_token=session_token,
-            expires_in=300
+            expires_in=600
         )
     
     # Update last login
@@ -678,7 +678,7 @@ async def verify_mfa_login(
     cache = await get_cache()
     session_data = await cache.get(f"mfa_session:{request.session_token}")
     if not session_data:
-        raise HTTPException(401, "Invalid or expired session")
+        raise HTTPException(401, "MFA session expired. Please log in again to get a new verification code.")
     
     service = MFAService(db)
     result = await service.verify_mfa_code(
@@ -687,7 +687,7 @@ async def verify_mfa_login(
     )
     
     if not result["valid"]:
-        raise HTTPException(401, "Invalid MFA code")
+        raise HTTPException(401, "Invalid MFA code. Check that the code is current and try again.")
     
     # Generate final JWT token
     settings = get_settings()
