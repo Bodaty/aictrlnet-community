@@ -60,7 +60,22 @@ class NodeRegistry:
         # Browser automation node
         self.register_custom_node("browserAutomation", BrowserAutomationNode)
 
-        # Additional node types can be registered here
+        # Aliases for workflow template node types that map to existing implementations
+        self.register_custom_node("process", TaskNode)
+        self.register_custom_node("contextTransformation", TransformNode)
+        self.register_custom_node("agentDelegation", IAMNode)
+        self.register_custom_node("hybrid", AIProcessNode)
+        self.register_custom_node("platformIntegration", PlatformIntegrationNode)
+        self.register_custom_node("ai_process", AIProcessNode)
+        self.register_custom_node("data_source", DataSourceNode)
+        self.register_custom_node("api_call", APICallNode)
+
+        # Adapter-style aliases from frontend industry templates
+        self.register_custom_node("openaiAdapter", AIProcessNode)
+        self.register_custom_node("conditionNode", DecisionNode)
+        self.register_custom_node("postgresqlAdapter", DataSourceNode)
+        self.register_custom_node("emailAdapter", NotificationNode)
+
         logger.info("Default node types registered")
     
     def register_node_class(
