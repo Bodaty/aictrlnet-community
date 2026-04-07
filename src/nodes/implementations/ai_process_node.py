@@ -33,15 +33,24 @@ class AIProcessNode(BaseNode):
         """Execute the AI process node. Returns output dict for BaseNode.run() to wrap."""
         # Get AI processing parameters
         ai_task = self.config.parameters.get("ai_task", "generate")
-        # UI saves as "adapter", setup scripts use "adapter_id" — accept both
+        # UI saves as "adapter", setup scripts use "adapter_id", industry
+        # templates use "adapter_type" — accept all three
         adapter_id = (
             self.config.parameters.get("adapter_id")
             or self.config.parameters.get("adapter")
+            or self.config.parameters.get("adapter_type")
         )
 
         if not adapter_id:
-            # Try to auto-select adapter based on task
+            # Try org-level LLM settings before falling back to system default
+            adapter_id = await self._resolve_org_adapter()
+
+        if not adapter_id:
+            # No org setting — use system default LLM
             adapter_id = await self._auto_select_adapter(ai_task)
+
+        # Check LLM usage limits before calling (Business+ only)
+        await self._check_llm_limits()
 
         # Get AI adapter class from registry
         adapter_class = adapter_registry.get_adapter_class(adapter_id)
@@ -105,6 +114,9 @@ class AIProcessNode(BaseNode):
 
         logger.debug(f"AI node {self.config.id} output keys: {list(output_data.keys())}, task={ai_task}")
 
+        # Track LLM usage for metering (Business+ only)
+        await self._track_llm_call(adapter_id, ai_task, output_data)
+
         # Publish completion event
         await event_bus.publish(
             "node.executed",
@@ -118,39 +130,184 @@ class AIProcessNode(BaseNode):
 
         return output_data
     
-    async def _auto_select_adapter(self, ai_task: str) -> str:
-        """Auto-select appropriate adapter based on task."""
-        # Get available adapter types from registry (keyed by type name like "ollama", "openai")
-        available_adapters = list(adapter_registry._adapter_classes.keys())
+    async def _resolve_org_adapter(self) -> Optional[str]:
+        """Check org-level LLM settings for a preferred adapter.
 
-        if not available_adapters:
+        Returns adapter registry key if the org has configured a preferred
+        provider and it's available, otherwise None.
+        """
+        try:
+            from core.tenant_context import get_current_tenant_id
+            from core.database import get_session_maker
+            from llm.org_llm_settings import get_org_llm_settings
+
+            tenant_id = get_current_tenant_id()
+            async with get_session_maker()() as db:
+                settings = await get_org_llm_settings(tenant_id, db)
+
+            if not settings or not settings.preferred_provider:
+                return None
+
+            # In trial mode, skip org settings — use system default
+            if settings.trial_mode and not settings.has_own_key():
+                return None
+
+            # Map provider to adapter key
+            provider_to_adapter = {
+                "ollama": ["ollama"],
+                "vertex_ai": ["vertex_ai", "vertex-ai", "gemini", "llm-service"],
+                "gemini": ["gemini", "vertex_ai", "llm-service"],
+                "openai": ["openai"],
+                "anthropic": ["claude", "anthropic"],
+                "deepseek": ["deepseek"],
+            }
+            available = list(adapter_registry._adapter_classes.keys())
+            candidates = provider_to_adapter.get(
+                settings.preferred_provider,
+                [settings.preferred_provider, "llm-service"]
+            )
+            for c in candidates:
+                if c in available:
+                    logger.info(f"Using org-level adapter '{c}' (provider: {settings.preferred_provider})")
+                    return c
+
+            return None
+        except Exception as e:
+            logger.debug(f"Org adapter resolution failed (using system default): {e}")
+            return None
+
+    async def _check_llm_limits(self) -> None:
+        """Check LLM usage limits before making a call.
+
+        Only enforced when Business edition metering is available.
+        Community edition skips this check silently.
+        """
+        try:
+            from core.tenant_context import get_current_tenant_id
+            from core.database import get_session_maker
+            from aictrlnet_business.services.usage_metering import (
+                UsageMeteringService, UsageLimitEnforcer
+            )
+
+            tenant_id = get_current_tenant_id()
+            async with get_session_maker()() as db:
+                metering = UsageMeteringService(db)
+                enforcer = UsageLimitEnforcer(metering)
+
+                allowed = await enforcer.check_and_enforce(tenant_id, "llm_calls")
+                if not allowed:
+                    raise ValueError(
+                        "LLM call limit exceeded for this billing period. "
+                        "Configure your own API key in Settings > AI Model Configuration "
+                        "to continue using AI features."
+                    )
+
+                # Emit 80% warning
+                limit_check = await metering.check_usage_limits(tenant_id, "llm_calls")
+                pct = limit_check.get("percentage_used", 0)
+                if pct >= 80:
+                    await event_bus.publish(
+                        "llm.usage_warning",
+                        {
+                            "tenant_id": tenant_id,
+                            "percentage_used": pct,
+                            "current_usage": limit_check.get("current_usage", 0),
+                            "limit": limit_check.get("limit", 0),
+                            "message": (
+                                f"You've used {pct:.0f}% of your trial AI calls. "
+                                "Configure your own API key in settings to keep "
+                                "workflows running."
+                            ),
+                        }
+                    )
+        except ImportError:
+            pass  # Community edition — no metering
+        except ValueError:
+            raise  # Re-raise limit exceeded
+        except Exception as e:
+            logger.debug(f"LLM limit check skipped: {e}")
+
+    async def _track_llm_call(
+        self, adapter_id: str, ai_task: str, output_data: Dict[str, Any]
+    ) -> None:
+        """Track an LLM call for usage metering.
+
+        Only tracked when Business edition metering is available.
+        """
+        try:
+            from core.tenant_context import get_current_tenant_id
+            from core.database import get_session_maker
+            from aictrlnet_business.services.usage_metering import UsageMeteringService
+
+            tenant_id = get_current_tenant_id()
+            async with get_session_maker()() as db:
+                metering = UsageMeteringService(db)
+                await metering.track_usage(tenant_id, "llm_calls", 1)
+                await metering.record_billable_event(
+                    tenant_id,
+                    "llm_call",
+                    {
+                        "adapter_id": adapter_id,
+                        "ai_task": ai_task,
+                        "node_id": self.config.id,
+                        "tokens": output_data.get("usage", {}).get("total_tokens"),
+                    }
+                )
+        except ImportError:
+            pass  # Community edition — no metering
+        except Exception as e:
+            logger.debug(f"LLM usage tracking skipped: {e}")
+
+    async def _auto_select_adapter(self, ai_task: str) -> str:
+        """Auto-select adapter using the system default LLM provider.
+
+        Resolution order:
+        1. Map DEFAULT_LLM_MODEL to its provider (ollama, vertex_ai, etc.)
+        2. Find a matching adapter in the registry
+        3. Fall back to llm-service (bridges to the LLM service which has all providers)
+        4. Fall back to any available AI adapter
+        """
+        from llm.tier_resolver import get_environment_default_provider
+
+        available = list(adapter_registry._adapter_classes.keys())
+        if not available:
             raise ValueError("No AI adapters available")
 
-        # Prefer certain adapters for specific tasks
-        task_preferences = {
-            "generate": ["openai", "claude", "gemini", "ollama"],
-            "sentiment": ["openai", "claude", "huggingface"],
-            "classify": ["openai", "claude", "huggingface"],
-            "summarize": ["openai", "claude", "gemini"],
-            "extract_entities": ["openai", "claude", "huggingface"],
-            "embeddings": ["openai", "cohere", "huggingface"],
-            "translate": ["openai", "gemini", "huggingface"],
-            "qa": ["openai", "claude", "gemini"]
+        # Map provider string to adapter registry keys (handles naming variants)
+        provider_to_adapter = {
+            "ollama": ["ollama"],
+            "vertex_ai": ["vertex_ai", "vertex-ai", "gemini", "google-gemini", "llm-service"],
+            "gemini": ["gemini", "google-gemini", "vertex_ai", "llm-service"],
+            "openai": ["openai"],
+            "anthropic": ["claude", "anthropic"],
+            "deepseek": ["deepseek"],
+            "dashscope": ["dashscope"],
         }
 
-        preferences = task_preferences.get(ai_task, ["openai", "claude"])
+        provider = get_environment_default_provider()
+        candidates = provider_to_adapter.get(provider, [provider, "llm-service"])
 
-        # Find first available preferred adapter
-        for pref in preferences:
-            if pref in available_adapters:
-                return pref
+        for candidate in candidates:
+            if candidate in available:
+                logger.info(f"Auto-selected adapter '{candidate}' (system default provider: {provider})")
+                return candidate
 
-        # Return first available adapter
-        return available_adapters[0]
+        # Fallback: cost-preference order
+        for fb in ["ollama", "llm-service", "openai", "claude", "deepseek", "huggingface"]:
+            if fb in available:
+                logger.info(f"Auto-selected fallback adapter '{fb}'")
+                return fb
+
+        return available[0]
     
     async def _call_adapter(self, adapter: Any, capability: str, parameters: dict) -> "AdapterResponse":
-        """Call adapter with fallback from generic capabilities to chat_completion."""
+        """Call adapter with fallback from generic capabilities to chat."""
         from adapters.models import AdapterRequest
+        from llm.tier_resolver import get_environment_default_model
+
+        # Ensure a model is always set — adapters like Ollama require it
+        if not parameters.get("model"):
+            parameters["model"] = get_environment_default_model()
 
         request = AdapterRequest(capability=capability, parameters=parameters)
         try:
@@ -160,11 +317,11 @@ class AIProcessNode(BaseNode):
         except Exception:
             pass
 
-        # Fallback: convert to chat_completion (works with Claude, OpenAI, etc.)
+        # Fallback: convert to chat (works with Ollama, Claude, OpenAI, etc.)
         prompt = parameters.get("prompt") or parameters.get("text", "")
         messages = [{"role": "user", "content": prompt}]
         chat_request = AdapterRequest(
-            capability="chat_completion",
+            capability="chat",
             parameters={
                 "messages": messages,
                 "model": parameters.get("model"),
@@ -190,9 +347,29 @@ class AIProcessNode(BaseNode):
 
     async def _process_generation(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process text generation task."""
-        prompt = input_data.get("prompt") or self.config.parameters.get("prompt")
+        prompt = (
+            input_data.get("prompt")
+            or self.config.parameters.get("prompt")
+            or self.config.parameters.get("description")
+        )
         if not prompt:
-            raise ValueError("Prompt is required for generation task")
+            # Synthesize a prompt from the node name and any analysis/agent fields
+            # in the config. Workflow templates store rich descriptions in these.
+            parts = []
+            if self.config.name and self.config.name != self.config.id:
+                parts.append(f"Perform the following task: {self.config.name}.")
+            agent = self.config.parameters.get("agent")
+            if agent:
+                parts.append(f"You are the {agent}.")
+            analysis = self.config.parameters.get("analysis")
+            if analysis and isinstance(analysis, list):
+                parts.append(f"Analyze: {', '.join(analysis)}.")
+            fields = self.config.parameters.get("required_fields")
+            if fields and isinstance(fields, list):
+                parts.append(f"Return results for: {', '.join(fields)}.")
+            if input_data:
+                parts.append(f"Input data: {str(input_data)[:500]}")
+            prompt = " ".join(parts) if parts else f"Process node: {self.config.name or self.config.id}"
 
         response = await self._call_adapter(adapter, "generate", {
             "prompt": prompt,
@@ -568,9 +745,7 @@ Answer:"""
     
     def validate_config(self) -> bool:
         """Validate node configuration."""
-        ai_task = self.config.parameters.get("ai_task")
-        if not ai_task:
-            raise ValueError("ai_task parameter is required")
+        ai_task = self.config.parameters.get("ai_task", "generate")
         
         # Validate task-specific requirements
         if ai_task in ["generate", "sentiment", "classify", "summarize", "extract_entities", "translate", "qa"]:

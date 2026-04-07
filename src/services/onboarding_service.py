@@ -122,6 +122,19 @@ INTERVIEW_QUESTIONS: Dict[Tuple[int, int], Dict[str, Any]] = {
         "options": [],
         "field": "agent_name",
     },
+    (4, 2): {
+        "text": "Which AI model should power your assistant and workflows?",
+        "type": "choice",
+        "options": [
+            {"value": "platform_default",
+             "label": "Use platform default (recommended)",
+             "description": "We'll use the best available model. Free during your trial period."},
+            {"value": "bring_own",
+             "label": "Connect your own AI model",
+             "description": "Use your OpenAI, Claude, Gemini, or other API key. Your key, your cost."},
+        ],
+        "field": "user_context.llm_preference",
+    },
 
     # Chapter 5: "The Reveal"
     (5, 1): {
@@ -133,7 +146,7 @@ INTERVIEW_QUESTIONS: Dict[Tuple[int, int], Dict[str, Any]] = {
 }
 
 # Questions per chapter (for navigation)
-QUESTIONS_PER_CHAPTER = {1: 2, 2: 2, 3: 2, 4: 1, 5: 1}
+QUESTIONS_PER_CHAPTER = {1: 2, 2: 2, 3: 2, 4: 2, 5: 1}
 CHAPTER_TITLES = {
     1: "Who You Are",
     2: "How to Talk to You",
@@ -319,6 +332,10 @@ class OnboardingService:
         # Apply answer to the appropriate field
         self._apply_answer(config, q_def, answer)
 
+        # Wire LLM preference to org settings
+        if (chapter, question) == (4, 2):
+            await self._apply_llm_preference(config, answer)
+
         # Mark chapter complete if this was the last question in it
         completed = state.get("completed_chapters", [])
         max_q = QUESTIONS_PER_CHAPTER.get(chapter, 1)
@@ -473,6 +490,33 @@ class OnboardingService:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    async def _apply_llm_preference(self, config: PersonalAgentConfig, answer: Dict[str, Any]) -> None:
+        """Update org LLM settings based on onboarding LLM preference answer."""
+        value = answer.get("value", "platform_default")
+        try:
+            from core.tenant_context import get_current_tenant_id
+            from llm.org_llm_settings import get_org_llm_settings, save_org_llm_settings
+
+            tenant_id = get_current_tenant_id()
+            settings = await get_org_llm_settings(tenant_id, self.db)
+            if not settings:
+                from llm.org_llm_settings import OrgLLMSettings
+                settings = OrgLLMSettings()
+
+            if value == "bring_own":
+                # User wants to bring their own key — frontend will show
+                # API key entry UI. Mark trial_mode false so the fallback
+                # chain respects org-level provider settings once configured.
+                settings.trial_mode = False
+            else:
+                # platform_default — stay on trial (Bodaty pays)
+                settings.trial_mode = True
+
+            await save_org_llm_settings(tenant_id, settings, self.db)
+            logger.info(f"Onboarding LLM preference set: {value} for tenant {tenant_id}")
+        except Exception as e:
+            logger.warning(f"Failed to apply LLM preference from onboarding: {e}")
 
     def _apply_answer(self, config: PersonalAgentConfig, q_def: Dict[str, Any], answer: Dict[str, Any]) -> None:
         """Apply an answer to the appropriate config field."""

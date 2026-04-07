@@ -81,11 +81,21 @@ class LLMServiceAdapter(BaseAdapter):
             logger.error(f"Failed to initialize LLM Service Adapter: {e}")
             raise
     
-    async def execute(self, task: Dict[str, Any]) -> AdapterResult:
-        """Execute LLM task through internal service."""
+    async def execute(self, task) -> AdapterResult:
+        """Execute LLM task through internal service.
+
+        Accepts either a plain dict (legacy) or an AdapterRequest object
+        (used by workflow nodes via _call_adapter).
+        """
         if not self.initialized:
             await self.initialize()
-        
+
+        # Normalise: convert AdapterRequest to dict so the rest of the method works
+        if hasattr(task, 'capability'):
+            operation = task.capability
+            params = task.parameters if hasattr(task, 'parameters') else {}
+            task = {"operation": operation, **params}
+
         try:
             # Determine operation type
             operation = task.get("operation", "generate")

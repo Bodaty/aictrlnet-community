@@ -218,9 +218,16 @@ class WorkflowExecutionService:
                 for node_def in nodes:
                     node_id = node_def.get("id", str(uuid.uuid4()))
                     raw_type = node_def.get("type", "task")
-                    parameters = node_def.get("parameters") or node_def.get("data") or {}
+                    parameters = node_def.get("parameters") or node_def.get("config") or node_def.get("data") or {}
                     if not isinstance(parameters, dict):
                         parameters = {}
+                    # Flatten nested config: templates and industry templates
+                    # store adapter settings in data.config or config sub-dicts
+                    if "config" in parameters and isinstance(parameters["config"], dict):
+                        nested = parameters.pop("config")
+                        for k, v in nested.items():
+                            if k not in parameters:
+                                parameters[k] = v
 
                     # Resolve node type — preserve raw_type as custom_node_type
                     # so the registry can route to custom node implementations
