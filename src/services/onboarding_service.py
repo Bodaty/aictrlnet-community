@@ -553,7 +553,12 @@ class OnboardingService:
 
         elif field == "agent_name":
             if value and isinstance(value, str) and value.strip():
-                config.agent_name = value.strip()
+                from services.system_prompt_assembler import SystemPromptAssembler
+                cleaned = value.strip()
+                if SystemPromptAssembler._is_valid_agent_name(cleaned):
+                    config.agent_name = cleaned
+                else:
+                    logger.warning("Onboarding rejected invalid agent_name: %s", cleaned)
 
         elif field.startswith("user_context."):
             ctx_key = field.split(".", 1)[1]

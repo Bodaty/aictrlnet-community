@@ -139,6 +139,14 @@ class PersonalAgentService:
 
         update_dict = updates.model_dump(exclude_unset=True)
 
+        # Validate agent_name if being updated
+        if "agent_name" in update_dict and update_dict["agent_name"] is not None:
+            from services.system_prompt_assembler import SystemPromptAssembler
+            raw_name = update_dict["agent_name"]
+            if not SystemPromptAssembler._is_valid_agent_name(raw_name):
+                logger.warning("Rejected invalid agent_name: %s", raw_name)
+                del update_dict["agent_name"]
+
         # Serialise nested Pydantic models to plain dicts for JSON columns
         if "personality" in update_dict and update_dict["personality"] is not None:
             val = update_dict["personality"]

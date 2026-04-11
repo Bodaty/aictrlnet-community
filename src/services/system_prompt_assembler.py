@@ -9,12 +9,17 @@ detection + session params + response instructions.  Text content is loaded
 from .md files via PromptTemplateLoader; assembly logic stays in Python.
 """
 
+import re
 import logging
 from typing import Optional, List, Dict, Any
 
 from services.prompt_template_loader import PromptTemplateLoader
 
 logger = logging.getLogger(__name__)
+
+# Prefixes that indicate test/API-generated agent names — not real user choices.
+_INVALID_NAME_PREFIXES = ("api", "test", "smoke", "verify", "debug", "tmp")
+_INVALID_NAME_RE = re.compile(r'\d')
 
 # Module-level singleton — shared across all assembler instances.
 _template_loader: Optional[PromptTemplateLoader] = None
@@ -40,6 +45,48 @@ class SystemPromptAssembler:
     def __init__(self, db):
         self.db = db
         self.template_loader = _get_template_loader()
+
+    # ------------------------------------------------------------------
+    # Agent name validation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_valid_agent_name(name: str) -> bool:
+        """Reject names that look auto-generated or test-polluted.
+
+        Invalid when: contains digits, starts with a test prefix, or
+        exceeds 50 characters.
+        """
+        if not name or len(name) > 50:
+            return False
+        if _INVALID_NAME_RE.search(name):
+            return False
+        first_word = name.strip().split()[0].lower()
+        if first_word in _INVALID_NAME_PREFIXES:
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Minimal prompt for simple messages (greetings, farewells, etc.)
+    # ------------------------------------------------------------------
+
+    def assemble_minimal(self, edition: str = "community",
+                         personal_agent_config=None) -> str:
+        """Build a lightweight system prompt for non-action messages.
+
+        Includes only identity + personality + a one-line instruction.
+        No DB calls, no knowledge, no tool rules. ~25 lines vs ~449.
+        """
+        sections = [self._build_identity(edition)]
+
+        personality = self._build_personality_section(personal_agent_config)
+        if personality:
+            sections.append(personality)
+
+        sections.append(
+            "Respond naturally and concisely. Do not output JSON or code blocks."
+        )
+        return "\n\n".join(s for s in sections if s)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -170,7 +217,7 @@ class SystemPromptAssembler:
             return ""
 
         lines = ["## Your Personality\n"]
-        if agent_name and agent_name != "My Assistant":
+        if agent_name and agent_name != "My Assistant" and self._is_valid_agent_name(agent_name):
             lines.append(f"- Your name is: {agent_name}")
             lines.append(f"- When introducing yourself, use the name \"{agent_name}\"")
         if tone:

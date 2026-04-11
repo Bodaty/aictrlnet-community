@@ -1480,13 +1480,18 @@ Response (just the sentence, no quotes):"""
         conversation_history.append({"role": "user", "content": effective_content})
 
         # =====================================================================
-        # Step 3: Retrieve knowledge context (templates, agents, adapters)
+        # Step 3: Determine fast path, retrieve knowledge conditionally
         # =====================================================================
-        knowledge_items = await self.knowledge_service.find_relevant_knowledge(
-            query=content,
-            context=session.context or {},
-            limit=10
-        )
+        needs_tools = self._needs_tools(content)
+
+        if needs_tools:
+            knowledge_items = await self.knowledge_service.find_relevant_knowledge(
+                query=content,
+                context=session.context or {},
+                limit=10
+            )
+        else:
+            knowledge_items = []
 
         if stream:
             templates = [k for k in knowledge_items if k.type == "template"]
@@ -1516,19 +1521,25 @@ Response (just the sentence, no quotes):"""
         except Exception:
             logger.debug("[v5] Could not load PersonalAgentConfig for prompt")
 
-        system_prompt = await self.prompt_assembler.assemble(
-            edition="community",
-            session=session,
-            knowledge_items=knowledge_items,
-            conversation_history=conversation_history,
-            user_id=user_id,
-            personal_agent_config=personal_agent_config,
-        )
+        if needs_tools:
+            system_prompt = await self.prompt_assembler.assemble(
+                edition="community",
+                session=session,
+                knowledge_items=knowledge_items,
+                conversation_history=conversation_history,
+                user_id=user_id,
+                personal_agent_config=personal_agent_config,
+            )
+        else:
+            system_prompt = self.prompt_assembler.assemble_minimal(
+                edition="community",
+                personal_agent_config=personal_agent_config,
+            )
 
         # Get available tools (prune if too many for the LLM's effective tool limit)
         tool_dispatcher = ToolDispatcher(self.db, Edition.COMMUNITY)
         all_tools = tool_dispatcher.get_available_tools()
-        if self._needs_tools(content):
+        if needs_tools:
             tools = self._prune_tools(all_tools, content) if len(all_tools) > 35 else all_tools
         else:
             tools = []  # Greeting/farewell — skip tool definitions entirely
@@ -1578,9 +1589,10 @@ Response (just the sentence, no quotes):"""
             llm_response = None
             accumulated_text = ""
 
+            task_type = "quick_analysis" if not needs_tools else "tool_use"
             async for event in self._enhanced_llm_service.generate_with_tools_stream(
                 prompt=None, tools=tools, messages=messages,
-                task_type="tool_use", temperature=0.4,
+                task_type=task_type, temperature=0.4,
                 user_settings=user_settings,
             ):
                 if event["type"] == "text_delta" and stream and event.get("text"):
