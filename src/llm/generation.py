@@ -548,12 +548,12 @@ Return ONLY the JSON array, no other text or explanation."""
                     elif provider == ModelProvider.OPENAI:
                         from adapters.implementations.ai.openai_adapter import OpenAIAdapter
                         adapter = OpenAIAdapter()
-                    elif provider == ModelProvider.GEMINI:
-                        from adapters.implementations.ai.gemini_adapter import GeminiAdapter
-                        adapter = GeminiAdapter()
-                    elif provider == ModelProvider.VERTEX_AI:
-                        from business_adapters.implementations.ai.vertex_ai_adapter import VertexAIAdapter
-                        adapter = VertexAIAdapter(system_mode=True)
+                    elif provider in (ModelProvider.GEMINI, ModelProvider.VERTEX_AI):
+                        from business_adapters.implementations.ai.gemini_adapter import GeminiAdapter
+                        if provider == ModelProvider.VERTEX_AI:
+                            adapter = GeminiAdapter(system_mode=True)
+                        else:
+                            adapter = GeminiAdapter()
                     elif provider == ModelProvider.COHERE:
                         from adapters.implementations.ai.cohere_adapter import CohereAdapter
                         adapter = CohereAdapter()

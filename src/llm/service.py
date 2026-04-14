@@ -131,38 +131,35 @@ class _AdapterProvider:
                     credentials={"api_key": api_key, "endpoint": endpoint},
                     timeout_seconds=120.0,
                 ))
-            elif provider == ModelProvider.GEMINI:
+            elif provider in (ModelProvider.GEMINI, ModelProvider.VERTEX_AI):
                 try:
-                    from business_adapters.implementations.ai.google_gemini_adapter import GoogleGeminiAdapter
+                    from business_adapters.implementations.ai.gemini_adapter import GeminiAdapter
                 except ImportError:
                     return None
-                api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
-                if not api_key:
-                    return None
-                return GoogleGeminiAdapter(AdapterConfig(
-                    name="gemini-tools",
-                    version="1.0.0",
-                    category=AdapterCategory.AI,
-                    api_key=api_key,
-                    credentials={"api_key": api_key},
-                    timeout_seconds=120.0,
-                ))
-            elif provider == ModelProvider.VERTEX_AI:
-                try:
-                    from business_adapters.implementations.ai.vertex_ai_adapter import VertexAIAdapter
-                except ImportError:
-                    return None
-                project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("VERTEX_AI_PROJECT")
-                if not project_id:
-                    return None
-                location = os.environ.get("VERTEX_AI_LOCATION", "us-central1")
-                return VertexAIAdapter(AdapterConfig(
-                    name="vertex-ai-tools",
-                    version="1.0.0",
-                    category=AdapterCategory.AI,
-                    credentials={"project_id": project_id, "location": location},
-                    timeout_seconds=120.0,
-                ), system_mode=True)
+                if provider == ModelProvider.GEMINI:
+                    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+                    if not api_key:
+                        return None
+                    return GeminiAdapter(AdapterConfig(
+                        name="gemini-tools",
+                        version="1.0.0",
+                        category=AdapterCategory.AI,
+                        api_key=api_key,
+                        credentials={"api_key": api_key},
+                        timeout_seconds=120.0,
+                    ))
+                else:  # VERTEX_AI
+                    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("VERTEX_AI_PROJECT")
+                    if not project_id:
+                        return None
+                    location = os.environ.get("VERTEX_AI_LOCATION", "us-central1")
+                    return GeminiAdapter(AdapterConfig(
+                        name="vertex-ai-tools",
+                        version="1.0.0",
+                        category=AdapterCategory.AI,
+                        credentials={"project_id": project_id, "location": location},
+                        timeout_seconds=120.0,
+                    ), system_mode=True)
             elif provider == ModelProvider.BEDROCK:
                 try:
                     from business_adapters.implementations.ai.aws_bedrock_adapter import AWSBedrockAdapter
@@ -392,7 +389,7 @@ class LLMService:
                 tier=tier,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                system_prompt=system_prompt or "You are an AI assistant that helps users accomplish tasks.",
+                system_prompt=system_prompt,
                 tool_choice=tool_choice,
                 start_time=start_time,
                 user_settings=user_settings,
@@ -489,7 +486,7 @@ class LLMService:
             tc_request = self._build_tool_calling_request(
                 prompt=prompt, tools=tools, model=model,
                 temperature=temperature, max_tokens=max_tokens,
-                system_prompt=system_prompt or "You are an AI assistant that helps users accomplish tasks.",
+                system_prompt=system_prompt,
                 tool_choice=tool_choice, messages=messages,
             )
 
@@ -738,7 +735,7 @@ class LLMService:
         # Build the tool-aware system prompt
         tools_description = self._build_tools_prompt(tools)
         full_system_prompt = self._build_tool_system_prompt(
-            system_prompt or "You are an AI assistant that helps users accomplish tasks.",
+            system_prompt,
             tools_description,
             tool_choice
         )
@@ -831,7 +828,7 @@ class LLMService:
             # Specific tool name
             tool_instruction = f"You should use the '{tool_choice}' tool if applicable."
 
-        return f"""{base_prompt}
+        return f"""{base_prompt or "You are a helpful AI assistant."}
 
 {tools_description}
 

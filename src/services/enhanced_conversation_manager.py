@@ -1592,6 +1592,7 @@ Response (just the sentence, no quotes):"""
             task_type = "quick_analysis" if not needs_tools else "tool_use"
             async for event in self._enhanced_llm_service.generate_with_tools_stream(
                 prompt=None, tools=tools, messages=messages,
+                system_prompt=system_prompt,
                 task_type=task_type, temperature=0.4,
                 user_settings=user_settings,
             ):

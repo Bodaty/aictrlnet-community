@@ -49,6 +49,9 @@ class AIProcessNode(BaseNode):
             # No org setting — use system default LLM
             adapter_id = await self._auto_select_adapter(ai_task)
 
+        # Trial restriction: override node-specific adapter to system default
+        adapter_id = await self._enforce_trial_restriction(adapter_id)
+
         # Check LLM usage limits before calling (Business+ only)
         await self._check_llm_limits()
 
@@ -155,8 +158,8 @@ class AIProcessNode(BaseNode):
             # Map provider to adapter key
             provider_to_adapter = {
                 "ollama": ["ollama"],
-                "vertex_ai": ["vertex_ai", "vertex-ai", "gemini", "llm-service"],
-                "gemini": ["gemini", "vertex_ai", "llm-service"],
+                "vertex_ai": ["llm-service", "vertex_ai", "vertex-ai", "gemini"],
+                "gemini": ["llm-service", "gemini", "vertex_ai"],
                 "openai": ["openai"],
                 "anthropic": ["claude", "anthropic"],
                 "deepseek": ["deepseek"],
@@ -175,6 +178,41 @@ class AIProcessNode(BaseNode):
         except Exception as e:
             logger.debug(f"Org adapter resolution failed (using system default): {e}")
             return None
+
+    async def _enforce_trial_restriction(self, adapter_id: str) -> str:
+        """In trial mode, override node-specific adapters to system default.
+
+        Trial tenants use the system default LLM (Bodaty pays). Node-level
+        adapter overrides (e.g. adapter_type: "openai") are ignored to prevent
+        cost leakage. After BYOK, node-level selection is honored.
+        """
+        try:
+            from core.tenant_context import get_current_tenant_id
+            from core.database import get_session_maker
+            from llm.org_llm_settings import get_org_llm_settings
+
+            tenant_id = get_current_tenant_id()
+            async with get_session_maker()() as db:
+                settings = await get_org_llm_settings(tenant_id, db)
+
+            if not settings or not settings.trial_mode:
+                return adapter_id  # Not in trial — honor node selection
+
+            if settings.has_own_key():
+                return adapter_id  # Has own key — honor node selection
+
+            # In trial without own key — force system default
+            system_adapter = await self._auto_select_adapter("generate")
+            if adapter_id != system_adapter:
+                logger.info(
+                    f"Trial restriction: overriding node adapter '{adapter_id}' "
+                    f"with system default '{system_adapter}'"
+                )
+                return system_adapter
+            return adapter_id
+        except Exception as e:
+            logger.debug(f"Trial restriction check skipped: {e}")
+            return adapter_id
 
     async def _check_llm_limits(self) -> None:
         """Check LLM usage limits before making a call.
@@ -232,7 +270,8 @@ class AIProcessNode(BaseNode):
     ) -> None:
         """Track an LLM call for usage metering.
 
-        Only tracked when Business edition metering is available.
+        Tracks both aggregate llm_calls and per-provider usage
+        (e.g. llm_ollama, llm_openai). Only when Business edition is available.
         """
         try:
             from core.tenant_context import get_current_tenant_id
@@ -240,9 +279,26 @@ class AIProcessNode(BaseNode):
             from aictrlnet_business.services.usage_metering import UsageMeteringService
 
             tenant_id = get_current_tenant_id()
+            usage = output_data.get("usage", {})
+            total_tokens = usage.get("total_tokens", 0)
+            model_name = output_data.get("model", "")
+
             async with get_session_maker()() as db:
                 metering = UsageMeteringService(db)
+
+                # 1. Aggregate LLM call count
                 await metering.track_usage(tenant_id, "llm_calls", 1)
+
+                # 2. Per-provider tracking (e.g. llm_ollama, llm_openai)
+                provider_key = f"llm_{adapter_id}"
+                await metering.track_usage(tenant_id, provider_key, 1)
+
+                # 3. Token tracking per provider
+                if total_tokens:
+                    token_key = f"llm_tokens_{adapter_id}"
+                    await metering.track_usage(tenant_id, token_key, total_tokens)
+
+                # 4. Billable event with full metadata
                 await metering.record_billable_event(
                     tenant_id,
                     "llm_call",
@@ -250,7 +306,10 @@ class AIProcessNode(BaseNode):
                         "adapter_id": adapter_id,
                         "ai_task": ai_task,
                         "node_id": self.config.id,
-                        "tokens": output_data.get("usage", {}).get("total_tokens"),
+                        "model": model_name,
+                        "tokens": total_tokens,
+                        "prompt_tokens": usage.get("prompt_tokens"),
+                        "completion_tokens": usage.get("completion_tokens"),
                     }
                 )
         except ImportError:
@@ -276,8 +335,8 @@ class AIProcessNode(BaseNode):
         # Map provider string to adapter registry keys (handles naming variants)
         provider_to_adapter = {
             "ollama": ["ollama"],
-            "vertex_ai": ["vertex_ai", "vertex-ai", "gemini", "google-gemini", "llm-service"],
-            "gemini": ["gemini", "google-gemini", "vertex_ai", "llm-service"],
+            "vertex_ai": ["llm-service", "vertex_ai", "vertex-ai", "gemini"],
+            "gemini": ["llm-service", "gemini", "google-gemini", "vertex_ai"],
             "openai": ["openai"],
             "anthropic": ["claude", "anthropic"],
             "deepseek": ["deepseek"],

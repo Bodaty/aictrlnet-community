@@ -30,17 +30,22 @@ class LLMServiceAdapter(BaseAdapter):
     
     def __init__(self, config: AdapterConfig):
         super().__init__(config)
-        
+        import os
+
         # Check for discovery mode
         self.discovery_only = config.custom_config.get("discovery_only", False) if config.custom_config else False
-        
+
+        # Resolve service URL: env var > config > default
+        # On GCP Cloud Run, the LLM service is the same process on port 8080
+        default_url = os.environ.get("LLM_SERVICE_INTERNAL_URL", "http://localhost:8000")
+
         # Handle both direct attributes and parameters dict
         if hasattr(config, 'parameters') and config.parameters:
-            self.service_url = config.parameters.get("service_url", "http://localhost:8000")
+            self.service_url = config.parameters.get("service_url", default_url)
             self.timeout = config.parameters.get("timeout", 30)
             self.api_key = config.parameters.get("api_key", "dev-token-for-testing")
         else:
-            self.service_url = getattr(config, 'service_url', "http://localhost:8000")
+            self.service_url = getattr(config, 'service_url', default_url)
             self.timeout = getattr(config, 'timeout', 30)
             self.api_key = getattr(config, 'api_key', "dev-token-for-testing")
         self.api_prefix = "/api/v1/llm"
@@ -90,16 +95,21 @@ class LLMServiceAdapter(BaseAdapter):
         if not self.initialized:
             await self.initialize()
 
-        # Normalise: convert AdapterRequest to dict so the rest of the method works
+        start_time = datetime.utcnow()
+
+        # Preserve AdapterRequest metadata before normalizing to dict
+        request_id = getattr(task, 'id', 'llm-service-internal')
+        capability = getattr(task, 'capability', 'generate')
+
+        # Normalise: convert AdapterRequest to dict
         if hasattr(task, 'capability'):
             operation = task.capability
             params = task.parameters if hasattr(task, 'parameters') else {}
             task = {"operation": operation, **params}
 
         try:
-            # Determine operation type
             operation = task.get("operation", "generate")
-            
+
             if operation == "generate":
                 result = await self._generate(task)
             elif operation == "chat":
@@ -108,45 +118,83 @@ class LLMServiceAdapter(BaseAdapter):
                 result = await self._embedding(task)
             else:
                 raise ValueError(f"Unsupported operation: {operation}")
-            
-            # Update metrics
+
             self.metrics.total_requests += 1
             self.metrics.successful_requests += 1
             self.metrics.last_used = datetime.utcnow()
-            
+
+            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
             return AdapterResult(
-                success=True,
+                request_id=request_id,
+                capability=capability,
+                status="success",
                 data=result,
+                duration_ms=duration_ms,
+                cost=result.get("cost", 0.0) if isinstance(result, dict) else 0.0,
                 metadata={
                     "adapter": "llm_service",
                     "operation": operation,
-                    "cached": result.get("cached", False)
+                    "cached": result.get("cached", False) if isinstance(result, dict) else False
                 }
             )
-            
+
         except Exception as e:
             logger.error(f"LLM Service execution failed: {e}")
             self.metrics.total_requests += 1
             self.metrics.failed_requests += 1
-            
+
+            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
             return AdapterResult(
-                success=False,
+                request_id=request_id,
+                capability=capability,
+                status="error",
                 error=str(e),
+                duration_ms=duration_ms,
                 metadata={"adapter": "llm_service"}
             )
     
     async def _generate(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate text using LLM service."""
+        """Generate text using LLM service.
+
+        First tries direct Python call (same-process, no auth needed).
+        Falls back to HTTP if direct call is unavailable.
+        """
+        prompt = task.get("prompt", "")
+        model = task.get("model", "auto")
+        max_tokens = task.get("max_tokens", 1000)
+        temperature = task.get("temperature", 0.7)
+
+        # Try direct Python call first (avoids HTTP auth issues on Cloud Run)
+        try:
+            from llm.service import llm_service
+            # Don't pass model_override — let the LLM service use its own
+            # model selection (system default). The llm-service adapter is
+            # a bridge, not a model-specific adapter.
+            result = await llm_service.generate(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            # LLMResponse has: text, model_used, tokens_used, cost, cache_hit
+            return {
+                "text": result.text,
+                "model": result.model_used,
+                "usage": {"total_tokens": result.tokens_used},
+                "cached": result.cache_hit,
+                "cost": result.cost,
+            }
+        except Exception as direct_err:
+            logger.warning(f"Direct LLM call failed ({type(direct_err).__name__}: {direct_err}), falling back to HTTP")
+
+        # Fallback: HTTP call
         payload = {
-            "prompt": task.get("prompt", ""),
-            "model": task.get("model", "auto"),
-            "max_tokens": task.get("max_tokens", 1000),
-            "temperature": task.get("temperature", 0.7),
+            "prompt": prompt,
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
             "top_p": task.get("top_p", 0.9),
             "stream": task.get("stream", False)
         }
-
-        # Add user_id if provided (for personalized model selection)
         if "user_id" in task:
             payload["user_id"] = task["user_id"]
 
