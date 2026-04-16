@@ -117,7 +117,14 @@ class BaseNode(ABC):
                     self.execute(instance.input_data, context),
                     timeout=self.config.timeout_seconds
                 )
-                
+
+                if not isinstance(output_data, dict):
+                    raise TypeError(
+                        f"{type(self).__name__}.execute() must return "
+                        f"Dict[str, Any], got {type(output_data).__name__}. "
+                        f"See BaseNode.execute() contract."
+                    )
+
                 # Update instance
                 instance.output_data = output_data
                 instance.status = NodeStatus.COMPLETED

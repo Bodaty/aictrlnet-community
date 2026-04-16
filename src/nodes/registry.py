@@ -51,8 +51,9 @@ class NodeRegistry:
         self.register_custom_node("mcpClient", MCPClientNode)
         self.register_custom_node("mcpServer", MCPServerNode)
         
-        # Platform Integration node
-        self.register_custom_node("platform", PlatformIntegrationNode)
+        # Platform Integration node (optional — not available if schemas/services deps missing)
+        if PlatformIntegrationNode is not None:
+            self.register_custom_node("platform", PlatformIntegrationNode)
 
         # File processing & document generation nodes
         self.register_custom_node("fileProcess", FileProcessNode)
@@ -72,7 +73,8 @@ class NodeRegistry:
         self.register_custom_node("contextTransformation", TransformNode)
         self.register_custom_node("agentDelegation", IAMNode)
         self.register_custom_node("hybrid", AIProcessNode)
-        self.register_custom_node("platformIntegration", PlatformIntegrationNode)
+        if PlatformIntegrationNode is not None:
+            self.register_custom_node("platformIntegration", PlatformIntegrationNode)
         self.register_custom_node("ai_process", AIProcessNode)
         self.register_custom_node("data_source", DataSourceNode)
         self.register_custom_node("api_call", APICallNode)
