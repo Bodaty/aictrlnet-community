@@ -4,10 +4,10 @@ import json
 import logging
 import uuid
 from typing import Dict, Any, Optional, List, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import text, select, and_
 
 from models.community import WorkflowDefinition
 from schemas.workflow import (
@@ -1104,6 +1104,35 @@ Return ONLY a single number (the index). Example: 5
             text("SELECT set_config('app.current_tenant_id', :tid, false)"),
             {"tid": effective_tenant}
         )
+
+        # Idempotency: if the same tenant just created a workflow with this name
+        # within the recent window, return that row instead of inserting a duplicate.
+        # Conversation flow can re-invoke tool dispatch within a single turn, and
+        # full NLP generation (LLM + RAG + enhancement) can take 60-90s, so we use
+        # a 5-minute window to catch slow-path duplicates from the same intent.
+        # Note: WorkflowDefinition.created_at is timezone-aware (UTC), so use
+        # timezone-aware "now" to avoid a naive/aware subtraction error.
+        now_utc = datetime.now(timezone.utc)
+        recent_cutoff = now_utc - timedelta(seconds=300)
+        dedup_stmt = select(WorkflowDefinition).where(
+            and_(
+                WorkflowDefinition.name == name,
+                WorkflowDefinition.tenant_id == effective_tenant,
+                WorkflowDefinition.created_at >= recent_cutoff,
+            )
+        ).order_by(WorkflowDefinition.created_at.desc()).limit(1)
+        dedup_result = await self.db.execute(dedup_stmt)
+        existing_workflow = dedup_result.scalar_one_or_none()
+        if existing_workflow is not None:
+            existing_created = existing_workflow.created_at
+            if existing_created.tzinfo is None:
+                existing_created = existing_created.replace(tzinfo=timezone.utc)
+            age_s = (now_utc - existing_created).total_seconds()
+            logger.info(
+                f"Skipping duplicate workflow creation (name='{name}', existing id={existing_workflow.id}, age={age_s:.1f}s)"
+            )
+            return existing_workflow
+
         self.db.add(workflow)
         await self.db.commit()
         await self.db.refresh(workflow)

@@ -128,11 +128,9 @@ async def list_workflows(
     attach_upgrade_hints(response, "workflows")
     query = select(WorkflowDefinition)
     
-    # Apply filters
-    if category:
-        query = query.filter(WorkflowDefinition.category == category)
-    if is_template is not None:
-        query = query.filter(WorkflowDefinition.is_template == is_template)
+    # WorkflowDefinition has no `category` or `is_template` columns (the model is
+    # user-workflows only; templates live in WorkflowTemplate). Accept those
+    # query params for API back-compat but don't filter on non-existent columns.
     if search:
         query = query.filter(WorkflowDefinition.name.ilike(f"%{search}%"))
     
