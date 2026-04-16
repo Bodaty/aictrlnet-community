@@ -18,6 +18,7 @@ from .platform_integration_node import PlatformIntegrationNode
 from .file_process_node import FileProcessNode
 from .doc_generation_node import DocGenerationNode
 from .browser_automation_node import BrowserAutomationNode
+from .approval_stub_node import ApprovalNode
 
 __all__ = [
     "TaskNode",
@@ -38,4 +39,5 @@ __all__ = [
     "FileProcessNode",
     "DocGenerationNode",
     "BrowserAutomationNode",
+    "ApprovalNode",
 ]

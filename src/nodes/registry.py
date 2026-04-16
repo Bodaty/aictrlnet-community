@@ -12,6 +12,7 @@ from .implementations import (
     NotificationNode, MCPClientNode, MCPServerNode,
     PlatformIntegrationNode,
     FileProcessNode, DocGenerationNode, BrowserAutomationNode,
+    ApprovalNode,
 )
 
 
@@ -59,6 +60,12 @@ class NodeRegistry:
 
         # Browser automation node
         self.register_custom_node("browserAutomation", BrowserAutomationNode)
+
+        # Approval node — Community ships a stub that errors clearly.
+        # Business/Enterprise editions overwrite via nodes/edition_nodes.py.
+        self.register_node_class(NodeType.APPROVAL, ApprovalNode)
+        self.register_custom_node("approval", ApprovalNode)
+        self.register_custom_node("approvalRequest", ApprovalNode)
 
         # Aliases for workflow template node types that map to existing implementations
         self.register_custom_node("process", TaskNode)

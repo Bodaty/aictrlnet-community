@@ -348,11 +348,13 @@ class DataSourceNode(BaseNode):
         return result
     
     def validate_config(self) -> bool:
-        """Validate node configuration."""
-        source_type = self.config.parameters.get("source_type")
-        if not source_type:
-            raise ValueError("source_type parameter is required")
-        
+        """Validate node configuration.
+
+        source_type defaults to "static" to match execute() runtime behavior
+        — many templates rely on the default rather than declaring it.
+        """
+        source_type = self.config.parameters.get("source_type", "static")
+
         # Validate based on source type
         if source_type == "file" and not self.config.parameters.get("file_path"):
             raise ValueError("file_path parameter is required for file source")
