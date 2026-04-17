@@ -153,8 +153,44 @@ class NLPService:
                 "result": intent_analysis,
                 "timestamp": datetime.utcnow().isoformat()
             })
-            
-            # Step 1: Try AI-driven generation
+
+            # ── EDIT MODE: merge surgically instead of generating a full workflow ──
+            if is_edit_mode and current_workflow and edit_intent:
+                merged = await self._apply_edit_to_workflow(
+                    prompt, current_workflow, edit_intent, context, user_id
+                )
+                if merged:
+                    processing_steps.append({
+                        "step": "edit_mode_merge",
+                        "result": edit_intent.get("intent"),
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    return {
+                        "workflow": {
+                            "definition": merged,
+                            "nodes": merged.get("nodes", []),
+                            "edges": merged.get("edges", []),
+                        },
+                        "edit_mode": True,
+                        "edit_intent": edit_intent,
+                        "generation_method": "edit_merge",
+                        "confidence_score": edit_intent.get("confidence", 0.8),
+                        "intent_analysis": intent_analysis,
+                        "ai_model_used": "server_merge",
+                        "processing_steps": processing_steps,
+                        "plan": {
+                            "intent": intent_analysis,
+                            "steps": [
+                                {"action": n.get("name", n.get("type", "step")), "type": n.get("type", "task")}
+                                for n in merged.get("nodes", [])
+                                if n.get("data", {}).get("_isNew")
+                            ],
+                            "confidence": edit_intent.get("confidence", 0.8),
+                            "edit_intent": edit_intent,
+                        }
+                    }
+
+            # Step 1: Try AI-driven generation (create mode or edit fallback)
             ai_result = await self._generate_with_ai_enhanced(prompt, context, user_id)
             if ai_result:
                 ai_workflow = ai_result['workflow']
@@ -171,9 +207,9 @@ class NLPService:
                     "model": ai_model_used
                 })
 
-                # ── EDIT MODE: Return immediately without DB insert ──
+                # ── EDIT MODE fallback: LLM generated but we're editing ──
                 if is_edit_mode:
-                    logger.info(f"Edit mode: returning modified workflow without DB insert (model={ai_model_used})")
+                    logger.info(f"Edit mode fallback: returning LLM-generated workflow without DB insert (model={ai_model_used})")
                     processing_steps.append({
                         "step": "edit_mode_return",
                         "result": "returning_modified_definition",
@@ -2121,6 +2157,167 @@ Return ONLY a single number (the index). Example: 5
 
         return "data_processing"
     
+    async def _apply_edit_to_workflow(
+        self,
+        prompt: str,
+        current_workflow: Dict[str, Any],
+        edit_intent: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Apply an edit operation to an existing workflow without full LLM regeneration.
+
+        For ADD intent: generates only the new node(s) via a focused LLM prompt,
+        then inserts them into the existing workflow at the right position.
+        For REMOVE/MODIFY/etc: delegates to the appropriate handler.
+
+        Returns the merged workflow dict, or None to fall back to full generation.
+        """
+        intent = edit_intent.get("intent", "unknown")
+        nodes = list(current_workflow.get("nodes", []))
+        edges = list(current_workflow.get("edges", []))
+
+        if intent == "add":
+            return await self._edit_add_node(prompt, nodes, edges, edit_intent, context, user_id)
+        if intent == "remove":
+            return self._edit_remove_node(nodes, edges, edit_intent)
+        # For modify/reorder/replace/unknown, fall back to full LLM generation
+        return None
+
+    async def _edit_add_node(
+        self,
+        prompt: str,
+        nodes: List[Dict],
+        edges: List[Dict],
+        edit_intent: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Create a new node from the edit intent and insert into the workflow.
+
+        Uses the WorkflowEditAnalyzer's extracted details (new_element) to
+        build the node deterministically — no LLM call needed for simple adds.
+        """
+        import uuid
+
+        details = edit_intent.get("details", {})
+        element_desc = details.get("new_element", prompt).strip()
+
+        # Infer node type from the description
+        node_type, capability = self._infer_node_type(element_desc)
+        label = element_desc.replace("_", " ").title()
+        if not label[0].isupper():
+            label = label.capitalize()
+
+        node_id = f"added_{uuid.uuid4().hex[:8]}"
+
+        # Find insertion point — default to before the end node
+        end_node_id = None
+        end_node_idx = None
+        for i, n in enumerate(nodes):
+            if n.get("type") == "end" or n.get("id") == "end":
+                end_node_id = n["id"]
+                end_node_idx = i
+                break
+
+        # Find the node that currently connects to end
+        last_real_id = None
+        if end_node_id:
+            for edge in edges:
+                if (edge.get("target") or edge.get("to")) == end_node_id:
+                    last_real_id = edge.get("source") or edge.get("from")
+                    break
+
+        max_x = max((n.get("position", {}).get("x", 0) for n in nodes), default=400)
+        new_node = {
+            "id": node_id,
+            "type": node_type,
+            "data": {
+                "label": label,
+                "description": f"{label} step added via workflow editor",
+                "capability": capability,
+                "_isNew": True,
+            },
+            "position": {"x": max_x + 200, "y": 300},
+        }
+
+        if end_node_idx is not None:
+            nodes.insert(end_node_idx, new_node)
+        else:
+            nodes.append(new_node)
+
+        # Rewire edges: last_real → new_node → end
+        if last_real_id and end_node_id:
+            edges = [
+                e for e in edges
+                if not (
+                    (e.get("source") or e.get("from")) == last_real_id and
+                    (e.get("target") or e.get("to")) == end_node_id
+                )
+            ]
+            edges.append({"id": f"e-{last_real_id}-{node_id}", "source": last_real_id, "target": node_id})
+            edges.append({"id": f"e-{node_id}-{end_node_id}", "source": node_id, "target": end_node_id})
+        elif end_node_id:
+            edges.append({"id": f"e-{node_id}-{end_node_id}", "source": node_id, "target": end_node_id})
+
+        return {"nodes": nodes, "edges": edges}
+
+    def _infer_node_type(self, description: str) -> tuple:
+        """Infer node type and capability from a natural-language description."""
+        desc = description.lower()
+        type_map = [
+            (["validation", "validate", "check", "verify"], "process", "data_validation"),
+            (["approval", "approve", "review", "sign off"], "approval", "human_approval"),
+            (["notification", "notify", "alert", "email", "send"], "notification", "notification"),
+            (["ai", "ml", "classify", "predict", "analyze", "llm"], "aiProcess", "ai_processing"),
+            (["data", "database", "query", "fetch", "load"], "dataSource", "data_retrieval"),
+            (["decision", "condition", "branch", "route", "if"], "decision", "routing"),
+            (["transform", "convert", "map", "format"], "process", "data_transformation"),
+            (["api", "http", "request", "call", "webhook"], "apiCall", "api_integration"),
+        ]
+        for keywords, node_type, capability in type_map:
+            if any(kw in desc for kw in keywords):
+                return node_type, capability
+        return "process", "general_processing"
+
+    def _edit_remove_node(
+        self,
+        nodes: List[Dict],
+        edges: List[Dict],
+        edit_intent: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Remove a node from the workflow and reconnect edges."""
+        target = edit_intent.get("target_node")
+        if not target:
+            return None
+
+        target_id = target if isinstance(target, str) else target.get("id")
+        if not target_id:
+            return None
+
+        # Find incoming and outgoing edges
+        incoming = [e for e in edges if (e.get("target") or e.get("to")) == target_id]
+        outgoing = [e for e in edges if (e.get("source") or e.get("from")) == target_id]
+
+        # Remove the node and its edges
+        nodes = [n for n in nodes if n.get("id") != target_id]
+        edges = [e for e in edges
+                 if (e.get("source") or e.get("from")) != target_id
+                 and (e.get("target") or e.get("to")) != target_id]
+
+        # Reconnect: each incoming source → each outgoing target
+        for inc in incoming:
+            src = inc.get("source") or inc.get("from")
+            for out in outgoing:
+                tgt = out.get("target") or out.get("to")
+                edges.append({
+                    "id": f"e-{src}-{tgt}",
+                    "source": src,
+                    "target": tgt,
+                })
+
+        return {"nodes": nodes, "edges": edges}
+
     async def _generate_with_ai_enhanced(
         self,
         prompt: str,
