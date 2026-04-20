@@ -259,6 +259,18 @@ class WorkflowExecutionService:
                         next_nodes=next_map.get(node_id, [])
                     )
 
+                # Inject db session + workflow metadata into each node's context
+                # so nodes like ApprovalNode and IAMNode can access the session
+                # via context.get("db")
+                workflow_name = execution.workflow.name if execution.workflow else ""
+                user_id = str(execution.user_id) if execution.user_id else "system"
+                for ni in node_instances.values():
+                    ni.context["db"] = db
+                    ni.context["workflow_name"] = workflow_name
+                    ni.context["workflow_id"] = str(execution.workflow_id)
+                    ni.context["user_id"] = user_id
+                    ni.context["workflow_instance_id"] = str(execution_id)
+
                 # Create workflow instance for node executor
                 workflow_instance = NodeWorkflowInstance(
                     id=str(execution_id),
