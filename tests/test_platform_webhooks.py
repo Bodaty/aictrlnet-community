@@ -8,9 +8,9 @@ from unittest.mock import patch, AsyncMock, MagicMock
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import status
 
-from src.services.platform_webhook_service import PlatformWebhookService
-from src.models.platform_integration import PlatformWebhook, PlatformWebhookDelivery
-from src.schemas.platform_integration import (
+fromservices.platform_webhook_service import PlatformWebhookService
+frommodels.platform_integration import PlatformWebhook, PlatformWebhookDelivery
+fromschemas.platform_integration import (
     PlatformType, WebhookEventType, WebhookDeliveryStatus,
     PlatformWebhookCreate, WebhookEventData
 )

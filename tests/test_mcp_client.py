@@ -4,11 +4,11 @@ from datetime import datetime, timedelta
 import json
 from httpx import AsyncClient
 
-from src.mcp_client.client import MCPClient
-from src.mcp_client.models import MCPServer, MCPCapability, MCPRequest, MCPResponse
-from src.mcp_client.registry import MCPServerRegistry
-from src.mcp_client.services import MCPClientService
-from src.schemas.mcp import (
+from mcp_client.client import MCPClient
+from mcp_client.models import MCPServer, MCPCapability, MCPRequest, MCPResponse
+from mcp_client.registry import MCPServerRegistry
+from mcp_client.services import MCPClientService
+from schemas.mcp import (
     MCPServerCreate, MCPServerUpdate, MCPServerResponse,
     MCPTaskResponse, MCPMetricsResponse
 )

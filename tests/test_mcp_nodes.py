@@ -3,11 +3,11 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from datetime import datetime
 import json
 
-from src.nodes.implementations.mcp_client_node import MCPClientNode
-from src.nodes.implementations.mcp_server_node import MCPServerNode
-from src.nodes.base import NodeExecutionResult, NodeExecutionStatus
-from src.schemas.workflow import WorkflowExecution
-from src.mcp_client.models import MCPCapability
+fromnodes.implementations.mcp_client_node import MCPClientNode
+fromnodes.implementations.mcp_server_node import MCPServerNode
+fromnodes.base import NodeExecutionResult, NodeExecutionStatus
+fromschemas.workflow import WorkflowExecution
+frommcp_client.models import MCPCapability
 
 
 @pytest.fixture

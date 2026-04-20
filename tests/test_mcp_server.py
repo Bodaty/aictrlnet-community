@@ -5,11 +5,11 @@ import json
 import asyncio
 from httpx import AsyncClient
 
-from src.mcp_server.server import MCPServer
-from src.mcp_server.handlers import MCPRequestHandler
-from src.mcp_server.models import MCPTask, TaskStatus, MCPEndpoint
-from src.mcp_server.services.workflow_exposure import WorkflowExposureService
-from src.schemas.mcp import (
+frommcp_server.server import MCPServer
+frommcp_server.handlers import MCPRequestHandler
+frommcp_server.models import MCPTask, TaskStatus, MCPEndpoint
+frommcp_server.services.workflow_exposure import WorkflowExposureService
+fromschemas.mcp import (
     MCPTaskCreate, MCPTaskResponse, MCPEndpointResponse,
     WorkflowEndpointCreate, WorkflowEndpointResponse
 )
