@@ -1400,6 +1400,149 @@ Response (just the sentence, no quotes):"""
         return selected
 
     # =========================================================================
+    # Typed UI Blocks — Phase 1
+    # Maps successful ToolResults into inline anchors for the chat UI.
+    # Rule: every block LINKS to its canonical page, never replicates it.
+    # =========================================================================
+
+    def _build_ui_blocks(self, tool_results, session_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Build a list of UIBlock dicts from tool execution results.
+
+        Called from process_message_v2 after the tool-execution loop. Non-mapped
+        tools yield zero blocks (their result is captured in the text response
+        via LLM synthesis). Overridable by Business/Enterprise for their tools.
+        """
+        from schemas.conversation import UIBlock, UIBlockAction
+
+        blocks: List[Dict[str, Any]] = []
+        if not tool_results:
+            return blocks
+
+        for result in tool_results:
+            if not getattr(result, "success", False):
+                continue
+            data = getattr(result, "data", None) or {}
+            tool_name = data.get("tool_name") or ""
+
+            try:
+                mapped = self._map_tool_to_blocks(tool_name, data)
+            except Exception as e:
+                logger.warning(f"[ui_blocks] mapping failed for tool={tool_name}: {e}")
+                mapped = []
+            blocks.extend(mapped)
+
+        return blocks
+
+    def _map_tool_to_blocks(self, tool_name: str, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Map a single tool result's data to zero-or-more UIBlock dicts.
+
+        Community-edition mappings. Business/Enterprise override/extend.
+        """
+        if tool_name in ("create_workflow", "instantiate_template"):
+            return [self._workflow_card(data, is_new=True)]
+
+        if tool_name == "list_workflows":
+            workflows = data.get("workflows") or []
+            if not workflows:
+                return []
+            summary = {
+                "type": "text",
+                "data": {"content": f"Found {len(workflows)} workflow(s):"},
+                "actions": [],
+                "entity_ref": None,
+            }
+            cards = [self._workflow_card(wf, is_new=False) for wf in workflows]
+            return [summary] + cards
+
+        if tool_name == "list_templates":
+            templates = data.get("templates") or []
+            return [self._workflow_card({**t, "is_template": True}, is_new=False) for t in templates]
+
+        if tool_name == "execute_workflow":
+            tools = data.get("tools_executed") or data.get("tools") or []
+            execution_id = data.get("execution_id") or data.get("run_id") or data.get("workflow_id")
+            return [{
+                "type": "execution_preview",
+                "data": {
+                    "tools": tools,
+                    "execution_id": execution_id,
+                    "workflow_id": data.get("workflow_id"),
+                    "workflow_name": data.get("workflow_name", "Workflow"),
+                    "status": data.get("status", "running"),
+                },
+                "actions": [
+                    {"label": "View run", "verb": "open", "primary": True, "destructive": False,
+                     "target": f"/runs"}
+                ],
+                "entity_ref": {"type": "execution", "id": execution_id} if execution_id else None,
+            }]
+
+        if tool_name == "list_agents":
+            agents = data.get("agents") or []
+            return [self._agent_card(a) for a in agents]
+
+        if tool_name == "create_agent":
+            return [self._agent_card(data)]
+
+        return []
+
+    def _workflow_card(self, wf: Dict[str, Any], *, is_new: bool) -> Dict[str, Any]:
+        wf_id = wf.get("workflow_id") or wf.get("id") or ""
+        name = wf.get("workflow_name") or wf.get("name") or "Workflow"
+        status = wf.get("status") or ("draft" if is_new else "active")
+        is_template = bool(wf.get("is_template"))
+        last_run = wf.get("last_run") or wf.get("last_executed_at")
+        # Draft → edit page; live → detail page.
+        open_target = f"/workflows/{wf_id}/edit" if (status == "draft" and wf_id) else (
+            f"/workflows/{wf_id}" if wf_id else "/workflows-hub"
+        )
+        actions = [
+            {"label": "Open workflow", "verb": "open", "primary": True, "destructive": False,
+             "target": open_target},
+        ]
+        # Only live workflows support run verbs; drafts/templates do not.
+        if not is_template and wf_id and status != "draft":
+            actions.extend([
+                {"label": "Run dry", "verb": "run_dry", "primary": False, "destructive": False},
+                {"label": "Run now", "verb": "run_now", "primary": False, "destructive": False},
+                {"label": "Cancel", "verb": "cancel", "primary": False, "destructive": True},
+            ])
+        return {
+            "type": "workflow_card",
+            "data": {
+                "id": wf_id,
+                "name": name,
+                "status": status,
+                "is_template": is_template,
+                "last_run": last_run,
+                "edit_url": f"/workflows/{wf_id}/edit" if wf_id else None,
+            },
+            "actions": actions,
+            "entity_ref": {"type": "workflow", "id": wf_id} if wf_id else None,
+        }
+
+    def _agent_card(self, agent: Dict[str, Any]) -> Dict[str, Any]:
+        ag_id = agent.get("agent_id") or agent.get("id") or ""
+        name = agent.get("agent_name") or agent.get("name") or "Agent"
+        status = agent.get("status") or "active"
+        return {
+            "type": "agent_card",
+            "data": {
+                "id": ag_id,
+                "name": name,
+                "status": status,
+                "edition": agent.get("edition"),
+            },
+            "actions": [
+                {"label": "Open agent", "verb": "open", "primary": True, "destructive": False,
+                 "target": "/agents"},
+                {"label": "Pause", "verb": "pause", "primary": False, "destructive": False},
+                {"label": "Resume", "verb": "resume", "primary": False, "destructive": False},
+            ],
+            "entity_ref": {"type": "agent", "id": ag_id} if ag_id else None,
+        }
+
+    # =========================================================================
     # v5 UNIFIED CONVERSATION FLOW - LLM as Brain
     # =========================================================================
 
@@ -1610,6 +1753,7 @@ Response (just the sentence, no quotes):"""
             # Step 6: Execute tools if LLM decided to call any
             # =====================================================================
             tool_results = []
+            ui_blocks: List[Dict[str, Any]] = []  # Typed UI blocks emitted after tool execution
 
             # First check for proper tool calls
             has_proper_tool_calls = llm_response.has_tool_calls()
@@ -1706,6 +1850,19 @@ Response (just the sentence, no quotes):"""
                                 "error": result.error if not result.success else None
                             }
                         }
+
+                # =====================================================================
+                # Emit typed UI blocks (Phase 1). Blocks LINK to canonical pages;
+                # they supersede the legacy `automation_result` field-sniffing path
+                # on the frontend when present and non-empty.
+                # =====================================================================
+                built_blocks = self._build_ui_blocks(tool_results, session.context or {})
+                ui_blocks.extend(built_blocks)
+                for block in built_blocks:
+                    yield {
+                        "event": "ui_block",
+                        "data": {"block": block}
+                    }
 
                 # =====================================================================
                 # Phase 2: LLM synthesizes tool results into natural response (streamed)
@@ -1807,7 +1964,11 @@ Response (just the sentence, no quotes):"""
                 "session_context": {
                     "parameters": session.context.get('v5_parameters', {}),
                     "turn_count": len(conversation_history)
-                }
+                },
+                # Typed UI blocks — frontend renders via component registry.
+                # When non-empty, frontend suppresses the legacy `created_workflow`/
+                # `automation_result` sniffing path to prevent double-render.
+                "ui_blocks": ui_blocks,
             }
 
             # Include workflow navigation info if a workflow was created

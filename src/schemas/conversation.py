@@ -27,6 +27,80 @@ ConversationStateType = Literal[
 MessageRoleType = Literal["user", "assistant", "system"]
 ActionStatusType = Literal["pending", "in_progress", "completed", "failed", "cancelled"]
 
+# Typed UI Blocks — discriminated union rendered inline in the conversation UI.
+# Rule: each block LINKS to its canonical page (workflow_card → /workflows/:id, etc.),
+# never replicates the full UI inside a chat bubble. See plan: Phase 1 UI Blocks.
+UIBlockType = Literal[
+    "text",
+    "workflow_card",
+    "approval_form",
+    "risk_card",
+    "execution_preview",
+    "agent_card",
+    "resource_widget",
+    "policy_card",
+    "governance_report",
+    "nav_hint",
+    "reasoning_steps",
+]
+
+UIBlockActionVerb = Literal[
+    "approve", "reject", "cancel", "run_now", "run_dry", "pause", "resume", "open"
+]
+
+
+class UIBlockAction(BaseModel):
+    """Inline action button on a UI block. Verbs are idempotent — anything
+    requiring a form or multi-step input must navigate to the canonical page."""
+    label: str
+    verb: UIBlockActionVerb
+    primary: bool = False
+    destructive: bool = False
+    # Optional target — used by `open` verb to override the block's default nav
+    target: Optional[str] = None
+
+
+class UIBlock(BaseModel):
+    """A single inline block emitted alongside a conversation response.
+    Frontend renders via a component registry keyed on `type`; non-web channels
+    degrade to text via `ui_block_to_text()`."""
+    type: UIBlockType
+    data: Dict[str, Any] = Field(default_factory=dict)
+    actions: List[UIBlockAction] = Field(default_factory=list)
+    entity_ref: Optional[Dict[str, Any]] = None
+
+
+def ui_block_to_text(block: UIBlock) -> str:
+    """One-line text degradation for non-web channels (Slack, email, Discord).
+    Keeps `process_message()` channel-unaware per CHANNEL_AGNOSTIC_ARCHITECTURE.md."""
+    t = block.type
+    d = block.data or {}
+    if t == "text":
+        return str(d.get("content", ""))
+    if t == "workflow_card":
+        return f"Workflow '{d.get('name', '?')}' ({d.get('id', '?')}) — status: {d.get('status', 'unknown')}"
+    if t == "approval_form":
+        return f"Approval needed: {d.get('title', '?')} ({d.get('urgency', 'normal')})"
+    if t == "risk_card":
+        return f"Risk score {d.get('score', '?')} — {d.get('top_finding', 'see details')}"
+    if t == "execution_preview":
+        tools = d.get("tools", [])
+        return f"Running {len(tools)} tool(s): {', '.join(x.get('name', '?') for x in tools[:3])}"
+    if t == "agent_card":
+        return f"Agent '{d.get('name', '?')}' ({d.get('id', '?')}) — status: {d.get('status', 'unknown')}"
+    if t == "policy_card":
+        return f"Policy '{d.get('name', '?')}' — scope: {d.get('scope', '?')}"
+    if t == "resource_widget":
+        return f"Pool '{d.get('name', '?')}' — utilization: {d.get('utilization_pct', '?')}%"
+    if t == "governance_report":
+        return f"{d.get('title', 'Report')}: {d.get('headline_metric', '?')}"
+    if t == "nav_hint":
+        return f"{d.get('label', 'Open')} → {d.get('target', '')}"
+    if t == "reasoning_steps":
+        steps = d.get("steps", [])
+        return f"Reasoning ({len(steps)} step(s))"
+    return ""
+
 
 # Request Schemas
 class ConversationSessionCreate(BaseModel):
@@ -195,6 +269,9 @@ class ConversationResponse(BaseModel):
         default=None,
         description="Company automation result with plan details for UX rendering"
     )
+    # Typed inline UI blocks — frontend prefers these over `automation_result`
+    # field-sniffing when non-empty. See `UIBlock` for the discriminated union.
+    ui_blocks: List[UIBlock] = Field(default_factory=list)
 
 
 class ConversationListResponse(BaseModel):
