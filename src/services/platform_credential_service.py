@@ -78,53 +78,95 @@ class EnvironmentBackend(CredentialBackend):
 
 
 class FileBackend(CredentialBackend):
-    """File-based backend for credentials"""
-    
+    """File-based backend for credentials.
+
+    Credentials are encrypted at rest using Fernet (AES-128-CBC + HMAC-SHA256).
+    The file stores {key: encrypted_token} rather than plaintext. This mirrors
+    DatabaseBackend's encryption model. The encryption key comes from the
+    `PLATFORM_CREDENTIAL_KEY` env var; a dev-only key is auto-generated if
+    not set.
+
+    Schema note: files written by the pre-encryption version of this class
+    contain plaintext and will fail to decrypt after upgrade. Treat as a
+    breaking change.
+    """
+
     def __init__(self, file_path: str = "/app/data/credentials.json"):
         self.file_path = file_path
+        self._init_encryption()
         self._ensure_file_exists()
-    
+
+    def _init_encryption(self):
+        """Initialize Fernet cipher. Mirrors DatabaseBackend._init_encryption()."""
+        encryption_key = os.environ.get("PLATFORM_CREDENTIAL_KEY")
+        if not encryption_key:
+            logger.warning(
+                "No PLATFORM_CREDENTIAL_KEY set; generating ephemeral dev key "
+                "for FileBackend. Production deployments must set this env var."
+            )
+            encryption_key = Fernet.generate_key().decode()
+            os.environ["PLATFORM_CREDENTIAL_KEY"] = encryption_key
+
+        self.cipher = Fernet(encryption_key.encode())
+
+    def _encrypt_data(self, data: Dict[str, Any]) -> str:
+        """Encrypt a credential dict into a Fernet token string."""
+        json_data = json.dumps(data)
+        return self.cipher.encrypt(json_data.encode()).decode()
+
+    def _decrypt_data(self, encrypted_data: str) -> Dict[str, Any]:
+        """Decrypt a Fernet token string back into a credential dict."""
+        try:
+            decrypted = self.cipher.decrypt(encrypted_data.encode())
+            return json.loads(decrypted.decode())
+        except Exception as e:
+            logger.error(f"Error decrypting credential data: {e}")
+            return {}
+
     def _ensure_file_exists(self):
         """Ensure credentials file exists"""
         os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
         if not os.path.exists(self.file_path):
             with open(self.file_path, 'w') as f:
                 json.dump({}, f)
-    
+
     async def get_credential(self, key: str) -> Optional[Dict[str, Any]]:
-        """Get credential from file"""
+        """Get credential from file, decrypting the stored token."""
         try:
             with open(self.file_path, 'r') as f:
                 credentials = json.load(f)
-                return credentials.get(key)
+            encrypted = credentials.get(key)
+            if encrypted is None:
+                return None
+            return self._decrypt_data(encrypted)
         except Exception as e:
             logger.error(f"Error reading credentials file: {e}")
             return None
-    
+
     async def store_credential(self, key: str, credential: Dict[str, Any]) -> bool:
-        """Store credential to file"""
+        """Encrypt credential and store the ciphertext in the file."""
         try:
             with open(self.file_path, 'r') as f:
                 credentials = json.load(f)
-            
-            credentials[key] = credential
-            
+
+            credentials[key] = self._encrypt_data(credential)
+
             with open(self.file_path, 'w') as f:
                 json.dump(credentials, f, indent=2)
             return True
         except Exception as e:
             logger.error(f"Error storing credential to file: {e}")
             return False
-    
+
     async def delete_credential(self, key: str) -> bool:
         """Delete credential from file"""
         try:
             with open(self.file_path, 'r') as f:
                 credentials = json.load(f)
-            
+
             if key in credentials:
                 del credentials[key]
-                
+
                 with open(self.file_path, 'w') as f:
                     json.dump(credentials, f, indent=2)
                 return True
@@ -132,7 +174,7 @@ class FileBackend(CredentialBackend):
         except Exception as e:
             logger.error(f"Error deleting credential from file: {e}")
             return False
-    
+
     async def list_credentials(self) -> List[str]:
         """List credential keys from file"""
         try:

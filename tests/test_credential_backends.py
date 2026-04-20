@@ -3,7 +3,7 @@ import os
 import json
 import tempfile
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, AsyncMock, patch
 from cryptography.fernet import Fernet
 
 from services.platform_credential_service import (
@@ -133,13 +133,23 @@ class TestFileBackend:
 
 class TestDatabaseBackend:
     """Test database credential backend"""
-    
+
     @pytest.fixture
     def mock_db(self):
-        """Create a mock database session"""
-        db = Mock()
+        """Create a mock async database session matching the SQLAlchemy
+        AsyncSession API used by DatabaseBackend (await db.execute(...)).
+        """
+        db = AsyncMock()
+        # execute() is awaited; its result has .scalar_one_or_none() and
+        # .scalars().all() — both sync calls on the returned Result object.
+        execute_result = Mock()
+        execute_result.scalar_one_or_none = Mock(return_value=None)
+        execute_result.scalars = Mock()
+        execute_result.scalars.return_value = Mock()
+        execute_result.scalars.return_value.all = Mock(return_value=[])
+        db.execute = AsyncMock(return_value=execute_result)
         return db
-    
+
     @pytest.fixture
     def mock_credential(self):
         """Create a mock credential object"""
@@ -148,29 +158,27 @@ class TestDatabaseBackend:
         credential.platform = "n8n"
         credential.encrypted_data = Fernet.generate_key()
         return credential
-    
+
     @pytest.mark.asyncio
     async def test_get_credential_success(self, mock_db, mock_credential):
         """Test successful credential retrieval from database"""
         backend = DatabaseBackend(mock_db)
-        
-        # Mock query result
-        mock_db.query.return_value.filter.return_value.first.return_value = mock_credential
-        
+
+        # Service path: await db.execute(...) → result.scalar_one_or_none()
+        mock_db.execute.return_value.scalar_one_or_none = Mock(return_value=mock_credential)
+
         # Mock decryption
         test_data = {"api_key": "test-key"}
         with patch.object(backend, '_decrypt_data', return_value=test_data):
             result = await backend.get_credential("n8n:user:1")
             assert result == test_data
-    
+
     @pytest.mark.asyncio
     async def test_get_credential_not_found(self, mock_db):
         """Test credential not found in database"""
         backend = DatabaseBackend(mock_db)
-        
-        # Mock query result
-        mock_db.query.return_value.filter.return_value.first.return_value = None
-        
+
+        # Default fixture returns None from scalar_one_or_none
         result = await backend.get_credential("n8n:user:1")
         assert result is None
     
@@ -232,8 +240,10 @@ class TestPlatformCredentialService:
             "VAULT_URL": "http://vault:8200",
             "VAULT_TOKEN": "test-token"
         }):
-            # Mock the vault backend import
-            with patch('services.platform_credential_service.VaultCredentialBackend') as mock_vault:
+            # VaultCredentialBackend is imported lazily at factory call time
+            # (inside platform_credential_service), not at module level, so
+            # patch the source module instead.
+            with patch('services.vault_credential_backend.VaultCredentialBackend') as mock_vault:
                 service = PlatformCredentialService(mock_db)
                 # Should have tried to import vault backend
                 assert service.backend is not None

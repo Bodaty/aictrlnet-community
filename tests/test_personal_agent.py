@@ -38,7 +38,12 @@ def personal_agent_service(mock_db_session):
 
 @pytest.fixture
 def mock_agent_config():
-    """Create a mock PersonalAgentConfig."""
+    """Create a mock PersonalAgentConfig.
+
+    Pydantic v2 strictly validates dict fields — MagicMock auto-attrs won't
+    satisfy `Dict[str, Any]` field types, so onboarding_state and
+    user_context are set explicitly as empty dicts.
+    """
     config = MagicMock()
     config.id = str(uuid.uuid4())
     config.user_id = "user-123"
@@ -48,6 +53,8 @@ def mock_agent_config():
     config.active_workflows = ["workflow-1", "workflow-2"]
     config.max_workflows = COMMUNITY_MAX_WORKFLOWS
     config.status = "active"
+    config.onboarding_state = {}
+    config.user_context = {}
     config.created_at = datetime.utcnow()
     config.updated_at = datetime.utcnow()
     return config
@@ -143,8 +150,18 @@ class TestPersonalAgentServiceConfig:
     @pytest.mark.asyncio
     async def test_update_config_creates_if_missing(self, personal_agent_service, mock_db_session, mock_agent_config):
         """Test update creates config if missing."""
-        # First call returns None, subsequent calls return the config
-        mock_db_session.execute.return_value.scalar_one_or_none.side_effect = [None, mock_agent_config]
+        # Service may call scalar_one_or_none more than 2 times; use a
+        # lambda so every call after the first returns mock_agent_config.
+        # A bounded side_effect list raises StopIteration on overflow.
+        call_counter = {"n": 0}
+
+        def _scalar_one_or_none():
+            call_counter["n"] += 1
+            return None if call_counter["n"] == 1 else mock_agent_config
+
+        mock_db_session.execute.return_value.scalar_one_or_none = Mock(
+            side_effect=lambda: _scalar_one_or_none()
+        )
         mock_db_session.execute.return_value.scalar_one.return_value = mock_agent_config
 
         updates = PersonalAgentConfigUpdate(agent_name="New Name")
