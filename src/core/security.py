@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Union, TYPE_CHECKING
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -83,15 +83,16 @@ def create_refresh_token(data: dict) -> str:
 
 
 async def get_current_user(
+    request: Request,
     token: Optional[str] = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> "User":
-    """Get current user from JWT token."""
+    """Get current user from JWT token or API key."""
     # Import here to avoid circular import
     from models.user import User
-    
+
     settings = get_settings()
-    
+
     # DEV_ONLY_START
     # Development token for fast local development - only enabled in development environment
     # Check for dev token first, but ONLY in development environment
@@ -123,8 +124,15 @@ async def get_current_user(
 
         return dev_user
     # DEV_ONLY_END
-    
+
     if not token:
+        # Fall back to X-API-Key header before rejecting
+        api_key_header = request.headers.get("X-API-Key")
+        if api_key_header:
+            user = await _try_api_key_auth(api_key_header, request, db)
+            if user:
+                return user
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
@@ -268,3 +276,21 @@ async def verify_token(token: str, db=None) -> Optional[dict]:
         }
     except JWTError:
         return None
+
+
+async def _try_api_key_auth(
+    api_key_value: str, request: Request, db: AsyncSession
+) -> Optional["User"]:
+    """Attempt authentication via API key. Returns User or None."""
+    try:
+        from services.api_key_service import APIKeyService
+
+        svc = APIKeyService(db)
+        ip_address = request.client.host if request.client else None
+        user, key = await svc.verify_api_key(api_key_value, ip_address=ip_address)
+        if user and key:
+            request.state.api_key = key
+            return user
+    except Exception:
+        pass
+    return None

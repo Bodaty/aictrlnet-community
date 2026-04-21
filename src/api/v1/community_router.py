@@ -93,6 +93,14 @@ except ImportError:
     # MCP LLM endpoints not available
     pass
 
+# MCP Streamable HTTP transport (JSON-RPC 2.0 — Claude Code connects here)
+from mcp_server.http_transport import router as mcp_transport_router
+api_router.include_router(mcp_transport_router, tags=["mcp-transport"])
+
+# API Key management endpoints (routes already include /api-keys prefix)
+from .endpoints import api_keys
+api_router.include_router(api_keys.router, tags=["api-keys"])
+
 # AI/NLP endpoints
 api_router.include_router(nlp.router, prefix="/nlp", tags=["nlp"])
 
