@@ -9,7 +9,7 @@ Claude Code config (~/.claude/mcp.json):
 
 import logging
 
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,15 +28,16 @@ router = APIRouter()
 @router.post("/mcp-transport")
 async def handle_mcp_request(
     request: Request,
-    body: dict = Body(...),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(get_current_active_user),
 ):
     """MCP Streamable HTTP endpoint (protocol 2025-03-26).
 
-    Accepts JSON-RPC 2.0 requests. Returns JSON responses.
-    Notifications (no 'id') return 202.
+    Accepts JSON-RPC 2.0 requests (single or batch array).
+    Returns JSON responses. Notifications (no 'id') return 202.
     """
+    body = await request.json()
+
     user_id = str(getattr(current_user, "id", "anonymous"))
     api_key = getattr(request.state, "api_key", None)
     tenant_id = get_current_tenant_id()
@@ -48,6 +49,17 @@ async def handle_mcp_request(
         api_key=api_key,
         tenant_id=tenant_id,
     )
+
+    # JSON-RPC 2.0 batch support — array of requests
+    if isinstance(body, list):
+        responses = []
+        for msg in body:
+            resp = await handler.handle(msg)
+            if resp is not None:
+                responses.append(resp)
+        if not responses:
+            return Response(status_code=202)
+        return JSONResponse(content=responses)
 
     response = await handler.handle(body)
 
