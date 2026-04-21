@@ -117,7 +117,11 @@ async def list_available_adapters(
             # Try exact lowercase
             registry_type = adapter.name.lower().replace(" ", "")
         if registry_type not in runtime_types:
-            registry_type = str(adapter.id)
+            first_word = adapter.name.split()[0].lower() if adapter.name else ""
+            if first_word in runtime_types:
+                registry_type = first_word
+            else:
+                registry_type = str(adapter.id)
 
         adapter_info = AdapterInfo(
             id=adapter.id,
