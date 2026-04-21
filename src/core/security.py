@@ -151,6 +151,10 @@ async def get_current_user(
         if user_id is None:
             raise credentials_exception
     except JWTError:
+        # JWT decode failed — try OAuth2 access token (Business+ feature)
+        oauth2_user = await _try_oauth2_token_auth(token, db)
+        if oauth2_user:
+            return oauth2_user
         raise credentials_exception
     
     # Fetch user from database
@@ -291,6 +295,38 @@ async def _try_api_key_auth(
         if user and key:
             request.state.api_key = key
             return user
+    except Exception:
+        pass
+    return None
+
+
+async def _try_oauth2_token_auth(
+    token: str, db: AsyncSession
+) -> Optional["User"]:
+    """Attempt authentication via OAuth2 access token (Business+ feature).
+
+    OAuth2 tokens are issued by POST /api/v1/oauth2/token (client_credentials grant).
+    They're opaque tokens stored in oauth2_access_tokens, not JWTs.
+    """
+    try:
+        import sys
+        if "/workspace/editions/business/src" not in sys.path:
+            sys.path.insert(0, "/workspace/editions/business/src")
+
+        from aictrlnet_business.services.oauth2_service_async import OAuth2ServiceAsync
+        from models.user import User
+
+        svc = OAuth2ServiceAsync(db)
+        access_token = await svc.verify_access_token(token)
+        if access_token and not access_token.revoked:
+            result = await db.execute(
+                select(User).where(User.id == access_token.user_id)
+            )
+            user = result.scalar_one_or_none()
+            if user and user.is_active:
+                return user
+    except ImportError:
+        pass
     except Exception:
         pass
     return None
