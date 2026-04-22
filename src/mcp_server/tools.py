@@ -175,6 +175,128 @@ COMMUNITY_TOOLS = [
             "required": ["message"],
         },
     },
+    # ---- Wave 1: Adapters (Layer 1) ----
+    {
+        "name": "list_adapters",
+        "description": (
+            "List platform-adapter definitions available for this edition. "
+            "Adapters unlock entire ecosystems (n8n, Zapier, Make, IFTTT, "
+            "Power Automate, SaaS APIs) through pre-built, governed integrations."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "Filter by category"},
+                "search": {"type": "string", "description": "Case-insensitive name/description match"},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+                "include_unavailable": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Include adapters not available to the caller's edition",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_adapter",
+        "description": "Get details of a single adapter definition by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"adapter_id": {"type": "string"}},
+            "required": ["adapter_id"],
+        },
+    },
+    {
+        "name": "list_my_adapter_configs",
+        "description": "List the caller's saved adapter configurations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "adapter_type": {"type": "string"},
+                "enabled_only": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "test_adapter_config",
+        "description": (
+            "Dry-run an adapter configuration (no side effects). Verifies "
+            "credentials + reachability + quota. Safe to run anytime."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "config_id": {"type": "string"},
+                "timeout_seconds": {"type": "integer", "default": 10},
+            },
+            "required": ["config_id"],
+        },
+    },
+    # ---- Wave 1: NL entry ----
+    {
+        "name": "nl_to_workflow",
+        "description": (
+            "Convert a natural-language description into an AICtrlNet workflow "
+            "(returns the created workflow's id + node plan). Same service "
+            "that powers create_workflow but with the explicit NL->plan shape."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "NL description of the workflow"},
+                "context": {"type": "object"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "analyze_intent",
+        "description": (
+            "Analyze the intent of a piece of text without creating a workflow. "
+            "Useful for routing decisions before committing side-effectful calls."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "context": {"type": "object"},
+            },
+            "required": ["text"],
+        },
+    },
+    # ---- Wave 1: Autonomy read surface (Control Spectrum) ----
+    {
+        "name": "get_workflow_autonomy",
+        "description": (
+            "Return the resolved autonomy level + phase for a workflow. "
+            "Implements v11 'six autonomy phases' — Observation / Learning / "
+            "Recommendation / Cooperation / Supervision / Full Delegation."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"workflow_id": {"type": "string"}},
+            "required": ["workflow_id"],
+        },
+    },
+    {
+        "name": "preview_autonomy",
+        "description": (
+            "Preview what would auto-approve vs gate at a given autonomy level "
+            "for a specific workflow. Read-only; does not change any state."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "level": {"type": "integer", "minimum": 0, "maximum": 100},
+            },
+            "required": ["workflow_id", "level"],
+        },
+    },
 ]
 
 BUSINESS_TOOLS = [
@@ -208,6 +330,278 @@ BUSINESS_TOOLS = [
                     "default": 20,
                 },
             },
+        },
+    },
+    # ---- Wave 1: Autonomy write surface ----
+    {
+        "name": "set_workflow_autonomy",
+        "description": (
+            "Set the autonomy level (0-100) and optional lock on a workflow. "
+            "Enforces tenant ownership — cross-tenant writes are rejected."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "autonomy_level": {"type": "integer", "minimum": 0, "maximum": 100},
+                "autonomy_locked": {"type": "boolean"},
+            },
+            "required": ["workflow_id"],
+        },
+    },
+    # ---- Wave 1: Self-extending agents (Layer 2 — v11.4 hero) ----
+    {
+        "name": "research_api",
+        "description": (
+            "Research an API and return a structured specification (base_url, "
+            "auth_type, capabilities, confidence). Uses a known-API database, "
+            "OpenAPI extraction, and LLM fallback. Metered."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_name": {"type": "string"},
+                "documentation_url": {"type": "string"},
+                "user_context": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["api_name"],
+        },
+    },
+    {
+        "name": "generate_adapter",
+        "description": (
+            "Generate (research -> codegen -> validate -> risk-assess) an adapter "
+            "for a new API. Long-running: returns immediately with the adapter "
+            "id + initial status; poll get_generated_adapter_status for "
+            "lifecycle transitions. Metered."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "api_name": {"type": "string"},
+                "base_url": {"type": "string"},
+                "auth_type": {"type": "string"},
+                "capabilities": {"type": "array", "items": {"type": "object"}},
+                "auth_config": {"type": "object"},
+                "description": {"type": "string"},
+                "generation_mode": {
+                    "type": "string",
+                    "enum": ["python_code", "declarative_http"],
+                    "default": "python_code",
+                },
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["name", "api_name", "base_url", "auth_type", "capabilities"],
+        },
+    },
+    {
+        "name": "self_extend",
+        "description": (
+            "One-call orchestrator: research an API and kick off adapter "
+            "generation. Returns the adapter id + research spec + initial "
+            "status. Hero tool for v11.4 'platform that builds its own "
+            "integrations'. Metered."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_name": {"type": "string"},
+                "documentation_url": {"type": "string"},
+                "user_context": {"type": "string"},
+                "generation_mode": {
+                    "type": "string",
+                    "enum": ["python_code", "declarative_http"],
+                    "default": "python_code",
+                },
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["api_name"],
+        },
+    },
+    {
+        "name": "list_generated_adapters",
+        "description": "List generated adapters with optional status filter.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "mine_only": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "get_generated_adapter_status",
+        "description": (
+            "Get the current lifecycle state of a generated adapter — status, "
+            "risk score, risk level, risk details, validation errors."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"adapter_id": {"type": "string"}},
+            "required": ["adapter_id"],
+        },
+    },
+    {
+        "name": "get_generated_adapter_source",
+        "description": (
+            "Fetch the generated source code or declarative spec for a "
+            "generated adapter so Claude (or a human) can review before "
+            "approval."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"adapter_id": {"type": "string"}},
+            "required": ["adapter_id"],
+        },
+    },
+    {
+        "name": "approve_adapter",
+        "description": (
+            "Approve a generated adapter for activation. Does not yet make the "
+            "adapter usable — call activate_adapter after."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "adapter_id": {"type": "string"},
+                "comments": {"type": "string"},
+            },
+            "required": ["adapter_id"],
+        },
+    },
+    {
+        "name": "reject_adapter",
+        "description": "Reject a generated adapter. Terminal state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "adapter_id": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["adapter_id"],
+        },
+    },
+    {
+        "name": "activate_adapter",
+        "description": (
+            "Register an approved adapter with the adapter factory so it can "
+            "be used in workflows. Refuses adapters not in 'approved' state."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"adapter_id": {"type": "string"}},
+            "required": ["adapter_id"],
+        },
+    },
+    # ---- Wave 1: Browser (Layer 3) ----
+    {
+        "name": "browser_execute",
+        "description": (
+            "Execute a sequence of browser actions (navigate, click, fill, "
+            "screenshot, extract_text, wait_for). URLs validated against "
+            "RFC1918/link-local/loopback/cloud-metadata deny-lists; capped at "
+            "20 actions. run_script/download require a per-tenant feature "
+            "flag. Metered per action."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "navigate", "click", "fill", "screenshot",
+                                    "extract_text", "wait_for",
+                                    "run_script", "download",
+                                ],
+                            },
+                            "url": {"type": "string"},
+                            "selector": {"type": "string"},
+                            "value": {"type": "string"},
+                            "script": {"type": "string"},
+                            "full_page": {"type": "boolean"},
+                            "timeout_ms": {"type": "integer"},
+                        },
+                        "required": ["type"],
+                    },
+                },
+                "timeout_ms": {"type": "integer", "default": 30000},
+                "viewport": {
+                    "type": "object",
+                    "properties": {
+                        "width": {"type": "integer"},
+                        "height": {"type": "integer"},
+                    },
+                },
+            },
+            "required": ["actions"],
+        },
+    },
+    # ---- Wave 1: Approval queue (Layer 4 — Human Orchestration) ----
+    {
+        "name": "list_pending_approvals",
+        "description": (
+            "List approval requests pending human decision. Optional filters "
+            "by workflow, resource type, or requester."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "resource_type": {"type": "string"},
+                "mine_only": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "get_approval",
+        "description": "Get details of a single approval request.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"request_id": {"type": "string"}},
+            "required": ["request_id"],
+        },
+    },
+    {
+        "name": "approve_request",
+        "description": (
+            "Approve a pending approval request. Publishes an "
+            "approval.request.approved event (wired to channel notifications)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string"},
+                "comments": {"type": "string"},
+            },
+            "required": ["request_id"],
+        },
+    },
+    {
+        "name": "reject_request",
+        "description": (
+            "Reject a pending approval request. Reason is recorded and "
+            "published on the approval.request.rejected event."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["request_id", "reason"],
         },
     },
 ]
@@ -244,6 +638,35 @@ TOOL_SCOPES = {
     "evaluate_policy": ["read:policies"],
     "list_policies": ["read:policies"],
     "check_compliance": ["read:compliance"],
+    # Wave 1: Adapters (Layer 1)
+    "list_adapters": ["read:adapters"],
+    "get_adapter": ["read:adapters"],
+    "list_my_adapter_configs": ["read:adapters"],
+    "test_adapter_config": ["write:adapters"],
+    # Wave 1: NL entry
+    "nl_to_workflow": ["write:workflows"],
+    "analyze_intent": ["read:workflows"],
+    # Wave 1: Autonomy (Control Spectrum)
+    "get_workflow_autonomy": ["read:autonomy"],
+    "preview_autonomy": ["read:autonomy"],
+    "set_workflow_autonomy": ["write:autonomy"],
+    # Wave 1: Self-extending (Layer 2)
+    "research_api": ["write:self_extending"],
+    "generate_adapter": ["write:self_extending"],
+    "self_extend": ["write:self_extending"],
+    "list_generated_adapters": ["read:self_extending"],
+    "get_generated_adapter_status": ["read:self_extending"],
+    "get_generated_adapter_source": ["read:self_extending"],
+    "approve_adapter": ["write:self_extending"],
+    "reject_adapter": ["write:self_extending"],
+    "activate_adapter": ["write:self_extending"],
+    # Wave 1: Browser (Layer 3)
+    "browser_execute": ["write:browser"],
+    # Wave 1: Approval queue (Layer 4)
+    "list_pending_approvals": ["read:approvals"],
+    "get_approval": ["read:approvals"],
+    "approve_request": ["write:approvals"],
+    "reject_request": ["write:approvals"],
 }
 
 

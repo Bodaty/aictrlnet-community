@@ -576,7 +576,733 @@ async def _handle_check_compliance(
     )
 
 
+# ---------------------------------------------------------------------------
+# Wave 1 handlers — Three-Layer Reach + Control Spectrum + Approvals
+# ---------------------------------------------------------------------------
+
+
+async def _handle_list_adapters(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.adapter import AdapterService
+
+    svc = AdapterService(db)
+    adapters, total = await svc.discover_adapters(
+        edition="community",
+        category=arguments.get("category"),
+        search=arguments.get("search"),
+        skip=arguments.get("offset", 0),
+        limit=arguments.get("limit", 50),
+        include_unavailable=bool(arguments.get("include_unavailable", False)),
+    )
+    return {
+        "adapters": [
+            {
+                "id": str(getattr(a, "id", "")),
+                "name": getattr(a, "name", None),
+                "category": getattr(a, "category", None),
+                "edition": getattr(a, "edition", None),
+                "description": getattr(a, "description", None),
+                "available": getattr(a, "available", True),
+            }
+            for a in adapters
+        ],
+        "total": total,
+    }
+
+
+async def _handle_get_adapter(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.adapter import AdapterService
+
+    svc = AdapterService(db)
+    adapter = await svc.get_adapter(arguments["adapter_id"], edition="community")
+    if not adapter:
+        raise ToolExecutionError(f"Adapter {arguments['adapter_id']} not found")
+    return {
+        "id": str(getattr(adapter, "id", "")),
+        "name": getattr(adapter, "name", None),
+        "category": getattr(adapter, "category", None),
+        "edition": getattr(adapter, "edition", None),
+        "description": getattr(adapter, "description", None),
+        "capabilities": getattr(adapter, "capabilities", None),
+        "auth_type": getattr(adapter, "auth_type", None),
+        "available": getattr(adapter, "available", True),
+    }
+
+
+async def _handle_list_my_adapter_configs(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.adapter_config import AdapterConfigService
+
+    svc = AdapterConfigService(db)
+    configs, total = await svc.list_user_configs(
+        user_id=user_id,
+        adapter_type=arguments.get("adapter_type"),
+        enabled_only=bool(arguments.get("enabled_only", False)),
+        skip=arguments.get("offset", 0),
+        limit=arguments.get("limit", 50),
+    )
+    return {
+        "configs": [
+            {
+                "id": str(c.id),
+                "adapter_type": getattr(c, "adapter_type", None),
+                "name": getattr(c, "name", None),
+                "enabled": getattr(c, "enabled", True),
+                "created_at": str(getattr(c, "created_at", "")),
+            }
+            for c in configs
+        ],
+        "total": total,
+    }
+
+
+async def _handle_test_adapter_config(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.adapter_config import AdapterConfigService
+
+    svc = AdapterConfigService(db)
+    config = await svc.get_user_config(user_id, arguments["config_id"])
+    if not config:
+        raise ToolExecutionError(f"Config {arguments['config_id']} not found")
+    result = await svc.test_config(config, timeout=arguments.get("timeout_seconds", 10))
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"result": str(result)}
+
+
+async def _handle_nl_to_workflow(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.nlp import NLPService
+
+    svc = NLPService(db)
+    result = await svc.process_natural_language(
+        prompt=arguments["text"],
+        context={"mode": "create", "user_id": user_id, **(arguments.get("context") or {})},
+        user_id=user_id,
+    )
+    if "error" in result and result["error"]:
+        raise ToolExecutionError(result["error"])
+
+    workflow = result.get("workflow") or {}
+    definition = workflow.get("definition") or {}
+    nodes = definition.get("nodes") or []
+    return {
+        "workflow_id": workflow.get("id"),
+        "name": workflow.get("name"),
+        "node_count": len(nodes),
+        "nodes": [
+            {"id": n.get("id"), "type": n.get("type"), "label": n.get("label")}
+            for n in nodes
+        ],
+        "status": "created",
+    }
+
+
+async def _handle_analyze_intent(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.nlp import NLPService
+
+    svc = NLPService(db)
+    text = arguments["text"]
+    intent = await svc._analyze_intent(text)  # noqa: SLF001
+    confidence = 0.0
+    if isinstance(intent, dict):
+        confidence = float(intent.get("confidence", 0.0))
+    elif hasattr(intent, "confidence"):
+        confidence = float(intent.confidence)
+    return {"text": text, "intent": intent, "confidence": confidence}
+
+
+async def _handle_get_workflow_autonomy(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import select
+
+    from core.tenant_context import get_current_tenant_id
+    from models.community_complete import WorkflowDefinition
+    from services.autonomy_resolver import CommunityAutonomyResolver
+    from services.autonomy_taxonomy import (
+        level_to_auto_approve_threshold,
+        level_to_phase,
+        phase_descriptor,
+    )
+
+    workflow_id = arguments["workflow_id"]
+    tenant_id = get_current_tenant_id()
+
+    row = (
+        await db.execute(
+            select(
+                WorkflowDefinition.autonomy_level,
+                WorkflowDefinition.autonomy_locked,
+                WorkflowDefinition.tenant_id,
+            ).where(WorkflowDefinition.id == workflow_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise ToolExecutionError(f"Workflow {workflow_id} not found")
+    level, locked, wf_tenant = row
+
+    resolver = CommunityAutonomyResolver(db)
+    resolved = await resolver.resolve(
+        tenant_id=tenant_id or str(wf_tenant) or "default",
+        user_id=user_id,
+        workflow_id=workflow_id,
+    )
+    descriptor = phase_descriptor(resolved.phase)
+    eff_level = resolved.level if resolved.level is not None else level
+    return {
+        "workflow_id": workflow_id,
+        "autonomy_level": level,
+        "autonomy_locked": bool(locked or False),
+        "effective_level": eff_level,
+        "phase": resolved.phase or (level_to_phase(level) if level is not None else None),
+        "phase_label": descriptor.label,
+        "phase_description": descriptor.tagline,
+        "auto_approve_threshold": resolved.auto_approve_threshold
+        or (level_to_auto_approve_threshold(level) if level is not None else None),
+        "source": resolved.source,
+    }
+
+
+async def _handle_preview_autonomy(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    import json as _json
+    from sqlalchemy import select
+
+    from models.community_complete import WorkflowDefinition
+    from services.autonomy_taxonomy import (
+        level_to_auto_approve_threshold,
+        level_to_phase,
+        node_risk as static_node_risk,
+    )
+
+    workflow_id = arguments["workflow_id"]
+    level = int(arguments["level"])
+    if not 0 <= level <= 100:
+        raise ToolExecutionError("level must be between 0 and 100")
+
+    definition = (
+        await db.execute(
+            select(WorkflowDefinition.definition).where(
+                WorkflowDefinition.id == workflow_id
+            )
+        )
+    ).scalar_one_or_none()
+    if definition is None:
+        raise ToolExecutionError(f"Workflow {workflow_id} not found")
+    if isinstance(definition, str):
+        try:
+            definition = _json.loads(definition)
+        except _json.JSONDecodeError:
+            definition = {}
+
+    threshold = level_to_auto_approve_threshold(level)
+    nodes = []
+    would_gate = 0
+    auto_approve = 0
+    for node in definition.get("nodes", []) if isinstance(definition, dict) else []:
+        node_type = str(node.get("type", ""))
+        params = node.get("parameters") or {}
+        override = params.get("risk_override") if isinstance(params, dict) else None
+        risk = static_node_risk(node_type, risk_override=override)
+        gated = risk > threshold
+        if gated:
+            would_gate += 1
+        else:
+            auto_approve += 1
+        nodes.append(
+            {
+                "node_id": str(node.get("id", "")),
+                "node_type": node_type,
+                "risk": risk,
+                "would_gate": gated,
+            }
+        )
+    return {
+        "workflow_id": workflow_id,
+        "level": level,
+        "phase": level_to_phase(level),
+        "auto_approve_threshold": threshold,
+        "total_nodes": len(nodes),
+        "would_gate_count": would_gate,
+        "auto_approve_count": auto_approve,
+        "nodes": nodes,
+    }
+
+
+async def _handle_set_workflow_autonomy(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import select, update
+
+    from core.tenant_context import get_current_tenant_id
+    from models.community_complete import WorkflowDefinition
+
+    workflow_id = arguments["workflow_id"]
+    caller_tenant = get_current_tenant_id()
+
+    wf_tenant = (
+        await db.execute(
+            select(WorkflowDefinition.tenant_id).where(
+                WorkflowDefinition.id == workflow_id
+            )
+        )
+    ).scalar_one_or_none()
+    if wf_tenant is None:
+        raise ToolExecutionError(f"Workflow {workflow_id} not found")
+    if str(wf_tenant) != str(caller_tenant):
+        raise ToolExecutionError("Cross-tenant workflow update denied")
+
+    values: Dict[str, Any] = {}
+    if "autonomy_level" in arguments:
+        lvl = int(arguments["autonomy_level"])
+        if not 0 <= lvl <= 100:
+            raise ToolExecutionError("autonomy_level must be 0-100")
+        values["autonomy_level"] = lvl
+    if "autonomy_locked" in arguments:
+        values["autonomy_locked"] = bool(arguments["autonomy_locked"])
+    if not values:
+        raise ToolExecutionError("No autonomy fields to update")
+
+    await db.execute(
+        update(WorkflowDefinition)
+        .where(WorkflowDefinition.id == workflow_id)
+        .values(**values)
+    )
+    await db.commit()
+    return await _handle_get_workflow_autonomy(arguments, db, user_id)
+
+
+def _ensure_business_sys_path() -> None:
+    import sys
+
+    if "/workspace/editions/business/src" not in sys.path:
+        sys.path.insert(0, "/workspace/editions/business/src")
+    if "/workspace/editions/community/src" not in sys.path:
+        sys.path.insert(0, "/workspace/editions/community/src")
+
+
+async def _handle_research_api(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.api_research_service import APIResearchService
+
+    svc = APIResearchService()
+    spec = await svc.research_api(
+        api_name=arguments["api_name"],
+        documentation_url=arguments.get("documentation_url"),
+        user_context=arguments.get("user_context"),
+    )
+    return spec
+
+
+async def _handle_generate_adapter(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    import asyncio as _asyncio
+
+    from aictrlnet_business.services.generated_adapter_service import (
+        GeneratedAdapterService,
+    )
+
+    svc = GeneratedAdapterService(db)
+    record = await svc.create_generated_adapter(
+        name=arguments["name"],
+        user_id=user_id,
+        description=arguments.get("description"),
+        generation_mode=arguments.get("generation_mode", "python_code"),
+        api_name=arguments["api_name"],
+    )
+    adapter_id = record["id"]
+
+    async def _run_generation():
+        try:
+            from core.database import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as bg_db:
+                bg_svc = GeneratedAdapterService(bg_db)
+                await bg_svc.generate_adapter(
+                    adapter_id=adapter_id,
+                    api_name=arguments["api_name"],
+                    base_url=arguments["base_url"],
+                    auth_type=arguments["auth_type"],
+                    capabilities=arguments["capabilities"],
+                    auth_config=arguments.get("auth_config"),
+                )
+        except Exception as e:
+            logger.exception("Background generate_adapter failed: %s", e)
+
+    _asyncio.create_task(_run_generation())
+
+    return {
+        "adapter_id": adapter_id,
+        "name": record.get("name"),
+        "status": record.get("status"),
+        "poll_tool": "get_generated_adapter_status",
+        "message": (
+            "Generation kicked off in the background. Poll "
+            "get_generated_adapter_status until status is approved | "
+            "awaiting_approval | failed."
+        ),
+    }
+
+
+async def _handle_self_extend(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    import asyncio as _asyncio
+
+    from aictrlnet_business.services.api_research_service import APIResearchService
+    from aictrlnet_business.services.generated_adapter_service import (
+        GeneratedAdapterService,
+    )
+
+    research_svc = APIResearchService()
+    spec = await research_svc.research_api(
+        api_name=arguments["api_name"],
+        documentation_url=arguments.get("documentation_url"),
+        user_context=arguments.get("user_context"),
+    )
+
+    adapter_svc = GeneratedAdapterService(db)
+    record = await adapter_svc.create_generated_adapter(
+        name=arguments["api_name"],
+        user_id=user_id,
+        description=f"Self-extended from research on '{arguments['api_name']}'",
+        generation_mode=arguments.get("generation_mode", "python_code"),
+        api_name=arguments["api_name"],
+        api_documentation_url=arguments.get("documentation_url"),
+    )
+    adapter_id = record["id"]
+
+    async def _run_generation():
+        try:
+            from core.database import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as bg_db:
+                bg_svc = GeneratedAdapterService(bg_db)
+                await bg_svc.generate_adapter(
+                    adapter_id=adapter_id,
+                    api_name=spec.get("api_name") or arguments["api_name"],
+                    base_url=spec.get("base_url") or "",
+                    auth_type=spec.get("auth_type") or "none",
+                    capabilities=spec.get("capabilities") or [],
+                    auth_config=spec.get("auth_config"),
+                    research_data=spec,
+                )
+        except Exception as e:
+            logger.exception("Background self_extend generation failed: %s", e)
+
+    _asyncio.create_task(_run_generation())
+
+    return {
+        "adapter_id": adapter_id,
+        "api_name": spec.get("api_name") or arguments["api_name"],
+        "research": {
+            "base_url": spec.get("base_url"),
+            "auth_type": spec.get("auth_type"),
+            "capabilities_count": len(spec.get("capabilities") or []),
+            "confidence": spec.get("confidence"),
+            "source": spec.get("source"),
+        },
+        "status": record.get("status"),
+        "poll_tool": "get_generated_adapter_status",
+    }
+
+
+async def _handle_list_generated_adapters(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.generated_adapter_service import (
+        GeneratedAdapterService,
+    )
+
+    svc = GeneratedAdapterService(db)
+    records = await svc.list_generated_adapters(
+        user_id=user_id if arguments.get("mine_only") else None,
+        status=arguments.get("status"),
+        limit=arguments.get("limit", 50),
+        offset=arguments.get("offset", 0),
+    )
+    return {"adapters": records, "count": len(records)}
+
+
+async def _handle_get_generated_adapter_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.generated_adapter_service import (
+        GeneratedAdapterService,
+    )
+
+    svc = GeneratedAdapterService(db)
+    record = await svc.get_by_id(arguments["adapter_id"], include_code=False)
+    if not record:
+        raise ToolExecutionError(f"Adapter {arguments['adapter_id']} not found")
+    return {
+        "id": record.get("id"),
+        "name": record.get("name"),
+        "status": record.get("status"),
+        "status_message": record.get("status_message"),
+        "risk_score": record.get("risk_score"),
+        "risk_level": record.get("risk_level"),
+        "risk_details": record.get("risk_details"),
+        "validation_passed": record.get("validation_passed"),
+        "validation_errors": record.get("validation_errors"),
+        "generation_mode": record.get("generation_mode"),
+        "capabilities": record.get("capabilities"),
+        "created_at": record.get("created_at"),
+    }
+
+
+async def _handle_get_generated_adapter_source(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.generated_adapter_service import (
+        GeneratedAdapterService,
+    )
+
+    svc = GeneratedAdapterService(db)
+    record = await svc.get_by_id(arguments["adapter_id"], include_code=True)
+    if not record:
+        raise ToolExecutionError(f"Adapter {arguments['adapter_id']} not found")
+    return {
+        "id": record.get("id"),
+        "status": record.get("status"),
+        "generation_mode": record.get("generation_mode"),
+        "generated_code": record.get("generated_code"),
+        "adapter_class_name": record.get("adapter_class_name"),
+        "declarative_spec": record.get("declarative_spec"),
+        "ast_analysis": record.get("ast_analysis"),
+    }
+
+
+async def _handle_approve_adapter(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.generated_adapter_service import (
+        GeneratedAdapterService,
+    )
+
+    svc = GeneratedAdapterService(db)
+    result = await svc.approve_adapter(arguments["adapter_id"], approved_by=user_id)
+    if not result:
+        raise ToolExecutionError(f"Adapter {arguments['adapter_id']} not found")
+    return {
+        "id": result.get("id"),
+        "status": result.get("status"),
+        "message": result.get("status_message"),
+    }
+
+
+async def _handle_reject_adapter(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.generated_adapter_service import (
+        GeneratedAdapterService,
+    )
+
+    svc = GeneratedAdapterService(db)
+    result = await svc.reject_adapter(
+        arguments["adapter_id"],
+        rejected_by=user_id,
+        reason=arguments.get("reason"),
+    )
+    if not result:
+        raise ToolExecutionError(f"Adapter {arguments['adapter_id']} not found")
+    return {
+        "id": result.get("id"),
+        "status": result.get("status"),
+        "message": result.get("status_message"),
+    }
+
+
+async def _handle_activate_adapter(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.generated_adapter_service import (
+        GeneratedAdapterService,
+    )
+
+    svc = GeneratedAdapterService(db)
+    try:
+        result = await svc.activate_adapter(arguments["adapter_id"])
+    except ValueError as e:
+        raise ToolExecutionError(str(e)) from e
+    return {
+        "id": result.get("id"),
+        "status": result.get("status"),
+        "registered_adapter_type": result.get("registered_adapter_type"),
+        "message": result.get("status_message"),
+    }
+
+
+BROWSER_SERVICE_URL = "http://browser-service:8005/browser/execute"
+
+
+async def _handle_browser_execute(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    import os
+
+    import httpx
+
+    from .browser_safety import BrowserSafetyError, validate_actions
+
+    try:
+        actions = validate_actions(
+            arguments.get("actions") or [],
+            tenant_id=None,
+            feature_flags=None,
+        )
+    except BrowserSafetyError as e:
+        raise ToolExecutionError(f"browser_execute denied: {e}") from e
+
+    payload = {
+        "actions": actions,
+        "timeout_ms": int(arguments.get("timeout_ms", 30_000)),
+    }
+    if "viewport" in arguments and isinstance(arguments["viewport"], dict):
+        payload["viewport"] = arguments["viewport"]
+
+    url = os.environ.get("BROWSER_SERVICE_URL", BROWSER_SERVICE_URL)
+    try:
+        async with httpx.AsyncClient(timeout=payload["timeout_ms"] / 1000 + 5) as client:
+            resp = await client.post(url, json=payload)
+    except httpx.HTTPError as e:
+        raise ToolExecutionError(f"browser-service unreachable: {e}") from e
+
+    if resp.status_code != 200:
+        raise ToolExecutionError(
+            f"browser-service error: {resp.status_code} — {resp.text[:200]}"
+        )
+    data = resp.json()
+    return {
+        "success": data.get("success"),
+        "total_duration_ms": data.get("total_duration_ms"),
+        "page_url": data.get("page_url"),
+        "page_title": data.get("page_title"),
+        "results": data.get("results", []),
+    }
+
+
+async def _handle_list_pending_approvals(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.approval import ApprovalService
+
+    svc = ApprovalService(db)
+    requests = await svc.list_requests(
+        skip=arguments.get("offset", 0),
+        limit=arguments.get("limit", 50),
+        status="pending",
+        workflow_id=arguments.get("workflow_id"),
+        user_id=user_id if arguments.get("mine_only") else None,
+        resource_type=arguments.get("resource_type"),
+    )
+    return {
+        "requests": [
+            {
+                "id": str(r.id),
+                "workflow_id": str(r.workflow_id),
+                "requester_id": r.requester_id,
+                "status": str(r.status),
+                "resource_type": getattr(r, "resource_type", None),
+                "resource_id": getattr(r, "resource_id", None),
+                "context": getattr(r, "context", None),
+                "reason": getattr(r, "reason", None),
+                "created_at": str(getattr(r, "created_at", "")),
+            }
+            for r in requests
+        ],
+        "count": len(requests),
+    }
+
+
+async def _handle_get_approval(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.approval import ApprovalService
+
+    svc = ApprovalService(db)
+    req = await svc.get_request(arguments["request_id"])
+    if not req:
+        raise ToolExecutionError(
+            f"Approval request {arguments['request_id']} not found"
+        )
+    return {
+        "id": str(req.id),
+        "workflow_id": str(req.workflow_id),
+        "requester_id": req.requester_id,
+        "status": str(req.status),
+        "resource_type": getattr(req, "resource_type", None),
+        "resource_id": getattr(req, "resource_id", None),
+        "context": getattr(req, "context", None),
+        "reason": getattr(req, "reason", None),
+        "meta_data": getattr(req, "meta_data", None),
+        "created_at": str(getattr(req, "created_at", "")),
+    }
+
+
+async def _handle_approve_request(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.approval import ApprovalService
+
+    svc = ApprovalService(db)
+    try:
+        result = await svc.approve_request(
+            request_id=arguments["request_id"],
+            approver_id=user_id,
+            comments=arguments.get("comments"),
+        )
+    except ValueError as e:
+        raise ToolExecutionError(str(e)) from e
+    return result
+
+
+async def _handle_reject_request(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.approval import ApprovalService
+
+    svc = ApprovalService(db)
+    try:
+        result = await svc.reject_request(
+            request_id=arguments["request_id"],
+            approver_id=user_id,
+            reason=arguments["reason"],
+        )
+    except ValueError as e:
+        raise ToolExecutionError(str(e)) from e
+    return result
+
+
 TOOL_HANDLERS = {
+    # Original 11
     "create_workflow": _handle_create_workflow,
     "list_workflows": _handle_list_workflows,
     "get_workflow": _handle_get_workflow,
@@ -588,4 +1314,33 @@ TOOL_HANDLERS = {
     "evaluate_policy": _handle_evaluate_policy,
     "list_policies": _handle_list_policies,
     "check_compliance": _handle_check_compliance,
+    # Wave 1: Adapters (Layer 1)
+    "list_adapters": _handle_list_adapters,
+    "get_adapter": _handle_get_adapter,
+    "list_my_adapter_configs": _handle_list_my_adapter_configs,
+    "test_adapter_config": _handle_test_adapter_config,
+    # Wave 1: NL entry
+    "nl_to_workflow": _handle_nl_to_workflow,
+    "analyze_intent": _handle_analyze_intent,
+    # Wave 1: Autonomy (Control Spectrum)
+    "get_workflow_autonomy": _handle_get_workflow_autonomy,
+    "preview_autonomy": _handle_preview_autonomy,
+    "set_workflow_autonomy": _handle_set_workflow_autonomy,
+    # Wave 1: Self-extending (Layer 2)
+    "research_api": _handle_research_api,
+    "generate_adapter": _handle_generate_adapter,
+    "self_extend": _handle_self_extend,
+    "list_generated_adapters": _handle_list_generated_adapters,
+    "get_generated_adapter_status": _handle_get_generated_adapter_status,
+    "get_generated_adapter_source": _handle_get_generated_adapter_source,
+    "approve_adapter": _handle_approve_adapter,
+    "reject_adapter": _handle_reject_adapter,
+    "activate_adapter": _handle_activate_adapter,
+    # Wave 1: Browser (Layer 3)
+    "browser_execute": _handle_browser_execute,
+    # Wave 1: Approvals (Layer 4)
+    "list_pending_approvals": _handle_list_pending_approvals,
+    "get_approval": _handle_get_approval,
+    "approve_request": _handle_approve_request,
+    "reject_request": _handle_reject_request,
 }
