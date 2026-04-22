@@ -697,6 +697,57 @@ COMMUNITY_TOOLS = [
         "description": "List the supported data-quality dimensions + their descriptions.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # ---- Wave 5: Institute (education-led GTM — v11.1) ----
+    {
+        "name": "list_institute_modules",
+        "description": (
+            "List AICtrlNet Institute education modules. Institute is "
+            "v11.1 education-led GTM surface (curriculum taught by the "
+            "patent-holder). Returns modules organized by tier and "
+            "audience. Returns feature_pending while the Institute "
+            "platform service is under development."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tier": {
+                    "type": "string",
+                    "description": "1 (foundations), 2 (industry vertical), 3 (advanced)",
+                },
+                "audience": {
+                    "type": "string",
+                    "description": "smb | enterprise | developer",
+                },
+            },
+        },
+    },
+    {
+        "name": "enroll_in_module",
+        "description": (
+            "Enroll the caller in an Institute module. Each module ends "
+            "with a running workflow in the attendee's HitLai instance — "
+            "learning and using are the same motion (v11.1). "
+            "Returns feature_pending until Institute ships."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "module_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["module_id"],
+        },
+    },
+    {
+        "name": "get_certification_status",
+        "description": (
+            "Get the caller's Institute certification status — completed "
+            "modules, in-progress modules, earned certifications, "
+            "next-step recommendations. Returns feature_pending until "
+            "Institute ships."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 BUSINESS_TOOLS = [
@@ -1494,6 +1545,10 @@ TOOL_SCOPES = {
     # Wave 4: Data Quality
     "assess_data_quality": ["read:workflows"],
     "list_quality_dimensions": ["read:workflows"],
+    # Wave 5: Institute
+    "list_institute_modules": ["read:institute"],
+    "enroll_in_module": ["write:institute"],
+    "get_certification_status": ["read:institute"],
 }
 
 

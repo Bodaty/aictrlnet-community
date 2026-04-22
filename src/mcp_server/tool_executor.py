@@ -2994,6 +2994,121 @@ async def _handle_verify_quality(
     return {"result": result}
 
 
+# ---------------------------------------------------------------------------
+# Wave 5 handlers — Institute (education-led GTM, v11.1)
+# ---------------------------------------------------------------------------
+#
+# The Institute platform service is under development. Tools return
+# feature_pending in a structured shape so Claude can surface the status
+# accurately — v11.3's claim-validation rule: never claim a feature is
+# live if the backing code isn't shipped. Once InstituteService lands,
+# these handlers can delegate to it with minimal change.
+
+
+_INSTITUTE_PENDING_MESSAGE = (
+    "AICtrlNet Institute platform is under development. This MCP tool "
+    "is live but the backing service has not shipped yet. Track v11.1 "
+    "education-led GTM milestone for availability."
+)
+
+
+def _institute_service(db):
+    """Lazy-import helper. Returns None if the service module does not
+    exist yet (pre-launch)."""
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.institute_service import (  # type: ignore
+            InstituteService,
+        )
+    except Exception:
+        return None
+    return InstituteService(db)
+
+
+async def _handle_list_institute_modules(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _institute_service(db)
+    if svc is None:
+        return {
+            "status": "feature_pending",
+            "message": _INSTITUTE_PENDING_MESSAGE,
+            "available": False,
+            "tier": arguments.get("tier"),
+            "audience": arguments.get("audience"),
+            "modules": [],
+        }
+    method = (
+        getattr(svc, "list_modules", None)
+        or getattr(svc, "get_modules", None)
+    )
+    if not method:
+        return {"status": "feature_pending", "available": False, "modules": []}
+    modules = await method(
+        tier=arguments.get("tier"),
+        audience=arguments.get("audience"),
+    )
+    return {
+        "status": "available",
+        "available": True,
+        "modules": [
+            (m.model_dump() if hasattr(m, "model_dump")
+             else m.dict() if hasattr(m, "dict")
+             else m)
+            for m in modules
+        ],
+    }
+
+
+async def _handle_enroll_in_module(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _institute_service(db)
+    if svc is None:
+        return {
+            "status": "feature_pending",
+            "message": _INSTITUTE_PENDING_MESSAGE,
+            "available": False,
+            "module_id": arguments["module_id"],
+        }
+    enroll = getattr(svc, "enroll", None) or getattr(svc, "enroll_user", None)
+    if not enroll:
+        return {"status": "feature_pending", "available": False}
+    result = await enroll(user_id=user_id, module_id=arguments["module_id"])
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"enrollment": result}
+
+
+async def _handle_get_certification_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _institute_service(db)
+    if svc is None:
+        return {
+            "status": "feature_pending",
+            "message": _INSTITUTE_PENDING_MESSAGE,
+            "available": False,
+            "completed_modules": [],
+            "in_progress_modules": [],
+            "certifications": [],
+        }
+    method = (
+        getattr(svc, "get_certifications", None)
+        or getattr(svc, "get_certification_status", None)
+    )
+    if not method:
+        return {"status": "feature_pending", "available": False}
+    result = await method(user_id=user_id)
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"certifications": result}
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -3099,4 +3214,8 @@ TOOL_HANDLERS = {
     "automate_company": _handle_automate_company,
     "get_company_automation_status": _handle_get_company_automation_status,
     "verify_quality": _handle_verify_quality,
+    # Wave 5: Institute
+    "list_institute_modules": _handle_list_institute_modules,
+    "enroll_in_module": _handle_enroll_in_module,
+    "get_certification_status": _handle_get_certification_status,
 }
