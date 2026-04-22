@@ -349,6 +349,42 @@ COMMUNITY_TOOLS = [
             },
         },
     },
+    # ---- Wave 3: Trial metering surface ----
+    {
+        "name": "get_trial_status",
+        "description": (
+            "Return the caller's current usage vs. edition limits — LLM "
+            "calls, workflows, adapters, API calls, storage — with "
+            "percent-used and upgrade prompts when >=80% of any limit. "
+            "This is the canonical claim-validation point for v11.2 "
+            "'trial metering works through MCP'."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_usage_report",
+        "description": (
+            "Aggregate per-resource usage over the current billing period "
+            "(or a specific one) with breakdown by resource_type and day. "
+            "Backs up v11.2 'usage tracking' claim — CISO-grade introspection."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Look-back window in days (1-90). Default 30.",
+                    "default": 30,
+                    "minimum": 1,
+                    "maximum": 90,
+                },
+                "resource_type": {
+                    "type": "string",
+                    "description": "Filter by resource type (e.g. llm_calls, browser_actions, workflows)",
+                },
+            },
+        },
+    },
 ]
 
 BUSINESS_TOOLS = [
@@ -823,6 +859,9 @@ TOOL_SCOPES = {
     "create_policy": ["write:policies"],
     "get_ai_audit_logs": ["read:audit"],
     "list_violations": ["read:policies"],
+    # Wave 3: Trial metering surface
+    "get_trial_status": ["read:usage"],
+    "get_usage_report": ["read:usage"],
 }
 
 

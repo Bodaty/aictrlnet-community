@@ -1620,6 +1620,191 @@ async def _handle_list_violations(
     }
 
 
+# ---------------------------------------------------------------------------
+# Wave 3 handlers — trial metering surface
+# ---------------------------------------------------------------------------
+
+
+async def _handle_get_trial_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Combined usage + limits + upgrade prompts for the caller's tenant.
+
+    Also pulls the MCP-layer meter counters (mcp_meters table) so
+    llm_calls and browser_actions totals match what the metering
+    decorator is actually charging.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    from core.tenant_context import get_current_tenant_id
+    from services.usage_service import UsageService
+
+    tenant_id = get_current_tenant_id() or "community"
+    svc = UsageService(db)
+
+    # 1. Community edition usage + limits + upgrade prompts
+    try:
+        status = await svc.get_usage_status(tenant_id)
+        status_payload = (
+            status.model_dump() if hasattr(status, "model_dump")
+            else status.dict() if hasattr(status, "dict")
+            else {"status": str(status)}
+        )
+    except Exception as e:
+        logger.warning("get_usage_status failed: %s", e)
+        status_payload = {"error": "usage_status_unavailable", "message": str(e)}
+
+    # 2. MCP-layer meter counters (llm_calls, browser_actions) — the
+    # canonical answer to v11.2 "trial metering works through MCP".
+    meters: Dict[str, Dict[str, Any]] = {}
+    try:
+        rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT meter, counter, limit_override, period_start, period_end
+                    FROM mcp_meters
+                    WHERE tenant_id = :t
+                      AND period_start = date_trunc('month', now())
+                    """
+                ),
+                {"t": tenant_id},
+            )
+        ).all()
+        for meter, counter, limit_override, period_start, period_end in rows:
+            meters[meter] = {
+                "used": int(counter),
+                "limit_override": int(limit_override) if limit_override is not None else None,
+                "period_start": str(period_start),
+                "period_end": str(period_end),
+            }
+    except Exception as e:
+        logger.warning("mcp_meters lookup failed: %s", e)
+
+    # 3. Default limits from the metering config so the response is
+    # self-contained (no need for the caller to look up DEFAULT_LIMITS).
+    from .metering import DEFAULT_LIMITS
+    # Edition is carried on the user's plan; re-resolve via plan_gate
+    # to keep the service consistent with the gate's decisions.
+    from .plan_gate import PlanService
+
+    plan_svc = PlanService(db)
+    edition = await plan_svc.get_effective_edition(tenant_id)
+    default_limits = DEFAULT_LIMITS.get(edition, DEFAULT_LIMITS["community"])
+
+    # Merge: ensure every configured meter appears even if no usage yet
+    for meter, limit in default_limits.items():
+        entry = meters.get(meter, {"used": 0, "limit_override": None})
+        effective_limit = entry.get("limit_override") or limit
+        entry["limit"] = int(effective_limit)
+        entry["remaining"] = max(0, int(effective_limit) - entry["used"])
+        entry["percent_used"] = (
+            round(entry["used"] * 100.0 / effective_limit, 2)
+            if effective_limit
+            else 0.0
+        )
+        meters[meter] = entry
+
+    over_80 = [m for m, e in meters.items() if e.get("percent_used", 0) >= 80]
+    upgrade_url = None
+    if over_80 or status_payload.get("needs_upgrade"):
+        upgrade_url = f"/pricing?from={edition}&reason=trial_threshold"
+
+    return {
+        "edition": edition,
+        "tenant_id": tenant_id,
+        "mcp_meters": meters,
+        "status": status_payload,
+        "upgrade_url": upgrade_url,
+        "as_of": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _handle_get_usage_report(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Per-resource usage aggregation over a rolling window.
+
+    Pulls from usage_tracking (if present — Business+ detail) and falls
+    back to the basic_usage_metrics snapshot if not. Scoped to the
+    caller's tenant only.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import text
+
+    from core.tenant_context import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id() or "community"
+    days = max(1, min(int(arguments.get("days", 30)), 90))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    resource_filter = arguments.get("resource_type")
+
+    # Per-day per-resource breakdown. usage_tracking is Business-edition
+    # (detailed); skip gracefully if the table isn't there.
+    breakdown: list = []
+    by_resource: Dict[str, float] = {}
+    total = 0.0
+    source = "usage_tracking"
+    try:
+        sql = """
+            SELECT date_trunc('day', timestamp) AS day,
+                   resource_type,
+                   SUM(quantity) AS qty
+            FROM usage_tracking
+            WHERE tenant_id = :t
+              AND timestamp >= :since
+        """
+        params = {"t": tenant_id, "since": since}
+        if resource_filter:
+            sql += " AND resource_type = :rt"
+            params["rt"] = resource_filter
+        sql += " GROUP BY day, resource_type ORDER BY day DESC, resource_type"
+
+        rows = (await db.execute(text(sql), params)).all()
+        for day, resource_type, qty in rows:
+            breakdown.append(
+                {
+                    "day": str(day),
+                    "resource_type": resource_type,
+                    "quantity": float(qty),
+                }
+            )
+            by_resource[resource_type] = by_resource.get(resource_type, 0.0) + float(qty)
+            total += float(qty)
+    except Exception as e:
+        logger.info("usage_tracking unavailable (%s); falling back to basic metrics", e)
+        source = "basic_usage_metrics"
+        # Fall back to current snapshot
+        try:
+            from services.usage_service import UsageService
+
+            usage = await UsageService(db).get_current_usage(tenant_id)
+            snapshot = (
+                usage.model_dump() if hasattr(usage, "model_dump")
+                else usage.dict() if hasattr(usage, "dict")
+                else {}
+            )
+            for k, v in snapshot.items():
+                if isinstance(v, (int, float)) and k not in ("id",):
+                    by_resource[k] = float(v)
+                    total += float(v)
+        except Exception as e2:
+            logger.warning("basic_usage_metrics fallback failed: %s", e2)
+
+    return {
+        "tenant_id": tenant_id,
+        "days": days,
+        "source": source,
+        "total": total,
+        "by_resource": by_resource,
+        "breakdown": breakdown,
+        "resource_filter": resource_filter,
+    }
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -1672,4 +1857,7 @@ TOOL_HANDLERS = {
     "create_policy": _handle_create_policy,
     "get_ai_audit_logs": _handle_get_ai_audit_logs,
     "list_violations": _handle_list_violations,
+    # Wave 3: Trial metering surface
+    "get_trial_status": _handle_get_trial_status,
+    "get_usage_report": _handle_get_usage_report,
 }
