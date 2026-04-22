@@ -2,7 +2,7 @@
 
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from core.security import get_current_user
 from core.config import get_settings
@@ -35,10 +35,15 @@ class WorkflowGenerationRequest(BaseModel):
 
 class StructuredGenerationRequest(BaseModel):
     """Request for structured generation."""
-    model_config = ConfigDict(protected_namespaces=())  # Allow schema field name
-    
+    # `populate_by_name` lets Python code use either field name or alias;
+    # `protected_namespaces=()` allows `model` as a field.
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
+
     prompt: str
-    schema: Dict[str, Any]
+    # Pydantic v2 emits a UserWarning if a field shadows `BaseModel.schema`.
+    # Use a trailing underscore with `alias='schema'` so the JSON API is
+    # unchanged but the class attribute doesn't shadow the base class.
+    schema_: Dict[str, Any] = Field(alias='schema')
     model: Optional[str] = None
     examples: Optional[List[Dict]] = None
 
@@ -199,7 +204,7 @@ async def generate_structured(
     try:
         result = await llm_service.generate_structured(
             prompt=request.prompt,
-            schema=request.schema,
+            schema=request.schema_,
             model=request.model,
             examples=request.examples
         )
