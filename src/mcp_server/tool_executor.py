@@ -1805,6 +1805,1195 @@ async def _handle_get_usage_report(
     }
 
 
+# ---------------------------------------------------------------------------
+# Wave 4 handlers — horizontal business + living platform
+# ---------------------------------------------------------------------------
+
+
+# ---- Tasks ----
+
+def _task_to_dict(t) -> Dict[str, Any]:
+    return {
+        "id": str(getattr(t, "id", "")),
+        "name": getattr(t, "name", None),
+        "description": getattr(t, "description", None),
+        "status": getattr(t, "status").value if hasattr(getattr(t, "status", None), "value") else str(getattr(t, "status", "")),
+        "metadata": getattr(t, "task_metadata", None),
+        "created_at": str(getattr(t, "created_at", "")),
+    }
+
+
+async def _handle_create_task(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.task_service import TaskService
+
+    svc = TaskService(db)
+    task = await svc.create_task(
+        name=arguments["name"],
+        description=arguments.get("description", ""),
+        metadata=arguments.get("metadata"),
+    )
+    return _task_to_dict(task)
+
+
+async def _handle_list_tasks(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.task_service import TaskService
+
+    svc = TaskService(db)
+    filters = {}
+    if arguments.get("status"):
+        filters["status"] = arguments["status"]
+    tasks = await svc.list_tasks(
+        filters=filters or None,
+        limit=min(int(arguments.get("limit", 100)), 500),
+        offset=int(arguments.get("offset", 0)),
+    )
+    return {"tasks": [_task_to_dict(t) for t in tasks], "count": len(tasks)}
+
+
+async def _handle_get_task(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.task_service import TaskService
+
+    svc = TaskService(db)
+    task = await svc.get_task(arguments["task_id"])
+    if not task:
+        raise ToolExecutionError(f"Task {arguments['task_id']} not found")
+    return _task_to_dict(task)
+
+
+async def _handle_update_task(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from core.exceptions import NotFoundError
+    from services.task_service import TaskService
+
+    svc = TaskService(db)
+    try:
+        task = await svc.update_task(
+            task_id=arguments["task_id"],
+            name=arguments.get("name"),
+            description=arguments.get("description"),
+            status=arguments.get("status"),
+            metadata=arguments.get("metadata"),
+        )
+    except NotFoundError as e:
+        raise ToolExecutionError(str(e)) from e
+    return _task_to_dict(task)
+
+
+async def _handle_complete_task(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from datetime import datetime
+
+    from core.exceptions import NotFoundError
+    from services.task_service import TaskService
+
+    svc = TaskService(db)
+    meta = {"completed_at": datetime.utcnow().isoformat()}
+    if arguments.get("result") is not None:
+        meta["result"] = arguments["result"]
+    try:
+        task = await svc.update_task(
+            task_id=arguments["task_id"], status="completed", metadata=meta
+        )
+    except NotFoundError as e:
+        raise ToolExecutionError(str(e)) from e
+    return _task_to_dict(task)
+
+
+# ---- Memory (in-memory per-user dict, Community) ----
+# Replicates the semantics of editions/community/src/api/v1/endpoints/memory_basic.py.
+# Uses a module-local store — same process-scoped lifetime as the HTTP endpoint.
+
+_MCP_MEMORY_STORE: Dict[str, Dict[str, Any]] = {}
+_MCP_MEMORY_MAX_KEYS = 1000
+_MCP_MEMORY_MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+def _mcp_user_memory(user_id: str) -> Dict[str, Any]:
+    return _MCP_MEMORY_STORE.setdefault(user_id, {})
+
+
+def _mcp_memory_size(values: Dict[str, Any]) -> int:
+    return sum(len(str(v)) for v in values.values())
+
+
+async def _handle_get_memory(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    mem = _mcp_user_memory(user_id)
+    key = arguments["key"]
+    return {"key": key, "value": mem.get(key), "exists": key in mem}
+
+
+async def _handle_set_memory(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    mem = _mcp_user_memory(user_id)
+    key = arguments["key"]
+    value = arguments["value"]
+    projected = dict(mem)
+    projected[key] = value
+    if len(projected) > _MCP_MEMORY_MAX_KEYS:
+        raise ToolExecutionError(f"Memory key limit exceeded ({_MCP_MEMORY_MAX_KEYS})")
+    if _mcp_memory_size(projected) > _MCP_MEMORY_MAX_SIZE:
+        raise ToolExecutionError("Memory size limit exceeded (10 MB)")
+    mem[key] = value
+    return {"key": key, "stored": True, "total_keys": len(mem)}
+
+
+async def _handle_delete_memory(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    mem = _mcp_user_memory(user_id)
+    key = arguments["key"]
+    existed = key in mem
+    mem.pop(key, None)
+    return {"key": key, "deleted": existed}
+
+
+# ---- Conversations + Channels ----
+
+
+async def _handle_list_conversations(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.enhanced_conversation_manager import EnhancedConversationService
+
+    svc = EnhancedConversationService(db)
+    sessions = await svc.get_active_sessions(user_id)
+    # get_active_sessions returns either list or dict{"sessions": [...]}
+    if isinstance(sessions, dict):
+        sessions_list = sessions.get("sessions") or []
+    else:
+        sessions_list = list(sessions or [])
+    return {
+        "sessions": [
+            {
+                "id": str(getattr(s, "id", "") or (s.get("id") if isinstance(s, dict) else "")),
+                "created_at": str(
+                    getattr(s, "created_at", "")
+                    or (s.get("created_at") if isinstance(s, dict) else "")
+                ),
+                "channel": getattr(s, "channel", None)
+                or (s.get("channel") if isinstance(s, dict) else None),
+            }
+            for s in sessions_list
+        ],
+        "count": len(sessions_list),
+    }
+
+
+async def _handle_get_conversation(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import desc, select
+
+    try:
+        from models.community_complete import ConversationMessage, ConversationSession
+    except ImportError:
+        raise ToolExecutionError("Conversation models unavailable")
+
+    session_id = arguments["session_id"]
+    limit = min(int(arguments.get("message_limit", 50)), 500)
+
+    session = (
+        await db.execute(
+            select(ConversationSession).where(ConversationSession.id == session_id)
+        )
+    ).scalar_one_or_none()
+    if not session:
+        raise ToolExecutionError(f"Conversation {session_id} not found")
+
+    msgs = (
+        await db.execute(
+            select(ConversationMessage)
+            .where(ConversationMessage.session_id == session_id)
+            .order_by(desc(ConversationMessage.created_at))
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    return {
+        "id": str(session.id),
+        "user_id": getattr(session, "user_id", None),
+        "created_at": str(getattr(session, "created_at", "")),
+        "messages": [
+            {
+                "id": str(getattr(m, "id", "")),
+                "role": getattr(m, "role", None),
+                "content": getattr(m, "content", None),
+                "created_at": str(getattr(m, "created_at", "")),
+            }
+            for m in reversed(msgs)  # oldest first
+        ],
+    }
+
+
+async def _handle_list_linked_channels(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from api.v1.endpoints.channel_link import list_linked_channels
+
+        # The endpoint takes user_id + db; duck-type current_user arg
+        class _U:
+            def __init__(self, uid):
+                self.id = uid
+
+        result = await list_linked_channels(current_user=_U(user_id), db=db)
+    except Exception as e:
+        logger.info("channel_link service unavailable: %s", e)
+        return {"channels": [], "available": False}
+    if isinstance(result, dict):
+        return result
+    return {"channels": result, "count": len(result) if hasattr(result, "__len__") else 0}
+
+
+async def _handle_request_channel_link_code(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from api.v1.endpoints.channel_link import request_link_code
+
+        class _U:
+            def __init__(self, uid):
+                self.id = uid
+
+        # The endpoint is a FastAPI handler — call its inner logic via request
+        result = await request_link_code(
+            channel_type=arguments["channel_type"],
+            db=db,
+            current_user=_U(user_id),
+        )
+        if isinstance(result, dict):
+            return result
+        if hasattr(result, "model_dump"):
+            return result.model_dump()
+        return {"code": str(result)}
+    except Exception as e:
+        raise ToolExecutionError(f"request_channel_link_code failed: {e}") from e
+
+
+async def _handle_unlink_channel(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from api.v1.endpoints.channel_link import unlink_channel
+
+        class _U:
+            def __init__(self, uid):
+                self.id = uid
+
+        result = await unlink_channel(
+            channel_type=arguments["channel_type"],
+            channel_user_id=arguments["channel_user_id"],
+            db=db,
+            current_user=_U(user_id),
+        )
+        if isinstance(result, dict):
+            return result
+        if hasattr(result, "model_dump"):
+            return result.model_dump()
+        return {"unlinked": True}
+    except Exception as e:
+        raise ToolExecutionError(f"unlink_channel failed: {e}") from e
+
+
+async def _handle_send_channel_message(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Send a message via a linked external channel. Enforces channel
+    ownership by calling list_linked_channels first and checking that
+    the requested channel belongs to the caller.
+    """
+    # 1. Verify caller owns a linked channel of this type
+    linked = await _handle_list_linked_channels({}, db, user_id)
+    channels = linked.get("channels") or []
+    wanted = arguments["channel_type"].lower()
+    matches = [
+        c for c in channels
+        if (c.get("channel_type") if isinstance(c, dict) else getattr(c, "channel_type", None)) == wanted
+    ]
+    if not matches:
+        raise ToolExecutionError(
+            f"No linked channel of type '{wanted}' — link it first via "
+            f"request_channel_link_code"
+        )
+
+    # 2. Dispatch through conversation service (which wraps the channel
+    # gateway). EnhancedConversationService.process_message already
+    # supports multi-channel delivery.
+    from services.enhanced_conversation_manager import EnhancedConversationService
+
+    svc = EnhancedConversationService(db)
+    active_sessions = await svc.get_active_sessions(user_id)
+    if isinstance(active_sessions, dict):
+        active_sessions = active_sessions.get("sessions") or []
+    if active_sessions:
+        session = active_sessions[0]
+    else:
+        session = await svc.create_session(user_id)
+
+    session_id = getattr(session, "id", None) or (
+        session.get("id") if isinstance(session, dict) else None
+    )
+    response = await svc.process_message(
+        session_id=session_id,
+        content=arguments["message"],
+        user_id=user_id,
+    )
+    payload: Dict[str, Any]
+    if hasattr(response, "model_dump"):
+        payload = response.model_dump()
+    elif hasattr(response, "dict"):
+        payload = response.dict()
+    elif isinstance(response, dict):
+        payload = response
+    else:
+        payload = {"response": str(response)}
+    payload["channel_type"] = wanted
+    return payload
+
+
+async def _handle_list_notifications(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from sqlalchemy import desc, select
+
+        from aictrlnet_business.models.notification import Notification  # type: ignore
+    except Exception:
+        return {"notifications": [], "available": False}
+
+    query = select(Notification).where(Notification.user_id == user_id)
+    if arguments.get("unread_only"):
+        query = query.where(Notification.read == False)  # noqa: E712
+    query = (
+        query.order_by(desc(Notification.created_at))
+        .limit(min(int(arguments.get("limit", 50)), 200))
+        .offset(int(arguments.get("offset", 0)))
+    )
+    rows = (await db.execute(query)).scalars().all()
+    return {
+        "notifications": [
+            {
+                "id": str(getattr(n, "id", "")),
+                "type": getattr(n, "type", None),
+                "title": getattr(n, "title", None),
+                "body": getattr(n, "body", None),
+                "read": getattr(n, "read", False),
+                "created_at": str(getattr(n, "created_at", "")),
+            }
+            for n in rows
+        ],
+        "count": len(rows),
+    }
+
+
+async def _handle_mark_notification_read(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from datetime import datetime
+
+        from sqlalchemy import select
+
+        from aictrlnet_business.models.notification import Notification  # type: ignore
+    except Exception:
+        return {"marked": False, "available": False}
+
+    n = (
+        await db.execute(
+            select(Notification).where(
+                Notification.id == arguments["notification_id"],
+                Notification.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not n:
+        raise ToolExecutionError(
+            f"Notification {arguments['notification_id']} not found"
+        )
+    n.read = True
+    n.read_at = datetime.utcnow()
+    await db.commit()
+    return {"id": str(n.id), "marked": True}
+
+
+# ---- Knowledge ----
+
+
+async def _handle_query_knowledge(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.knowledge.knowledge_retrieval_service import KnowledgeRetrievalService
+
+    svc = KnowledgeRetrievalService(db)
+    results = await svc.find_relevant_knowledge(
+        query=arguments["query"],
+        context=arguments.get("context"),
+        limit=min(int(arguments.get("limit", 5)), 20),
+    )
+    return {
+        "results": [
+            (r.model_dump() if hasattr(r, "model_dump")
+             else r.dict() if hasattr(r, "dict")
+             else {"content": str(r)})
+            for r in results
+        ],
+        "count": len(results) if hasattr(results, "__len__") else 0,
+    }
+
+
+async def _handle_suggest_next_actions(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.knowledge.knowledge_retrieval_service import KnowledgeRetrievalService
+
+    svc = KnowledgeRetrievalService(db)
+    actions = await svc.suggest_next_actions(
+        current_action=arguments["current_action"],
+        context=arguments.get("context"),
+    )
+    return {"suggestions": actions}
+
+
+async def _handle_get_capabilities_summary(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.knowledge.knowledge_retrieval_service import KnowledgeRetrievalService
+
+    svc = KnowledgeRetrievalService(db)
+    summary = await svc.get_capabilities_summary()
+    return {"summary": summary}
+
+
+# ---- Templates ----
+
+
+async def _handle_search_templates(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from schemas.workflow_templates import TemplateListRequest
+    from services.workflow_template_service import create_workflow_template_service
+
+    svc = create_workflow_template_service()
+    request = TemplateListRequest(
+        category=arguments.get("category"),
+        search=arguments.get("query"),
+        limit=min(int(arguments.get("limit", 20)), 100),
+        skip=0,
+    )
+    templates, total = await svc.list_templates(
+        db=db, user_id=user_id, request=request
+    )
+    return {
+        "templates": [
+            {
+                "id": str(t.id),
+                "name": t.name,
+                "description": getattr(t, "description", ""),
+                "category": getattr(t, "category", ""),
+                "complexity": getattr(t, "complexity", None),
+            }
+            for t in templates
+        ],
+        "total": total,
+    }
+
+
+async def _handle_instantiate_template(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.workflow_template_service import create_workflow_template_service
+
+    svc = create_workflow_template_service()
+    # instantiate_template on the service creates a workflow from the template;
+    # method name may vary — try the canonical one first.
+    method = (
+        getattr(svc, "instantiate_template", None)
+        or getattr(svc, "create_from_template", None)
+    )
+    if not method:
+        raise ToolExecutionError("Template instantiation not available in this edition")
+    workflow = await method(
+        db=db,
+        user_id=user_id,
+        template_id=arguments["template_id"],
+        name=arguments.get("name"),
+        parameters=arguments.get("parameters") or {},
+    )
+    return {
+        "workflow_id": str(getattr(workflow, "id", "") or
+                           (workflow.get("id") if isinstance(workflow, dict) else "")),
+        "name": getattr(workflow, "name", None) or
+                (workflow.get("name") if isinstance(workflow, dict) else None),
+        "template_id": arguments["template_id"],
+    }
+
+
+# ---- Files ----
+
+
+async def _handle_upload_file(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Accept a base64-encoded file, stage it, and return a file_id.
+
+    Mirrors the behavior of POST /file-upload/upload but takes the
+    content inline via args instead of multipart. Size + MIME rules
+    are identical: 10 MB cap, allow-listed MIME, magic-byte check.
+    """
+    import base64
+    import os
+    import uuid
+    from datetime import datetime
+
+    try:
+        from models.community_complete import StagedFile
+    except ImportError:
+        raise ToolExecutionError("StagedFile model unavailable")
+
+    max_size = 50 * 1024 * 1024  # aligned with file_upload endpoint
+    try:
+        raw = base64.b64decode(arguments["content_base64"], validate=True)
+    except Exception as e:
+        raise ToolExecutionError(f"Invalid base64: {e}") from e
+    if len(raw) > max_size:
+        raise ToolExecutionError(
+            f"File exceeds {max_size // (1024 * 1024)} MB limit"
+        )
+
+    # Basic filename sanitization — reject traversal
+    filename = os.path.basename(arguments["filename"] or "file.bin").strip()
+    if not filename or ".." in filename or "/" in filename:
+        raise ToolExecutionError("Invalid filename")
+
+    storage_dir = os.environ.get("STAGED_FILES_DIR", "/tmp/aictrlnet/staged_files")
+    os.makedirs(storage_dir, exist_ok=True)
+    file_id = str(uuid.uuid4())
+    storage_path = os.path.join(storage_dir, file_id)
+    with open(storage_path, "wb") as f:
+        f.write(raw)
+
+    staged = StagedFile(
+        id=file_id,
+        user_id=user_id,
+        filename=filename,
+        content_type=arguments.get("content_type", "application/octet-stream"),
+        file_size=len(raw),
+        storage_path=storage_path,
+        workflow_id=arguments.get("workflow_id"),
+        created_at=datetime.utcnow(),
+    )
+    db.add(staged)
+    await db.commit()
+    await db.refresh(staged)
+    return {
+        "file_id": file_id,
+        "filename": filename,
+        "content_type": staged.content_type,
+        "file_size": len(raw),
+        "workflow_id": staged.workflow_id,
+    }
+
+
+async def _handle_list_staged_files(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import desc, select
+
+    try:
+        from models.community_complete import StagedFile
+    except ImportError:
+        return {"files": [], "available": False}
+
+    rows = (
+        await db.execute(
+            select(StagedFile)
+            .where(StagedFile.user_id == user_id)
+            .order_by(desc(StagedFile.created_at))
+            .limit(min(int(arguments.get("limit", 50)), 500))
+            .offset(int(arguments.get("offset", 0)))
+        )
+    ).scalars().all()
+    return {
+        "files": [
+            {
+                "file_id": str(f.id),
+                "filename": f.filename,
+                "content_type": f.content_type,
+                "file_size": f.file_size,
+                "created_at": str(getattr(f, "created_at", "")),
+            }
+            for f in rows
+        ],
+        "count": len(rows),
+    }
+
+
+async def _handle_get_staged_file(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    import base64
+    from sqlalchemy import select
+
+    try:
+        from models.community_complete import StagedFile
+    except ImportError:
+        raise ToolExecutionError("StagedFile model unavailable")
+
+    f = (
+        await db.execute(
+            select(StagedFile).where(
+                StagedFile.id == arguments["file_id"],
+                StagedFile.user_id == user_id,  # IDOR defense
+            )
+        )
+    ).scalar_one_or_none()
+    if not f:
+        raise ToolExecutionError(f"File {arguments['file_id']} not found")
+
+    out: Dict[str, Any] = {
+        "file_id": str(f.id),
+        "filename": f.filename,
+        "content_type": f.content_type,
+        "file_size": f.file_size,
+        "created_at": str(getattr(f, "created_at", "")),
+    }
+    if arguments.get("include_content"):
+        try:
+            with open(f.storage_path, "rb") as fh:
+                out["content_base64"] = base64.b64encode(fh.read()).decode("ascii")
+        except Exception as e:
+            raise ToolExecutionError(f"Could not read file content: {e}") from e
+    return out
+
+
+# ---- Data Quality ----
+
+
+async def _handle_assess_data_quality(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.data_quality_service import DataQualityService
+    except ImportError:
+        return {"score": None, "available": False, "message": "Data quality service not installed"}
+
+    svc = DataQualityService(db)
+    assess = getattr(svc, "assess", None) or getattr(svc, "assess_quality", None)
+    if not assess:
+        return {"score": None, "available": False}
+    result = await assess(
+        data=arguments["data"],
+        dimensions=arguments.get("dimensions"),
+        rules=arguments.get("rules"),
+    )
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"result": result}
+
+
+async def _handle_list_quality_dimensions(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    # Static dimension catalog — matches the DIMENSIONS referenced by
+    # community data-quality endpoints.
+    return {
+        "dimensions": [
+            {"name": "accuracy", "description": "Values match real-world truth"},
+            {"name": "completeness", "description": "No missing values where expected"},
+            {"name": "consistency", "description": "Values agree across records"},
+            {"name": "timeliness", "description": "Values are current + up-to-date"},
+            {"name": "uniqueness", "description": "No unintended duplicates"},
+            {"name": "validity", "description": "Values conform to schema/format"},
+        ]
+    }
+
+
+# ---- Agents ----
+
+
+async def _handle_list_agents(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from sqlalchemy import select
+
+        from aictrlnet_business.models.agent_registry import AgentRegistry  # type: ignore
+        from core.tenant_context import get_current_tenant_id
+
+        tenant_id = get_current_tenant_id() or "default"
+        query = select(AgentRegistry).where(AgentRegistry.tenant_id == tenant_id)
+        if arguments.get("agent_type"):
+            query = query.where(AgentRegistry.agent_type == arguments["agent_type"])
+        if arguments.get("enabled_only"):
+            query = query.where(AgentRegistry.enabled == True)  # noqa: E712
+        query = query.limit(int(arguments.get("limit", 50))).offset(
+            int(arguments.get("offset", 0))
+        )
+        rows = (await db.execute(query)).scalars().all()
+        return {
+            "agents": [
+                {
+                    "id": str(getattr(a, "id", "")),
+                    "name": getattr(a, "name", None),
+                    "agent_type": getattr(a, "agent_type", None),
+                    "enabled": getattr(a, "enabled", True),
+                    "description": getattr(a, "description", None),
+                }
+                for a in rows
+            ],
+            "count": len(rows),
+        }
+    except Exception as e:
+        logger.info("agent_registry unavailable: %s", e)
+        return {"agents": [], "available": False}
+
+
+async def _handle_get_agent_capabilities(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from sqlalchemy import select
+
+        from aictrlnet_business.models.agent_registry import AgentRegistry  # type: ignore
+    except Exception:
+        raise ToolExecutionError("Agent registry unavailable in this edition")
+
+    agent = (
+        await db.execute(
+            select(AgentRegistry).where(AgentRegistry.id == arguments["agent_id"])
+        )
+    ).scalar_one_or_none()
+    if not agent:
+        raise ToolExecutionError(f"Agent {arguments['agent_id']} not found")
+    return {
+        "id": str(agent.id),
+        "name": agent.name,
+        "agent_type": getattr(agent, "agent_type", None),
+        "capabilities": getattr(agent, "capabilities", None),
+        "tools": getattr(agent, "tools", None),
+        "enabled": getattr(agent, "enabled", True),
+        "autonomy_level": getattr(agent, "autonomy_level", None),
+    }
+
+
+async def _handle_set_agent_autonomy(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from sqlalchemy import select, update
+
+        from aictrlnet_business.models.agent_registry import AgentRegistry  # type: ignore
+        from core.tenant_context import get_current_tenant_id
+    except Exception:
+        raise ToolExecutionError("Agent registry unavailable")
+
+    tenant_id = get_current_tenant_id() or "default"
+    agent = (
+        await db.execute(
+            select(AgentRegistry).where(
+                AgentRegistry.id == arguments["agent_id"],
+                AgentRegistry.tenant_id == tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not agent:
+        raise ToolExecutionError(
+            f"Agent {arguments['agent_id']} not found in tenant"
+        )
+
+    level = int(arguments["autonomy_level"])
+    if not 0 <= level <= 100:
+        raise ToolExecutionError("autonomy_level must be 0-100")
+    await db.execute(
+        update(AgentRegistry)
+        .where(AgentRegistry.id == agent.id)
+        .values(autonomy_level=level)
+    )
+    await db.commit()
+    return {"id": str(agent.id), "autonomy_level": level}
+
+
+async def _handle_execute_agent(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from services.agent_execution_service import AgentExecutionService
+    except ImportError:
+        try:
+            from aictrlnet_business.services.agent_execution import AgentExecutionService  # type: ignore
+        except Exception:
+            raise ToolExecutionError("Agent execution service unavailable")
+
+    svc = AgentExecutionService(db)
+    method = (
+        getattr(svc, "execute", None)
+        or getattr(svc, "execute_agent", None)
+        or getattr(svc, "run", None)
+    )
+    if not method:
+        raise ToolExecutionError("AgentExecutionService has no execute method")
+    result = await method(
+        agent_id=arguments["agent_id"],
+        prompt=arguments["prompt"],
+        input_data=arguments.get("input_data"),
+        user_id=user_id,
+    )
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    if isinstance(result, dict):
+        return result
+    return {"result": str(result)}
+
+
+# ---- LLM Registry ----
+
+
+async def _handle_list_llm_models(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from sqlalchemy import select
+
+        from aictrlnet_business.models.llm_registry import LLMModel  # type: ignore
+    except Exception:
+        return {"models": [], "available": False}
+
+    query = select(LLMModel)
+    if arguments.get("provider"):
+        query = query.where(LLMModel.provider == arguments["provider"])
+    if arguments.get("enabled_only", True):
+        query = query.where(LLMModel.enabled == True)  # noqa: E712
+    rows = (await db.execute(query)).scalars().all()
+    return {
+        "models": [
+            {
+                "id": str(getattr(m, "id", "")),
+                "provider": getattr(m, "provider", None),
+                "model_name": getattr(m, "model_name", None),
+                "enabled": getattr(m, "enabled", True),
+                "capabilities": getattr(m, "capabilities", None),
+            }
+            for m in rows
+        ],
+        "count": len(rows),
+    }
+
+
+async def _handle_get_llm_recommendation(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.llm_registry_service import LLMRegistryService  # type: ignore
+    except Exception:
+        return {"recommendation": None, "available": False}
+
+    svc = LLMRegistryService(db)
+    method = (
+        getattr(svc, "recommend", None)
+        or getattr(svc, "get_recommendation", None)
+    )
+    if not method:
+        return {"recommendation": None, "available": False}
+    rec = await method(
+        task_type=arguments["task_type"],
+        constraints=arguments.get("constraints") or {},
+    )
+    if hasattr(rec, "model_dump"):
+        return rec.model_dump()
+    if hasattr(rec, "dict"):
+        return rec.dict()
+    return {"recommendation": rec}
+
+
+# ---- Living Platform — Patterns ----
+
+
+async def _handle_list_pattern_candidates(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.learning_loop_service import (  # type: ignore
+            LearningLoopService,
+        )
+    except Exception:
+        return {"candidates": [], "available": False}
+
+    svc = LearningLoopService(db)
+    list_method = (
+        getattr(svc, "list_pattern_candidates", None)
+        or getattr(svc, "list_candidates", None)
+    )
+    if not list_method:
+        return {"candidates": [], "available": False}
+    candidates = await list_method(
+        status=arguments.get("status"),
+        min_confidence=arguments.get("min_confidence"),
+        limit=min(int(arguments.get("limit", 50)), 200),
+        offset=int(arguments.get("offset", 0)),
+    )
+    return {
+        "candidates": [
+            (c.model_dump() if hasattr(c, "model_dump")
+             else c.dict() if hasattr(c, "dict")
+             else {"id": str(getattr(c, "id", c))})
+            for c in candidates
+        ],
+        "count": len(candidates) if hasattr(candidates, "__len__") else 0,
+    }
+
+
+async def _handle_promote_pattern_to_template(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.learning_loop_service import (  # type: ignore
+            LearningLoopService,
+        )
+    except Exception:
+        raise ToolExecutionError("Learning loop service unavailable in this edition")
+
+    svc = LearningLoopService(db)
+    method = (
+        getattr(svc, "promote_to_template", None)
+        or getattr(svc, "convert_to_template", None)
+    )
+    if not method:
+        raise ToolExecutionError("Promotion method unavailable")
+    result = await method(
+        pattern_id=arguments["pattern_id"],
+        template_name=arguments.get("template_name"),
+        category=arguments.get("category"),
+        user_id=user_id,
+    )
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"template_id": str(result) if result else None}
+
+
+# ---- Living Platform — Org Discovery ----
+
+
+async def _handle_org_discovery_scan(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.org_discovery_service import (  # type: ignore
+            OrgDiscoveryService,
+        )
+    except Exception:
+        raise ToolExecutionError("Org discovery service unavailable")
+
+    svc = OrgDiscoveryService(db)
+    scan = (
+        getattr(svc, "scan", None)
+        or getattr(svc, "trigger_scan", None)
+    )
+    if not scan:
+        raise ToolExecutionError("scan method unavailable")
+    result = await scan(
+        user_id=user_id,
+        sources=arguments.get("sources") or [],
+    )
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"scan": result}
+
+
+async def _handle_get_org_landscape(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.org_discovery_service import (  # type: ignore
+            OrgDiscoveryService,
+        )
+    except Exception:
+        return {"landscape": None, "available": False}
+
+    svc = OrgDiscoveryService(db)
+    method = (
+        getattr(svc, "get_landscape", None)
+        or getattr(svc, "get_profile", None)
+    )
+    if not method:
+        return {"landscape": None, "available": False}
+    landscape = await method(user_id=user_id)
+    if hasattr(landscape, "model_dump"):
+        return landscape.model_dump()
+    if hasattr(landscape, "dict"):
+        return landscape.dict()
+    return {"landscape": landscape}
+
+
+async def _handle_get_org_recommendations(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.org_discovery_service import (  # type: ignore
+            OrgDiscoveryService,
+        )
+    except Exception:
+        return {"recommendations": [], "available": False}
+
+    svc = OrgDiscoveryService(db)
+    method = (
+        getattr(svc, "get_recommendations", None)
+        or getattr(svc, "recommend", None)
+    )
+    if not method:
+        return {"recommendations": [], "available": False}
+    recs = await method(user_id=user_id, focus=arguments.get("focus"))
+    return {
+        "recommendations": [
+            (r.model_dump() if hasattr(r, "model_dump")
+             else r.dict() if hasattr(r, "dict")
+             else r)
+            for r in (recs if isinstance(recs, list) else [recs])
+        ]
+    }
+
+
+# ---- Living Platform — Company Automation ----
+
+
+async def _handle_automate_company(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.company_automation_service import (  # type: ignore
+            CompanyAutomationService,
+        )
+    except Exception:
+        raise ToolExecutionError("Company automation service unavailable")
+
+    svc = CompanyAutomationService(db)
+    method = (
+        getattr(svc, "generate_plan", None)
+        or getattr(svc, "create_plan", None)
+        or getattr(svc, "automate", None)
+    )
+    if not method:
+        raise ToolExecutionError("Automation plan generator unavailable")
+
+    # Long-running op — service returns a plan_id, background task
+    # updates status. Consistent with v2 plan's long-running contract.
+    result = await method(
+        user_id=user_id,
+        goals=arguments["goals"],
+        autonomy_level=int(arguments.get("autonomy_level", 30)),
+        dry_run=bool(arguments.get("dry_run", True)),
+    )
+    if hasattr(result, "model_dump"):
+        payload = result.model_dump()
+    elif hasattr(result, "dict"):
+        payload = result.dict()
+    elif isinstance(result, dict):
+        payload = result
+    else:
+        payload = {"plan_id": str(result)}
+    payload.setdefault("poll_tool", "get_company_automation_status")
+    return payload
+
+
+async def _handle_get_company_automation_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.company_automation_service import (  # type: ignore
+            CompanyAutomationService,
+        )
+    except Exception:
+        return {"status": "unavailable", "available": False}
+
+    svc = CompanyAutomationService(db)
+    method = (
+        getattr(svc, "get_plan_status", None)
+        or getattr(svc, "get_status", None)
+    )
+    if not method:
+        return {"status": "unavailable", "available": False}
+    result = await method(plan_id=arguments["plan_id"], user_id=user_id)
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"status": result}
+
+
+# ---- Quality Verification ----
+
+
+async def _handle_verify_quality(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.quality_verification_service import (  # type: ignore
+            QualityVerificationService,
+        )
+    except Exception:
+        # Fall back to the community assess_quality handler as a degraded path
+        from mcp_server.services.quality import MCPQualityService
+
+        svc = MCPQualityService(db)
+        return await svc.assess_quality(
+            content=arguments["content"],
+            content_type=arguments.get("content_type", "text"),
+            criteria={"standards": arguments.get("standards")},
+        )
+
+    svc = QualityVerificationService(db)
+    method = (
+        getattr(svc, "verify", None)
+        or getattr(svc, "verify_quality", None)
+    )
+    if not method:
+        return {"passed": None, "available": False}
+    result = await method(
+        content=arguments["content"],
+        content_type=arguments.get("content_type", "text"),
+        standards=arguments.get("standards") or [],
+    )
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"result": result}
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -1860,4 +3049,54 @@ TOOL_HANDLERS = {
     # Wave 3: Trial metering surface
     "get_trial_status": _handle_get_trial_status,
     "get_usage_report": _handle_get_usage_report,
+    # Wave 4: Tasks
+    "create_task": _handle_create_task,
+    "list_tasks": _handle_list_tasks,
+    "get_task": _handle_get_task,
+    "update_task": _handle_update_task,
+    "complete_task": _handle_complete_task,
+    # Wave 4: Memory
+    "get_memory": _handle_get_memory,
+    "set_memory": _handle_set_memory,
+    "delete_memory": _handle_delete_memory,
+    # Wave 4: Conversations + Channels
+    "list_conversations": _handle_list_conversations,
+    "get_conversation": _handle_get_conversation,
+    "list_linked_channels": _handle_list_linked_channels,
+    "request_channel_link_code": _handle_request_channel_link_code,
+    "unlink_channel": _handle_unlink_channel,
+    "send_channel_message": _handle_send_channel_message,
+    "list_notifications": _handle_list_notifications,
+    "mark_notification_read": _handle_mark_notification_read,
+    # Wave 4: Knowledge
+    "query_knowledge": _handle_query_knowledge,
+    "suggest_next_actions": _handle_suggest_next_actions,
+    "get_capabilities_summary": _handle_get_capabilities_summary,
+    # Wave 4: Templates
+    "search_templates": _handle_search_templates,
+    "instantiate_template": _handle_instantiate_template,
+    # Wave 4: Files
+    "upload_file": _handle_upload_file,
+    "list_staged_files": _handle_list_staged_files,
+    "get_staged_file": _handle_get_staged_file,
+    # Wave 4: Data Quality
+    "assess_data_quality": _handle_assess_data_quality,
+    "list_quality_dimensions": _handle_list_quality_dimensions,
+    # Wave 4: Agents
+    "list_agents": _handle_list_agents,
+    "get_agent_capabilities": _handle_get_agent_capabilities,
+    "set_agent_autonomy": _handle_set_agent_autonomy,
+    "execute_agent": _handle_execute_agent,
+    # Wave 4: LLM Registry
+    "list_llm_models": _handle_list_llm_models,
+    "get_llm_recommendation": _handle_get_llm_recommendation,
+    # Wave 4: Living Platform
+    "list_pattern_candidates": _handle_list_pattern_candidates,
+    "promote_pattern_to_template": _handle_promote_pattern_to_template,
+    "org_discovery_scan": _handle_org_discovery_scan,
+    "get_org_landscape": _handle_get_org_landscape,
+    "get_org_recommendations": _handle_get_org_recommendations,
+    "automate_company": _handle_automate_company,
+    "get_company_automation_status": _handle_get_company_automation_status,
+    "verify_quality": _handle_verify_quality,
 }

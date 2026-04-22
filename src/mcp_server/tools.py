@@ -385,6 +385,318 @@ COMMUNITY_TOOLS = [
             },
         },
     },
+    # ---- Wave 4: Tasks ----
+    {
+        "name": "create_task",
+        "description": (
+            "Create a new task. Tasks are status-tracked units of work "
+            "that workflows, agents, and humans can operate on. Returns "
+            "the new task's id + initial PENDING status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "list_tasks",
+        "description": "List tasks, optionally filtered by status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "e.g. pending, in_progress, completed, failed"},
+                "limit": {"type": "integer", "default": 100, "maximum": 500},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "get_task",
+        "description": "Get details of a single task by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "update_task",
+        "description": "Update a task's name, description, status, or metadata.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "status": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "complete_task",
+        "description": (
+            "Mark a task as completed. Convenience wrapper around update_task "
+            "with status=completed plus completed_at timestamp recorded."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "result": {"type": "object", "description": "Optional result payload"},
+            },
+            "required": ["task_id"],
+        },
+    },
+    # ---- Wave 4: Memory (per-user, session-scoped) ----
+    {
+        "name": "get_memory",
+        "description": (
+            "Retrieve a value from the caller's per-user memory store by "
+            "key. Community edition: in-memory dict, not persistent. "
+            "Returns null if the key doesn't exist."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"key": {"type": "string"}},
+            "required": ["key"],
+        },
+    },
+    {
+        "name": "set_memory",
+        "description": (
+            "Store a value under a key in the caller's memory. Max 1000 "
+            "keys and 10MB total per user. Overwrites existing values."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "value": {"description": "Any JSON-serializable value"},
+            },
+            "required": ["key", "value"],
+        },
+    },
+    {
+        "name": "delete_memory",
+        "description": "Delete a key from the caller's memory. Returns true on success.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"key": {"type": "string"}},
+            "required": ["key"],
+        },
+    },
+    # ---- Wave 4: Conversations + Channels (read) ----
+    {
+        "name": "list_conversations",
+        "description": "List the caller's active conversation sessions.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_conversation",
+        "description": "Get a single conversation session with its recent messages.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+                "message_limit": {"type": "integer", "default": 50, "maximum": 500},
+            },
+            "required": ["session_id"],
+        },
+    },
+    {
+        "name": "list_linked_channels",
+        "description": (
+            "List the caller's linked external channels (Slack, Discord, "
+            "Telegram, WhatsApp, Twilio, Email). v6 channel-agnostic arch."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "request_channel_link_code",
+        "description": (
+            "Generate a 6-digit code the caller can send via the target "
+            "channel to prove ownership and link it to their account. "
+            "Code expires in 10 minutes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "channel_type": {
+                    "type": "string",
+                    "enum": ["slack", "discord", "telegram", "whatsapp", "twilio", "email"],
+                },
+            },
+            "required": ["channel_type"],
+        },
+    },
+    {
+        "name": "unlink_channel",
+        "description": "Unlink a previously-linked channel.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "channel_type": {"type": "string"},
+                "channel_user_id": {"type": "string"},
+            },
+            "required": ["channel_type", "channel_user_id"],
+        },
+    },
+    # ---- Wave 4: Knowledge ----
+    {
+        "name": "query_knowledge",
+        "description": (
+            "Query the AICtrlNet knowledge base (capabilities, adapter "
+            "docs, feature descriptions). Returns relevant snippets."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "context": {"type": "object"},
+                "limit": {"type": "integer", "default": 5, "maximum": 20},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "suggest_next_actions",
+        "description": (
+            "Given the current action or workflow state, suggest next-step "
+            "actions the caller could take. Backed by KnowledgeRetrievalService."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "current_action": {"type": "string"},
+                "context": {"type": "object"},
+            },
+            "required": ["current_action"],
+        },
+    },
+    {
+        "name": "get_capabilities_summary",
+        "description": (
+            "Return a summary of AICtrlNet's capabilities — adapters, "
+            "agents, features — as a structured document. Useful for Claude "
+            "to self-orient before making bigger decisions."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    # ---- Wave 4: Templates ----
+    {
+        "name": "search_templates",
+        "description": (
+            "Search the 183-template catalog by name, category, or tags. "
+            "Returns matching templates with description + complexity."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "category": {"type": "string"},
+                "limit": {"type": "integer", "default": 20, "maximum": 100},
+            },
+        },
+    },
+    {
+        "name": "instantiate_template",
+        "description": (
+            "Create a new workflow from a template with optional parameter "
+            "overrides. Returns the new workflow's id."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template_id": {"type": "string"},
+                "name": {"type": "string", "description": "Optional name for the instantiated workflow"},
+                "parameters": {"type": "object"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["template_id"],
+        },
+    },
+    # ---- Wave 4: Files ----
+    {
+        "name": "upload_file",
+        "description": (
+            "Upload a file (base64-encoded content) as a staged file the "
+            "caller can reference later. Max 10 MB, MIME allow-list "
+            "enforced, magic-byte validated."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string"},
+                "content_base64": {"type": "string"},
+                "content_type": {"type": "string"},
+                "workflow_id": {
+                    "type": "string",
+                    "description": "Optional — trigger a workflow with this file as input",
+                },
+            },
+            "required": ["filename", "content_base64"],
+        },
+    },
+    {
+        "name": "list_staged_files",
+        "description": "List files the caller has uploaded.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 50, "maximum": 500},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "get_staged_file",
+        "description": (
+            "Get a staged file's metadata (and optionally its content as "
+            "base64). Strictly tenant + user scoped."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string"},
+                "include_content": {"type": "boolean", "default": False},
+            },
+            "required": ["file_id"],
+        },
+    },
+    # ---- Wave 4: Data Quality ----
+    {
+        "name": "assess_data_quality",
+        "description": (
+            "Run a quality assessment on structured data across dimensions "
+            "(accuracy, completeness, consistency, timeliness, uniqueness, "
+            "validity). Returns scored dimensions + overall score."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "data": {"description": "Data to assess (dict, list, or JSON string)"},
+                "dimensions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific dimensions to assess (default: all)",
+                },
+                "rules": {"type": "object", "description": "Optional per-dimension rules"},
+            },
+            "required": ["data"],
+        },
+    },
+    {
+        "name": "list_quality_dimensions",
+        "description": "List the supported data-quality dimensions + their descriptions.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 BUSINESS_TOOLS = [
@@ -786,6 +1098,277 @@ BUSINESS_TOOLS = [
             },
         },
     },
+    # ---- Wave 4: Channels + Notifications (business) ----
+    {
+        "name": "send_channel_message",
+        "description": (
+            "Send a message through a linked external channel (Slack, "
+            "Discord, Telegram, WhatsApp, Twilio, Email). Enforces channel "
+            "ownership — cross-tenant sends rejected."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "channel_type": {"type": "string"},
+                "message": {"type": "string"},
+                "channel_user_id": {
+                    "type": "string",
+                    "description": "Optional specific recipient (defaults to caller's linked account on that channel)",
+                },
+            },
+            "required": ["channel_type", "message"],
+        },
+    },
+    {
+        "name": "list_notifications",
+        "description": "List the caller's notifications.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "unread_only": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "default": 50, "maximum": 200},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "mark_notification_read",
+        "description": "Mark a notification as read.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"notification_id": {"type": "string"}},
+            "required": ["notification_id"],
+        },
+    },
+    # ---- Wave 4: Agents ----
+    {
+        "name": "list_agents",
+        "description": (
+            "List AI agents in the caller's registry. v11 '43 agents' claim "
+            "— addressable via MCP."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_type": {"type": "string"},
+                "enabled_only": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "default": 50},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "get_agent_capabilities",
+        "description": "Get an agent's capability catalog (tools it can call).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"agent_id": {"type": "string"}},
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "set_agent_autonomy",
+        "description": (
+            "Set an agent's autonomy level 0-100. Maps to v11 six autonomy "
+            "phases. Same semantics as set_workflow_autonomy, scoped to the "
+            "agent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "autonomy_level": {"type": "integer", "minimum": 0, "maximum": 100},
+            },
+            "required": ["agent_id", "autonomy_level"],
+        },
+    },
+    {
+        "name": "execute_agent",
+        "description": (
+            "Execute an agent with a prompt + optional input payload. "
+            "Returns execution id; poll via get_execution_status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "prompt": {"type": "string"},
+                "input_data": {"type": "object"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["agent_id", "prompt"],
+        },
+    },
+    # ---- Wave 4: LLM Registry ----
+    {
+        "name": "list_llm_models",
+        "description": (
+            "List LLM providers + models registered in the platform. v11 "
+            "'every AI model' claim — model-independence is now visible to "
+            "Claude through the MCP surface."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string"},
+                "enabled_only": {"type": "boolean", "default": True},
+            },
+        },
+    },
+    {
+        "name": "get_llm_recommendation",
+        "description": (
+            "Recommend an LLM model for a task based on cost, capability, "
+            "latency, and policy constraints."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_type": {"type": "string"},
+                "constraints": {
+                    "type": "object",
+                    "description": "Optional constraints (max_cost, max_latency, required_capabilities, etc.)",
+                },
+            },
+            "required": ["task_type"],
+        },
+    },
+    # ---- Wave 4: Living Platform — Patterns ----
+    {
+        "name": "list_pattern_candidates",
+        "description": (
+            "List learned operation patterns the platform has detected "
+            "that could be promoted to workflow templates. v11 'platform "
+            "that learns your operations' — read side."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "candidate|promoted|rejected"},
+                "min_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "limit": {"type": "integer", "default": 50, "maximum": 200},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "promote_pattern_to_template",
+        "description": (
+            "Promote a learned pattern into a reusable workflow template. "
+            "v11 'platform that learns your operations' — write side."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pattern_id": {"type": "string"},
+                "template_name": {"type": "string"},
+                "category": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["pattern_id"],
+        },
+    },
+    # ---- Wave 4: Living Platform — Org Discovery ----
+    {
+        "name": "org_discovery_scan",
+        "description": (
+            "Trigger an org discovery scan — profiles the caller's business "
+            "from integrated data sources. Long-running: returns a job id; "
+            "poll get_org_landscape for results."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Data sources to scan (email, calendar, slack, etc.)",
+                },
+                "idempotency_key": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "get_org_landscape",
+        "description": (
+            "Return the latest org-landscape profile — departments, key "
+            "people, systems, processes. Result of org_discovery_scan."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_org_recommendations",
+        "description": (
+            "Given the org landscape, recommend workflows + adapters + "
+            "agents the caller should configure. Product surface of v11 "
+            "'Always visibility' pillar."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "focus": {"type": "string", "description": "Optional focus area: sales, marketing, ops, etc."},
+            },
+        },
+    },
+    # ---- Wave 4: Living Platform — Company Automation (v11 hero) ----
+    {
+        "name": "automate_company",
+        "description": (
+            "Generate a complete automation plan for the caller's company "
+            "based on org landscape + goals. v11 '24 hours to a running "
+            "company' magic moment. Long-running: returns plan_id; poll "
+            "get_company_automation_status until status=ready."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goals": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Business goals to optimize for",
+                },
+                "autonomy_level": {"type": "integer", "minimum": 0, "maximum": 100, "default": 30},
+                "dry_run": {"type": "boolean", "default": True},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["goals"],
+        },
+    },
+    {
+        "name": "get_company_automation_status",
+        "description": (
+            "Poll the status of an automate_company plan generation. "
+            "Returns status (generating | reviewing | ready | failed), "
+            "progress, and the plan itself once ready."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"plan_id": {"type": "string"}},
+            "required": ["plan_id"],
+        },
+    },
+    # ---- Wave 4: Quality Verification ----
+    {
+        "name": "verify_quality",
+        "description": (
+            "Run a quality verification against an AI-generated output "
+            "(content, workflow plan, or adapter spec). Returns pass/fail "
+            "with scored dimensions."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "content_type": {
+                    "type": "string",
+                    "enum": ["text", "code", "workflow", "adapter"],
+                    "default": "text",
+                },
+                "standards": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["content"],
+        },
+    },
 ]
 
 ENTERPRISE_TOOLS = [
@@ -862,6 +1445,55 @@ TOOL_SCOPES = {
     # Wave 3: Trial metering surface
     "get_trial_status": ["read:usage"],
     "get_usage_report": ["read:usage"],
+    # Wave 4: Tasks
+    "create_task": ["write:tasks"],
+    "list_tasks": ["read:tasks"],
+    "get_task": ["read:tasks"],
+    "update_task": ["write:tasks"],
+    "complete_task": ["write:tasks"],
+    # Wave 4: Memory
+    "get_memory": ["read:memory"],
+    "set_memory": ["write:memory"],
+    "delete_memory": ["write:memory"],
+    # Wave 4: Conversations + Channels
+    "list_conversations": ["read:conversations"],
+    "get_conversation": ["read:conversations"],
+    "list_linked_channels": ["read:conversations"],
+    "request_channel_link_code": ["write:conversations"],
+    "unlink_channel": ["write:conversations"],
+    "send_channel_message": ["write:messaging"],
+    "list_notifications": ["read:notifications"],
+    "mark_notification_read": ["write:notifications"],
+    # Wave 4: Knowledge
+    "query_knowledge": ["read:knowledge"],
+    "suggest_next_actions": ["read:knowledge"],
+    "get_capabilities_summary": ["read:knowledge"],
+    # Wave 4: Templates
+    "search_templates": ["read:templates"],
+    "instantiate_template": ["write:workflows"],
+    # Wave 4: Files
+    "upload_file": ["write:files"],
+    "list_staged_files": ["read:files"],
+    "get_staged_file": ["read:files"],
+    # Wave 4: Agents + LLM
+    "list_agents": ["read:agents"],
+    "get_agent_capabilities": ["read:agents"],
+    "set_agent_autonomy": ["write:agents"],
+    "execute_agent": ["write:agents"],
+    "list_llm_models": ["read:llm"],
+    "get_llm_recommendation": ["read:llm"],
+    # Wave 4: Living Platform
+    "list_pattern_candidates": ["read:patterns"],
+    "promote_pattern_to_template": ["write:patterns"],
+    "org_discovery_scan": ["write:org"],
+    "get_org_landscape": ["read:org"],
+    "get_org_recommendations": ["read:org"],
+    "automate_company": ["write:company"],
+    "get_company_automation_status": ["read:org"],
+    "verify_quality": ["write:quality"],
+    # Wave 4: Data Quality
+    "assess_data_quality": ["read:workflows"],
+    "list_quality_dimensions": ["read:workflows"],
 }
 
 
