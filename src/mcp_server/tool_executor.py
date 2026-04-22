@@ -1301,6 +1301,325 @@ async def _handle_reject_request(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Wave 2 handlers — API-key economy + governance visibility
+# ---------------------------------------------------------------------------
+
+
+async def _handle_list_api_keys(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from services.api_key_service import APIKeyService
+
+    svc = APIKeyService(db)
+    keys = await svc.list_user_api_keys(user_id=user_id)
+    return {
+        "api_keys": [
+            k.to_dict() if hasattr(k, "to_dict") else {
+                "id": getattr(k, "id", None),
+                "name": getattr(k, "name", None),
+                "key_identifier": f"{getattr(k, 'key_prefix', '')}...{getattr(k, 'key_suffix', '')}",
+                "scopes": getattr(k, "scopes", []) or [],
+                "is_active": getattr(k, "is_active", True),
+                "expires_at": str(getattr(k, "expires_at", "") or ""),
+                "last_used_at": str(getattr(k, "last_used_at", "") or ""),
+                "usage_count": getattr(k, "usage_count", 0),
+            }
+            for k in keys
+        ],
+        "count": len(keys) if hasattr(keys, "__len__") else 0,
+    }
+
+
+async def _handle_get_api_key_usage(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Aggregate APIKeyLog rows for per-tool usage over a window.
+
+    The MCP audit log entry we emit on every tool call (via
+    MCPComplianceService.audit_mcp_operation) keys by
+    operation_type=f"mcp_tool:{tool_name}", which is where the per-tool
+    grain lives for Enterprise. Community falls back to the api_key_logs
+    table's endpoint column as a proxy for tool name.
+    """
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import func, select
+
+    from models.api_key import APIKey, APIKeyLog
+
+    days = int(arguments.get("days", 30))
+    days = max(1, min(days, 90))
+    since = datetime.utcnow() - timedelta(days=days)
+
+    # Scope to the caller's keys only (or a specific one they own)
+    keys_q = select(APIKey).where(APIKey.user_id == user_id)
+    if arguments.get("api_key_id"):
+        keys_q = keys_q.where(APIKey.id == arguments["api_key_id"])
+    key_rows = (await db.execute(keys_q)).scalars().all()
+    key_ids = [str(k.id) for k in key_rows]
+
+    if not key_ids:
+        return {"usage": [], "days": days, "total_calls": 0}
+
+    stmt = (
+        select(APIKeyLog.endpoint, func.count().label("n"))
+        .where(APIKeyLog.api_key_id.in_(key_ids))
+        .where(APIKeyLog.created_at >= since)
+        .group_by(APIKeyLog.endpoint)
+        .order_by(func.count().desc())
+    )
+    rows = (await db.execute(stmt)).all()
+    total = sum(r.n for r in rows)
+    return {
+        "usage": [{"endpoint": r.endpoint, "calls": int(r.n)} for r in rows],
+        "days": days,
+        "total_calls": int(total),
+        "api_key_ids_included": key_ids,
+    }
+
+
+async def _handle_get_subscription(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.subscription import SubscriptionService
+    except ImportError:
+        # Community deploys get a minimal synthetic response.
+        return {
+            "plan": "community",
+            "status": "active",
+            "edition": "community",
+            "features": {},
+            "limits": {},
+            "available": False,
+            "message": "Subscription service not available in this edition",
+        }
+
+    svc = SubscriptionService(db)
+    sub = await svc.get_current_subscription(user_id=user_id)
+    if not sub:
+        return {
+            "plan": None,
+            "status": "none",
+            "edition": "community",
+            "message": "No active subscription; defaulting to community tier",
+        }
+    if hasattr(sub, "model_dump"):
+        return sub.model_dump()
+    if hasattr(sub, "dict"):
+        return sub.dict()
+    return {"subscription": str(sub)}
+
+
+async def _handle_get_upgrade_options(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.subscription import SubscriptionService
+    except ImportError:
+        return {"plans": [], "available": False}
+
+    svc = SubscriptionService(db)
+    plans = await svc.get_subscription_plans(
+        edition=arguments.get("target_edition")
+    )
+    out = []
+    for p in plans:
+        if hasattr(p, "model_dump"):
+            out.append(p.model_dump())
+        elif hasattr(p, "dict"):
+            out.append(p.dict())
+        else:
+            out.append({"plan": str(p)})
+    return {"plans": out, "count": len(out)}
+
+
+# -- Governance visibility (Business) --
+
+
+async def _handle_list_ai_policies(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from sqlalchemy import select
+
+    from aictrlnet_business.models.ai_governance import AIPolicy
+    from core.tenant_context import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id() or "default-tenant"
+    query = select(AIPolicy).where(AIPolicy.tenant_id == tenant_id)
+    if arguments.get("policy_type"):
+        query = query.where(AIPolicy.policy_type == arguments["policy_type"])
+    if "enabled" in arguments:
+        query = query.where(AIPolicy.enabled == bool(arguments["enabled"]))
+    query = query.order_by(AIPolicy.created_at.desc())
+    policies = (await db.execute(query)).scalars().all()
+    return {
+        "policies": [
+            {
+                "id": str(p.id),
+                "name": p.name,
+                "description": getattr(p, "description", None),
+                "policy_type": getattr(p, "policy_type", None),
+                "severity": getattr(p, "severity", None),
+                "enabled": getattr(p, "enabled", True),
+                "applies_to": getattr(p, "applies_to", None),
+                "created_at": str(getattr(p, "created_at", "")),
+            }
+            for p in policies
+        ],
+        "count": len(policies),
+    }
+
+
+async def _handle_create_policy(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.models.ai_governance import AIAuditLog, AIPolicy
+    from core.tenant_context import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id() or "default-tenant"
+    policy = AIPolicy(
+        name=arguments["name"],
+        description=arguments.get("description"),
+        policy_type=arguments["policy_type"],
+        rules=arguments["rules"],
+        applies_to=arguments.get("applies_to") or [],
+        severity=arguments.get("severity", "medium"),
+        enabled=bool(arguments.get("enabled", True)),
+        resource_metadata=arguments.get("resource_metadata") or {},
+        tenant_id=tenant_id,
+    )
+    db.add(policy)
+    await db.commit()
+    await db.refresh(policy)
+
+    # Mirror the endpoint behavior: create an audit log for the creation
+    try:
+        audit = AIAuditLog(
+            action="policy_created",
+            user_id=user_id,
+            details={
+                "policy_id": str(policy.id),
+                "policy_name": policy.name,
+                "policy_type": policy.policy_type,
+            },
+            status="success",
+        )
+        db.add(audit)
+        await db.commit()
+    except Exception as e:
+        logger.warning("Failed to log policy creation: %s", e)
+
+    return {
+        "id": str(policy.id),
+        "name": policy.name,
+        "policy_type": policy.policy_type,
+        "severity": policy.severity,
+        "enabled": policy.enabled,
+        "tenant_id": policy.tenant_id,
+        "created_at": str(policy.created_at),
+    }
+
+
+async def _handle_get_ai_audit_logs(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from datetime import datetime
+
+    from sqlalchemy import select
+
+    from aictrlnet_business.models.ai_governance import AIAuditLog
+
+    query = select(AIAuditLog)
+    if arguments.get("action"):
+        query = query.where(AIAuditLog.action == arguments["action"])
+    if arguments.get("model_id"):
+        query = query.where(AIAuditLog.model_id == arguments["model_id"])
+    if arguments.get("user_id"):
+        query = query.where(AIAuditLog.user_id == arguments["user_id"])
+    if arguments.get("status"):
+        query = query.where(AIAuditLog.status == arguments["status"])
+    if arguments.get("start_date"):
+        try:
+            start = datetime.fromisoformat(arguments["start_date"].replace("Z", "+00:00"))
+            query = query.where(AIAuditLog.timestamp >= start)
+        except ValueError:
+            raise ToolExecutionError("Invalid start_date; use ISO-8601")
+    if arguments.get("end_date"):
+        try:
+            end = datetime.fromisoformat(arguments["end_date"].replace("Z", "+00:00"))
+            query = query.where(AIAuditLog.timestamp <= end)
+        except ValueError:
+            raise ToolExecutionError("Invalid end_date; use ISO-8601")
+
+    limit = min(int(arguments.get("limit", 100)), 1000)
+    offset = int(arguments.get("offset", 0))
+    query = query.order_by(AIAuditLog.timestamp.desc()).limit(limit).offset(offset)
+
+    logs = (await db.execute(query)).scalars().all()
+    return {
+        "logs": [
+            {
+                "id": str(log.id),
+                "action": log.action,
+                "user_id": log.user_id,
+                "model_id": getattr(log, "model_id", None),
+                "status": log.status,
+                "details": getattr(log, "details", None),
+                "timestamp": str(getattr(log, "timestamp", "")),
+            }
+            for log in logs
+        ],
+        "count": len(logs),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+async def _handle_list_violations(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    from aictrlnet_business.services.governance_service import GovernanceService
+    from core.tenant_context import get_current_tenant_id
+
+    svc = GovernanceService(db)
+    tenant_id = get_current_tenant_id() or "default"
+    violations = await svc.list_violations(
+        skip=int(arguments.get("offset", 0)),
+        limit=min(int(arguments.get("limit", 100)), 1000),
+        policy_id=arguments.get("policy_id"),
+        severity=arguments.get("severity"),
+        resolved=arguments.get("resolved"),
+        tenant_id=tenant_id,
+    )
+    return {
+        "violations": [
+            {
+                "id": str(v.id),
+                "policy_id": str(v.policy_id) if v.policy_id else None,
+                "resource_type": getattr(v, "resource_type", None),
+                "resource_id": getattr(v, "resource_id", None),
+                "violation_type": getattr(v, "violation_type", None),
+                "details": getattr(v, "details", None),
+                "severity": getattr(v, "severity", None),
+                "resolved": getattr(v, "resolved", False),
+                "resolved_at": str(getattr(v, "resolved_at", "")) if getattr(v, "resolved_at", None) else None,
+                "resolved_by": getattr(v, "resolved_by", None),
+                "created_at": str(getattr(v, "created_at", "")),
+            }
+            for v in violations
+        ],
+        "count": len(violations),
+    }
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -1343,4 +1662,14 @@ TOOL_HANDLERS = {
     "get_approval": _handle_get_approval,
     "approve_request": _handle_approve_request,
     "reject_request": _handle_reject_request,
+    # Wave 2: API-key + subscription introspection
+    "list_api_keys": _handle_list_api_keys,
+    "get_api_key_usage": _handle_get_api_key_usage,
+    "get_subscription": _handle_get_subscription,
+    "get_upgrade_options": _handle_get_upgrade_options,
+    # Wave 2: AI governance visibility
+    "list_ai_policies": _handle_list_ai_policies,
+    "create_policy": _handle_create_policy,
+    "get_ai_audit_logs": _handle_get_ai_audit_logs,
+    "list_violations": _handle_list_violations,
 }

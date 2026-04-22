@@ -297,6 +297,58 @@ COMMUNITY_TOOLS = [
             "required": ["workflow_id", "level"],
         },
     },
+    # ---- Wave 2: API-key + subscription introspection ----
+    {
+        "name": "list_api_keys",
+        "description": (
+            "List the caller's API keys with key identifier (prefix...suffix), "
+            "scopes, and expiration. Raw key values are never returned."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "get_api_key_usage",
+        "description": (
+            "Get per-tool usage counts for an API key over the last N days. "
+            "Defaults to the calling key if no id is supplied."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key_id": {"type": "string"},
+                "days": {"type": "integer", "default": 30, "minimum": 1, "maximum": 90},
+            },
+        },
+    },
+    {
+        "name": "get_subscription",
+        "description": (
+            "Return the caller's current subscription — plan, status, "
+            "billing period, and trial-end date. Use get_upgrade_options "
+            "for available upgrades."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_upgrade_options",
+        "description": (
+            "List subscription plans available to the caller at a higher "
+            "edition than the current plan. Includes monthly/annual pricing "
+            "and feature/limit diffs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_edition": {
+                    "type": "string",
+                    "description": "Filter plans by edition: community | business | enterprise",
+                },
+            },
+        },
+    },
 ]
 
 BUSINESS_TOOLS = [
@@ -604,6 +656,100 @@ BUSINESS_TOOLS = [
             "required": ["request_id", "reason"],
         },
     },
+    # ---- Wave 2: AI governance visibility ----
+    {
+        "name": "list_ai_policies",
+        "description": (
+            "List AI governance policies (content safety, cost, privacy, "
+            "custom rules). Direct answer to v11 'Claude gains governance' "
+            "claim — Claude can enumerate the policies it's subject to."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "policy_type": {
+                    "type": "string",
+                    "description": "Filter by policy type (e.g. content_safety, cost_control, data_privacy)",
+                },
+                "enabled": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "create_policy",
+        "description": (
+            "Create a new AI governance policy. Rule evaluator + severity + "
+            "applies_to selectors. Creation itself is audit-logged."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "policy_type": {"type": "string"},
+                "rules": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Rule conditions + actions (see AGP rule schema)",
+                },
+                "applies_to": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Resource types / ids this policy applies to",
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "critical"],
+                    "default": "medium",
+                },
+                "enabled": {"type": "boolean", "default": True},
+                "resource_metadata": {"type": "object"},
+            },
+            "required": ["name", "policy_type", "rules"],
+        },
+    },
+    {
+        "name": "get_ai_audit_logs",
+        "description": (
+            "Query AI governance audit logs — per-action, per-model, "
+            "per-user, per-status, with date range. Up to 1000 rows per "
+            "call. This is what Claude uses to reason about its own "
+            "past actions under governance."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string"},
+                "model_id": {"type": "string"},
+                "user_id": {"type": "string"},
+                "status": {"type": "string"},
+                "start_date": {"type": "string", "format": "date-time"},
+                "end_date": {"type": "string", "format": "date-time"},
+                "limit": {"type": "integer", "default": 100, "maximum": 1000},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "list_violations",
+        "description": (
+            "List policy violations raised by the governance engine. "
+            "Filterable by policy, severity, or resolved/unresolved."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "policy_id": {"type": "string"},
+                "severity": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "critical"],
+                },
+                "resolved": {"type": "boolean"},
+                "limit": {"type": "integer", "default": 100, "maximum": 1000},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
 ]
 
 ENTERPRISE_TOOLS = [
@@ -667,6 +813,16 @@ TOOL_SCOPES = {
     "get_approval": ["read:approvals"],
     "approve_request": ["write:approvals"],
     "reject_request": ["write:approvals"],
+    # Wave 2: API-key + subscription introspection
+    "list_api_keys": ["read:usage"],
+    "get_api_key_usage": ["read:usage"],
+    "get_subscription": ["read:subscription"],
+    "get_upgrade_options": ["read:subscription"],
+    # Wave 2: AI governance visibility
+    "list_ai_policies": ["read:policies"],
+    "create_policy": ["write:policies"],
+    "get_ai_audit_logs": ["read:audit"],
+    "list_violations": ["read:policies"],
 }
 
 
