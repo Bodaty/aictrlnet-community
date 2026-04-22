@@ -66,7 +66,13 @@ COMMUNITY_TOOLS = [
     },
     {
         "name": "execute_workflow",
-        "description": "Execute an existing workflow with optional input data. Returns the execution ID for status tracking.",
+        "description": (
+            "Execute an existing workflow with optional input data. Returns the "
+            "execution ID for status tracking. Set dry_run=true to simulate "
+            "execution without side effects — nodes that would touch external "
+            "systems (adapters, notifications, browser, approvals) return "
+            "simulated results, and the response includes dry_run_source."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -77,6 +83,23 @@ COMMUNITY_TOOLS = [
                 "input_data": {
                     "type": "object",
                     "description": "Optional input data to pass to the workflow",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, run in dry-run mode: side-effect nodes are "
+                        "simulated. Effective value OR-merged with session / "
+                        "agent / pod dry-run settings (any true value wins)."
+                    ),
+                    "default": False,
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": (
+                        "Optional client-supplied key for retry safety. If the "
+                        "same key is seen within 24h with the same arguments, "
+                        "the previous response is returned without re-executing."
+                    ),
                 },
             },
             "required": ["workflow_id"],
@@ -207,17 +230,20 @@ ENTERPRISE_TOOLS = [
 ]
 
 TOOL_SCOPES = {
+    # Original 11 tools — migrated to per-resource taxonomy.
+    # Legacy scopes on existing API keys are expanded at scope-check
+    # time via ``scopes.expand_legacy`` (Phase A compatibility).
     "create_workflow": ["write:workflows"],
     "execute_workflow": ["write:workflows"],
-    "send_message": ["write:all"],
     "list_workflows": ["read:workflows"],
     "get_workflow": ["read:workflows"],
     "get_execution_status": ["read:workflows"],
-    "list_templates": ["read:workflows"],
-    "assess_quality": ["read:all"],
-    "evaluate_policy": ["read:all"],
-    "list_policies": ["read:all"],
-    "check_compliance": ["read:all"],
+    "list_templates": ["read:templates"],
+    "assess_quality": ["read:workflows"],
+    "send_message": ["write:conversations"],
+    "evaluate_policy": ["read:policies"],
+    "list_policies": ["read:policies"],
+    "check_compliance": ["read:compliance"],
 }
 
 

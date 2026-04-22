@@ -1,16 +1,42 @@
 """MCP tool executor — delegates tool calls to existing AICtrlNet services.
 
-Each handler receives (arguments, db, user_id) and returns a plain dict.
-The protocol layer wraps the result in MCP content format.
+Execution pipeline (see docs/architecture/MCP_SERVER_ARCHITECTURE_SPEC.md):
+
+1. Plan gate       — ``plan_gate.enforce_plan`` — raises ``PlanError``
+2. Scope check     — new-taxonomy + legacy compatibility expansion
+3. Compliance gate — Enterprise-only ``MCPComplianceService.enforce_compliance``
+4. Rate bucket     — Redis per-(principal, tool, window); raises ``RateError``
+5. With-metering   — idempotency lookup, atomic quota charge, timeout,
+                     handler execution, refund on ``RefundableError``,
+                     idempotency store
+6. Audit log       — Enterprise-only ``MCPComplianceService.audit_mcp_operation``
+7. Metrics emit    — ``observability.record_invocation``
+
+Each handler receives ``(arguments, db, user_id)`` and returns a plain
+dict. The protocol layer wraps the result in MCP content format.
 """
 
-import json
 import logging
 import time
 from typing import Any, Dict, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from . import observability
+from .metering import (
+    QuotaError,
+    RefundableError,
+    ToolTimeoutError,
+    with_metering,
+)
+from .plan_gate import (
+    PLAN_MUTATING_TOOLS,
+    PlanError,
+    PlanService,
+    enforce_plan,
+)
+from .rate_bucket import RateError, check_rate
+from .scopes import scopes_satisfy
 from .tools import TOOL_SCOPES
 
 logger = logging.getLogger(__name__)
@@ -28,6 +54,19 @@ class ComplianceError(Exception):
     pass
 
 
+# Re-export pipeline errors for the protocol layer
+__all__ = [
+    "ComplianceError",
+    "PlanError",
+    "QuotaError",
+    "RateError",
+    "ScopeError",
+    "ToolExecutionError",
+    "ToolTimeoutError",
+    "execute_tool",
+]
+
+
 async def execute_tool(
     tool_name: str,
     arguments: Dict[str, Any],
@@ -35,73 +74,178 @@ async def execute_tool(
     user_id: str,
     api_key: Optional[Any] = None,
     tenant_id: Optional[str] = None,
+    plan_service: Optional[PlanService] = None,
 ) -> Dict[str, Any]:
-    """Execute an MCP tool with scope checking and enterprise compliance.
+    """Execute an MCP tool through the full pipeline."""
 
-    Returns a plain dict. Raises ToolExecutionError, ScopeError, or
-    ComplianceError on failure.
-    """
-    # 1. Scope check for API key auth
-    if api_key is not None:
-        required_scopes = TOOL_SCOPES.get(tool_name, [])
-        key_scopes = getattr(api_key, "scopes", []) or []
-        if not all(s in key_scopes for s in required_scopes):
-            raise ScopeError(
-                f"API key missing required scope(s) for {tool_name}: {required_scopes}"
-            )
+    # One PlanService per HTTP request (passed in from protocol.py).
+    # If not supplied, create a per-call one (safe but loses batch caching).
+    plan_service = plan_service or PlanService(db)
+    start = time.monotonic()
+    status = "unknown"
+    plan_tier = "unknown"
 
-    # 2. Enterprise compliance check (before execution)
     try:
-        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService
-        compliance_svc = MCPComplianceService()
-        compliant, reason = await compliance_svc.enforce_compliance(
+        # 1. Plan gate
+        try:
+            plan_tier = await enforce_plan(tool_name, tenant_id, plan_service)
+        except PlanError as e:
+            observability.record_plan_denied(
+                tool=tool_name,
+                current_plan=e.current,
+                required_plan=e.required,
+                tenant_id=tenant_id,
+            )
+            status = "plan_denied"
+            raise
+
+        # 2. Scope check (API-key auth only; JWT users bypass — full access)
+        if api_key is not None:
+            required = TOOL_SCOPES.get(tool_name, [])
+            granted = getattr(api_key, "scopes", []) or []
+            if required and not scopes_satisfy(granted, required):
+                missing = [s for s in required if not scopes_satisfy(granted, [s])]
+                observability.record_scope_denied(
+                    tool=tool_name,
+                    auth_type="api_key",
+                    missing=missing,
+                    tenant_id=tenant_id,
+                )
+                status = "scope_denied"
+                raise ScopeError(
+                    f"API key missing required scope(s) for {tool_name}: {missing}"
+                )
+
+        # 3. Enterprise compliance check
+        await _enforce_compliance_if_enterprise(tool_name, tenant_id, db)
+
+        # 4. Per-tool rate bucket (Redis / in-memory fallback)
+        try:
+            await check_rate(
+                tool_name=tool_name,
+                api_key=api_key,
+                user_id=user_id,
+            )
+        except RateError as e:
+            observability.record_rate_denied(
+                tool=tool_name,
+                window=e.window,
+                limit=e.limit,
+                tenant_id=tenant_id,
+            )
+            status = "rate_limited"
+            raise
+
+        # 5. With-metering (idempotency + atomic quota + timeout + refund)
+        handler = TOOL_HANDLERS.get(tool_name)
+        if not handler:
+            raise ToolExecutionError(f"Unknown tool: {tool_name}")
+
+        async def run_handler():
+            return await handler(arguments, db, user_id)
+
+        try:
+            result = await with_metering(
+                tool_name=tool_name,
+                args=arguments,
+                tenant_id=tenant_id or "default",
+                edition=plan_tier,
+                db=db,
+                handler=run_handler,
+            )
+        except QuotaError as e:
+            observability.record_quota_denied(
+                tool=tool_name,
+                meter=e.meter,
+                limit=e.limit,
+                used=e.used,
+                tenant_id=tenant_id,
+            )
+            status = "quota_exceeded"
+            raise
+        except ToolTimeoutError:
+            status = "timeout"
+            raise
+        except (RefundableError, ToolExecutionError, ScopeError, ComplianceError):
+            status = "handler_error"
+            raise
+        except Exception as e:
+            status = "handler_error"
+            raise ToolExecutionError(str(e)) from e
+
+        # Bust plan cache if this tool may have changed the plan/subscription
+        if tool_name in PLAN_MUTATING_TOOLS:
+            plan_service.bust_cache(tenant_id)
+
+        status = "success"
+        return result
+
+    finally:
+        duration = time.monotonic() - start
+        # 7. Metrics — always emit, regardless of outcome
+        observability.record_invocation(
+            tool=tool_name,
+            status=status,
+            plan=plan_tier,
+            duration_seconds=duration,
+            tenant_id=tenant_id,
+        )
+        # 6. Audit — always log for Enterprise tenants, even on failure
+        await _audit_if_enterprise(
+            tool_name,
+            arguments,
+            None if status != "success" else "ok",
+            user_id,
+            tenant_id,
+            duration * 1000,
+            status,
+            db,
+        )
+
+
+async def _enforce_compliance_if_enterprise(
+    tool_name: str, tenant_id: Optional[str], db: AsyncSession
+) -> None:
+    try:
+        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # type: ignore
+    except ImportError:
+        return
+    try:
+        svc = MCPComplianceService()
+        compliant, reason = await svc.enforce_compliance(
             server_id="aictrlnet-mcp-transport",
             tenant_id=tenant_id or "default",
             capability=tool_name,
             db=db,
         )
         if not compliant:
+            observability.record_compliance_denied(
+                tool=tool_name,
+                reason=reason or "compliance denied",
+                tenant_id=tenant_id,
+            )
             raise ComplianceError(reason or "Compliance check failed")
-    except ImportError:
-        pass
-
-    # 3. Execute
-    handler = TOOL_HANDLERS.get(tool_name)
-    if not handler:
-        raise ToolExecutionError(f"Unknown tool: {tool_name}")
-
-    start = time.monotonic()
-    try:
-        result = await handler(arguments, db, user_id)
+    except ComplianceError:
+        raise
     except Exception as e:
-        duration_ms = (time.monotonic() - start) * 1000
-        await _audit_if_enterprise(
-            tool_name, arguments, None, user_id, tenant_id, duration_ms, "error", db
-        )
-        raise ToolExecutionError(str(e)) from e
-
-    duration_ms = (time.monotonic() - start) * 1000
-
-    # 4. Enterprise audit log (after execution)
-    await _audit_if_enterprise(
-        tool_name, arguments, result, user_id, tenant_id, duration_ms, "success", db
-    )
-
-    return result
+        logger.warning("Compliance check errored for %s: %s", tool_name, e)
 
 
 async def _audit_if_enterprise(
     tool_name: str,
     request_data: dict,
-    response_data: Optional[dict],
+    response_data: Any,
     user_id: str,
     tenant_id: Optional[str],
     duration_ms: float,
     status: str,
     db: AsyncSession,
-):
+) -> None:
     try:
-        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService
+        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # type: ignore
+    except ImportError:
+        return
+    try:
         svc = MCPComplianceService()
         await svc.audit_mcp_operation(
             tenant_id=tenant_id or "default",
@@ -114,15 +258,16 @@ async def _audit_if_enterprise(
             duration_ms=duration_ms,
             db=db,
         )
-    except ImportError:
-        pass
     except Exception as e:
-        logger.warning(f"Enterprise audit logging failed: {e}")
+        logger.warning("Enterprise audit logging failed: %s", e)
 
 
 # ---------------------------------------------------------------------------
-# Tool handlers
+# Tool handlers (unchanged from v1 — new-wave handlers will be appended
+# as those waves land)
 # ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
 
 
 async def _handle_create_workflow(
@@ -136,7 +281,6 @@ async def _handle_create_workflow(
         context={"mode": "create", "user_id": user_id},
         user_id=user_id,
     )
-
     if "error" in result and result["error"]:
         raise ToolExecutionError(result["error"])
 
@@ -205,14 +349,27 @@ async def _handle_execute_workflow(
     from services.workflow_service import WorkflowService
 
     svc = WorkflowService(db)
-    execution = await svc.execute_workflow(
-        workflow_id=arguments["workflow_id"],
-        input_data=arguments.get("input_data"),
-        user_id=user_id,
-    )
+    # Pass dry_run through. WorkflowService composes with
+    # dry_run_interceptor.resolve_dry_run, which OR-merges request /
+    # session / agent / pod scopes — a true value at any layer wins.
+    dry_run = bool(arguments.get("dry_run", False))
+    execute_kwargs = {
+        "workflow_id": arguments["workflow_id"],
+        "input_data": arguments.get("input_data"),
+        "user_id": user_id,
+    }
+    try:
+        import inspect
+        if "dry_run" in inspect.signature(svc.execute_workflow).parameters:
+            execute_kwargs["dry_run"] = dry_run
+    except Exception:
+        pass
+    execution = await svc.execute_workflow(**execute_kwargs)
     return {
         "execution_id": str(execution.id),
         "status": getattr(execution, "status", "started"),
+        "dry_run": dry_run,
+        "dry_run_source": getattr(execution, "dry_run_source", "request" if dry_run else None),
         "message": f"Workflow execution started: {execution.id}",
     }
 
@@ -225,9 +382,7 @@ async def _handle_get_execution_status(
     svc = WorkflowExecutionService(db)
     details = await svc.get_execution_details(arguments["execution_id"])
     if not details:
-        raise ToolExecutionError(
-            f"Execution {arguments['execution_id']} not found"
-        )
+        raise ToolExecutionError(f"Execution {arguments['execution_id']} not found")
     return details
 
 
@@ -264,12 +419,11 @@ async def _handle_assess_quality(
     from mcp_server.services.quality import MCPQualityService
 
     svc = MCPQualityService(db)
-    result = await svc.assess_quality(
+    return await svc.assess_quality(
         content=arguments["content"],
         content_type=arguments.get("content_type", "text"),
         criteria=arguments.get("criteria"),
     )
-    return result
 
 
 async def _handle_send_message(
@@ -278,7 +432,6 @@ async def _handle_send_message(
     from services.enhanced_conversation_manager import EnhancedConversationService
 
     svc = EnhancedConversationService(db)
-
     active_sessions = await svc.get_active_sessions(user_id)
     if active_sessions:
         session = active_sessions[0]
@@ -290,15 +443,11 @@ async def _handle_send_message(
         content=arguments["message"],
         user_id=user_id,
     )
-
     if hasattr(response, "dict"):
         return response.dict()
     if hasattr(response, "model_dump"):
         return response.model_dump()
-    return {
-        "session_id": str(session.id),
-        "response": str(response),
-    }
+    return {"session_id": str(session.id), "response": str(response)}
 
 
 async def _handle_evaluate_policy(
@@ -307,7 +456,6 @@ async def _handle_evaluate_policy(
     import re
     import sys
     import time as _time
-    from datetime import datetime, timezone
 
     if "/workspace/editions/business/src" not in sys.path:
         sys.path.insert(0, "/workspace/editions/business/src")
@@ -324,7 +472,7 @@ async def _handle_evaluate_policy(
         raise ToolExecutionError(f"Policy {arguments['policy_id']} not found")
 
     content = arguments["content"]
-    rules_raw = json.loads(policy.rules) if isinstance(policy.rules, str) else (policy.rules or [])
+    rules_raw = _json.loads(policy.rules) if isinstance(policy.rules, str) else (policy.rules or [])
     rules = rules_raw if isinstance(rules_raw, list) else [rules_raw] if rules_raw else []
 
     start = _time.time()
@@ -377,6 +525,7 @@ async def _handle_list_policies(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     import sys
+
     if "/workspace/editions/business/src" not in sys.path:
         sys.path.insert(0, "/workspace/editions/business/src")
     if "/workspace/editions/community/src" not in sys.path:
@@ -397,7 +546,7 @@ async def _handle_list_policies(
                 "policy_type": getattr(p, "policy_type", ""),
                 "enabled": getattr(p, "enabled", True),
             }
-            for p in (policies[:arguments.get("limit", 20)])
+            for p in (policies[: arguments.get("limit", 20)])
         ],
         "count": len(policies),
     }
@@ -407,6 +556,7 @@ async def _handle_check_compliance(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     import sys
+
     if "/workspace/editions/enterprise/src" not in sys.path:
         sys.path.insert(0, "/workspace/editions/enterprise/src")
     if "/workspace/editions/business/src" not in sys.path:
@@ -419,12 +569,11 @@ async def _handle_check_compliance(
 
     svc = MCPComplianceService()
     tenant_id = get_current_tenant_id()
-    result = await svc.check_server_compliance(
+    return await svc.check_server_compliance(
         server_id=arguments["server_id"],
         tenant_id=tenant_id,
         db=db,
     )
-    return result
 
 
 TOOL_HANDLERS = {

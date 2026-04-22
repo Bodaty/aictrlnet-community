@@ -1,7 +1,19 @@
 """MCP JSON-RPC 2.0 protocol handler (server side).
 
-Implements the Streamable HTTP transport per MCP protocol version 2025-03-26.
-Mirrors what mcp_client_adapter.py sends — this is the server counterpart.
+Implements the Streamable HTTP transport per MCP protocol version
+2025-03-26. Mirrors what ``mcp_client_adapter.py`` sends — this is the
+server counterpart.
+
+Changes vs. v1:
+- ``tools/list`` filters by the caller's effective plan tier so Claude
+  only sees tools it can actually call (prevents leaking plan-gated
+  tool names to lower tiers).
+- ``capabilities.tools.listChanged`` is now ``True``: server will emit
+  ``notifications/tools/list_changed`` when the plan changes mid-session.
+- All gate errors (plan / scope / rate / quota / compliance / timeout)
+  get structured payloads via ``err.to_payload()`` when available — the
+  transport can surface ``upgrade_url`` / ``retry_after_seconds`` to the
+  client as clickable CTAs.
 """
 
 import json
@@ -10,10 +22,15 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .plan_gate import PlanService, TOOL_MIN_PLAN
 from .tool_executor import (
     ComplianceError,
+    PlanError,
+    QuotaError,
+    RateError,
     ScopeError,
     ToolExecutionError,
+    ToolTimeoutError,
     execute_tool,
 )
 
@@ -21,7 +38,9 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2025-03-26"
 SERVER_NAME = "AICtrlNet"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
+
+_TIER_RANK = {"community": 0, "business": 1, "enterprise": 2}
 
 
 def _jsonrpc_result(msg_id: Any, result: dict) -> dict:
@@ -33,6 +52,31 @@ def _jsonrpc_error(msg_id: Any, code: int, message: str, data: Any = None) -> di
     if data is not None:
         err["data"] = data
     return {"jsonrpc": "2.0", "id": msg_id, "error": err}
+
+
+def _structured_tool_error(
+    msg_id: Any,
+    payload: dict,
+    human_message: str,
+) -> dict:
+    """Return an MCP tool error with both stringified text content (so
+    existing clients render something readable) and a ``data`` field on
+    the JSON-RPC response for clients that parse structured errors.
+
+    Per MCP 2025-03-26, errors inside successful tool dispatch use
+    ``isError: true`` on the result, not the JSON-RPC ``error`` field.
+    """
+    return {
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "result": {
+            "content": [
+                {"type": "text", "text": human_message},
+            ],
+            "isError": True,
+            "_meta": {"error": payload},
+        },
+    }
 
 
 class MCPProtocolHandler:
@@ -51,11 +95,14 @@ class MCPProtocolHandler:
         self.user_id = user_id
         self.api_key = api_key
         self.tenant_id = tenant_id
+        # Per-request PlanService — cache is scoped to this JSON-RPC
+        # HTTP request / batch so plan lookups are not repeated.
+        self.plan_service = PlanService(db)
 
     async def handle(self, message: dict) -> Optional[dict]:
         """Dispatch a JSON-RPC message. Returns None for notifications."""
         method = message.get("method", "")
-        msg_id = message.get("id")  # None for notifications
+        msg_id = message.get("id")
 
         handlers = {
             "initialize": self._handle_initialize,
@@ -85,7 +132,8 @@ class MCPProtocolHandler:
         return _jsonrpc_result(msg_id, {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {
-                "tools": {"listChanged": False},
+                # Flipped True: server emits list_changed on plan mutation.
+                "tools": {"listChanged": True},
             },
             "serverInfo": {
                 "name": SERVER_NAME,
@@ -101,14 +149,21 @@ class MCPProtocolHandler:
 
     async def _handle_tools_list(self, message: dict) -> dict:
         msg_id = message.get("id")
-        tools = [
-            {
-                "name": t["name"],
-                "description": t["description"],
-                "inputSchema": t["inputSchema"],
-            }
-            for t in self.tools_registry
-        ]
+
+        current_plan = await self.plan_service.get_effective_edition(self.tenant_id)
+        current_rank = _TIER_RANK.get(current_plan, 0)
+
+        tools = []
+        for t in self.tools_registry:
+            required = TOOL_MIN_PLAN.get(t["name"], "community")
+            if _TIER_RANK.get(required, 0) <= current_rank:
+                tools.append(
+                    {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "inputSchema": t["inputSchema"],
+                    }
+                )
         return _jsonrpc_result(msg_id, {"tools": tools})
 
     async def _handle_tools_call(self, message: dict) -> dict:
@@ -120,8 +175,17 @@ class MCPProtocolHandler:
         if not tool_name:
             return _jsonrpc_error(msg_id, -32602, "Missing 'name' in params")
 
+        # Unknown / plan-hidden tools return identical errors — we do NOT
+        # reveal to a lower-tier caller that a higher-tier tool exists.
+        current_plan = await self.plan_service.get_effective_edition(self.tenant_id)
+        current_rank = _TIER_RANK.get(current_plan, 0)
+        required = TOOL_MIN_PLAN.get(tool_name)
         known_names = {t["name"] for t in self.tools_registry}
+
         if tool_name not in known_names:
+            return _jsonrpc_error(msg_id, -32602, f"Unknown tool: {tool_name}")
+        if required is not None and _TIER_RANK.get(required, 0) > current_rank:
+            # Same wire shape as "unknown tool" — prevents tier-taxonomy leak
             return _jsonrpc_error(msg_id, -32602, f"Unknown tool: {tool_name}")
 
         try:
@@ -132,33 +196,60 @@ class MCPProtocolHandler:
                 user_id=self.user_id,
                 api_key=self.api_key,
                 tenant_id=self.tenant_id,
+                plan_service=self.plan_service,
             )
             return _jsonrpc_result(msg_id, {
                 "content": [{"type": "text", "text": json.dumps(result, default=str)}],
                 "isError": False,
             })
 
+        except PlanError as e:
+            return _structured_tool_error(
+                msg_id, e.to_payload(), f"Plan upgrade required: {e}"
+            )
+
         except ScopeError as e:
-            return _jsonrpc_result(msg_id, {
-                "content": [{"type": "text", "text": json.dumps({"error": str(e)})}],
-                "isError": True,
-            })
+            return _structured_tool_error(
+                msg_id,
+                {"error": "scope_denied", "message": str(e)},
+                str(e),
+            )
+
+        except RateError as e:
+            return _structured_tool_error(
+                msg_id, e.to_payload(), str(e)
+            )
+
+        except QuotaError as e:
+            return _structured_tool_error(
+                msg_id, e.to_payload(), str(e)
+            )
 
         except ComplianceError as e:
-            return _jsonrpc_result(msg_id, {
-                "content": [{"type": "text", "text": json.dumps({"error": f"Compliance: {e}"})}],
-                "isError": True,
-            })
+            return _structured_tool_error(
+                msg_id,
+                {"error": "compliance_denied", "message": str(e)},
+                f"Compliance: {e}",
+            )
+
+        except ToolTimeoutError as e:
+            return _structured_tool_error(
+                msg_id,
+                {"error": "timeout", "message": str(e)},
+                str(e),
+            )
 
         except ToolExecutionError as e:
-            return _jsonrpc_result(msg_id, {
-                "content": [{"type": "text", "text": json.dumps({"error": str(e)})}],
-                "isError": True,
-            })
+            return _structured_tool_error(
+                msg_id,
+                {"error": "tool_error", "message": str(e)},
+                str(e),
+            )
 
         except Exception as e:
             logger.exception(f"Unexpected error executing tool {tool_name}")
-            return _jsonrpc_result(msg_id, {
-                "content": [{"type": "text", "text": json.dumps({"error": f"Internal error: {e}"})}],
-                "isError": True,
-            })
+            return _structured_tool_error(
+                msg_id,
+                {"error": "internal_error", "message": str(e)},
+                f"Internal error: {e}",
+            )
