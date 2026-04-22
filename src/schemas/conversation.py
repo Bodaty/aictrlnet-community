@@ -27,6 +27,37 @@ ConversationStateType = Literal[
 MessageRoleType = Literal["user", "assistant", "system"]
 ActionStatusType = Literal["pending", "in_progress", "completed", "failed", "cancelled"]
 
+
+# Tracked Entities — Phase 3 of the conversation overhaul.
+# When a tool creates or observes an entity (workflow, agent, approval, etc.),
+# the conversation manager registers it on session.context.tracked_entities.
+# This enables multi-turn references like "how's that workflow doing?" where
+# the resolver maps "that" → the most recently tracked workflow.
+TrackedEntityType = Literal[
+    "workflow",
+    "agent",
+    "approval",
+    "execution",
+    "policy",
+    "risk_assessment",
+]
+
+
+class TrackedEntity(BaseModel):
+    """A named entity remembered across conversation turns.
+
+    `label` is what the user probably called it (workflow name, agent name,
+    approval title) — used for fuzzy-match resolution. `id` is the canonical
+    DB identifier. `last_seen` updates every turn the entity is referenced or
+    re-surfaced via a ui_block.
+    """
+    type: TrackedEntityType
+    id: str
+    label: str
+    created_at: datetime
+    last_seen: datetime
+    summary: Optional[str] = None  # one-line status snippet for prompt injection
+
 # Typed UI Blocks — discriminated union rendered inline in the conversation UI.
 # Rule: each block LINKS to its canonical page (workflow_card → /workflows/:id, etc.),
 # never replicates the full UI inside a chat bubble. See plan: Phase 1 UI Blocks.

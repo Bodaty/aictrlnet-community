@@ -7,6 +7,7 @@ This enables the intelligent assistant to provide informed, context-aware respon
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 
@@ -1338,6 +1339,41 @@ Response (just the sentence, no quotes):"""
         'list_api_endpoints', 'list_integrations', 'update_onboarding',
     }
 
+    # Per-provider tool caps — keep native tool-calling reliable.
+    # Ollama degrades past ~35 tools (empirically). OpenAI/Anthropic handle
+    # significantly more; leave headroom below their docs limits.
+    # Values tuned for the native tool_calls API, not text-fallback parsing.
+    _ADAPTER_TOOL_CAPS = {
+        "ollama": 32,
+        "openai": 64,
+        "azure_openai": 64,
+        "anthropic": 64,
+        "bedrock": 48,  # Claude on Bedrock; slightly conservative
+        "gemini": 48,
+        "vertex_ai": 48,
+        "cohere": 32,
+        "deepseek": 32,
+        "dashscope": 32,
+    }
+    _DEFAULT_TOOL_CAP = 32  # Safe default if provider unknown
+
+    # Clarification loop threshold: if top score is below floor AND gap to #2
+    # is narrow, the pruner's keyword match is genuinely ambiguous — short-
+    # circuit with a user-facing clarification instead of guessing.
+    _AMBIGUITY_SCORE_FLOOR = 4
+    _AMBIGUITY_MAX_GAP = 2
+
+    @classmethod
+    def _max_tools_for_adapter(cls, adapter: Optional[str]) -> int:
+        """Resolve the tool cap for the adapter being used.
+
+        Falls back to the conservative default when the adapter is unknown
+        (new providers, test envs, etc.).
+        """
+        if not adapter:
+            return cls._DEFAULT_TOOL_CAP
+        return cls._ADAPTER_TOOL_CAPS.get(adapter.lower(), cls._DEFAULT_TOOL_CAP)
+
     _NO_TOOL_PHRASES = frozenset({
         'hello', 'hi', 'hey', 'hi there', 'hey there', 'hello there',
         'what can you do', 'what can you help me with',
@@ -1356,48 +1392,166 @@ Response (just the sentence, no quotes):"""
             return False
         return True
 
-    def _prune_tools(self, tools: list, user_message: str, max_tools: int = 25) -> list:
+    def _prune_tools(
+        self,
+        tools: list,
+        user_message: str,
+        max_tools: Optional[int] = None,
+        adapter: Optional[str] = None,
+    ) -> list:
         """Prune tools to stay within the LLM's effective tool limit.
 
         Uses keyword overlap scoring to select the most relevant tools.
+
+        Args:
+            tools: available ToolDefinition objects from the dispatcher
+            user_message: current user utterance (drives keyword match)
+            max_tools: explicit cap; if None, derived from `adapter`
+            adapter: provider name ('ollama'/'openai'/...) for auto cap sizing
+
+        Returns:
+            Filtered list of tools, ordered by relevance score. Pruning
+            metadata is exposed via the paired `_last_prune_meta` attribute
+            (used by callers for telemetry + ambiguity detection).
         """
         import re
+        import time
 
-        if len(tools) <= max_tools:
-            return tools
+        if max_tools is None:
+            max_tools = self._max_tools_for_adapter(adapter)
 
+        t0 = time.monotonic()
+
+        # Tokenize query once; filter noise words.
         cleaned = re.sub(r'[^\w\s]', '', user_message.lower())
-        query_words = set(cleaned.split()) - {'the', 'a', 'an', 'is', 'are', 'to', 'for', 'and', 'or', 'my', 'me', 'i', 'can', 'you', 'what', 'how', 'do', 'this', 'that', 'with', 'in', 'on', 'of'}
+        query_words = set(cleaned.split()) - {
+            'the', 'a', 'an', 'is', 'are', 'to', 'for', 'and', 'or',
+            'my', 'me', 'i', 'can', 'you', 'what', 'how', 'do', 'this',
+            'that', 'with', 'in', 'on', 'of',
+        }
 
+        # Score every tool even when we won't prune — callers use the
+        # top/second scores for ambiguity detection downstream.
         scored = []
         for tool in tools:
             if tool.name in self._ALWAYS_INCLUDE_TOOLS:
-                scored.append((tool, 200))
+                scored.append((tool, 200, "always_include"))
                 continue
 
             score = 0.0
-            # Category match
             tool_category = getattr(tool, 'category', None) or ''
             if tool_category:
                 cat_words = set(tool_category.replace('_', ' ').split())
                 if query_words & cat_words:
                     score += 50
 
-            # Tool name keyword overlap (3x weight)
-            tool_words = set(tool.name.replace('_', ' ').lower().split()) - {'get', 'list', 'set', 'create', 'update', 'delete'}
+            tool_words = set(tool.name.replace('_', ' ').lower().split()) - {
+                'get', 'list', 'set', 'create', 'update', 'delete'
+            }
             score += len(query_words & tool_words) * 3
 
-            # Description keyword overlap
             if tool.description:
                 desc_words = set(tool.description.lower().split())
                 score += len(query_words & desc_words)
 
-            scored.append((tool, score))
+            scored.append((tool, score, "keyword"))
 
         scored.sort(key=lambda x: x[1], reverse=True)
-        selected = [t for t, _ in scored[:max_tools]]
-        logger.info(f"[community-pruning] {len(tools)} → {len(selected)} tools for query")
+
+        if len(tools) <= max_tools:
+            selected = tools
+            reason = "under_cap"
+        else:
+            selected = [t for t, _, _ in scored[:max_tools]]
+            reason = "pruned"
+
+        took_ms = int((time.monotonic() - t0) * 1000)
+
+        # Structured telemetry — primarily for diagnosing wrong tool picks.
+        # Top-5 tools with scores give enough signal without flooding logs.
+        top = [(t.name, round(s, 1)) for t, s, _ in scored[:5]]
+        always = [t.name for t, _, src in scored if src == "always_include"]
+        logger.info(
+            "[tool_pruner] adapter=%s total=%d kept=%d cap=%d "
+            "always_included=%d top=%s reason=%s took_ms=%d",
+            adapter or "unknown",
+            len(tools),
+            len(selected),
+            max_tools,
+            len(always),
+            top,
+            reason,
+            took_ms,
+        )
+
+        # Expose scoring metadata for the clarification loop without
+        # changing the public return contract.
+        self._last_prune_meta = {
+            "adapter": adapter,
+            "total": len(tools),
+            "kept": len(selected),
+            "cap": max_tools,
+            "reason": reason,
+            "top_scores": [(t.name, s) for t, s, _ in scored[:5]],
+            "took_ms": took_ms,
+        }
         return selected
+
+    def _prune_is_ambiguous(self) -> bool:
+        """Inspect the last _prune_tools call for ambiguous tool selection.
+
+        Ambiguous when the top non-always-included tool has a low keyword
+        score AND the gap to the second-best is narrow. In that state the
+        pruner can't confidently rank tools by the user's utterance — the
+        LLM call is just as likely to pick wrong as right.
+        """
+        meta = getattr(self, "_last_prune_meta", None) or {}
+        top_scores = meta.get("top_scores") or []
+        # Skip ALWAYS_INCLUDE sentinels (score == 200) when looking for
+        # keyword-based rankings.
+        keyword_scores = [(n, s) for (n, s) in top_scores if s < 100]
+        if len(keyword_scores) < 2:
+            return False
+        top_score = keyword_scores[0][1]
+        gap = top_score - keyword_scores[1][1]
+        return (
+            top_score <= self._AMBIGUITY_SCORE_FLOOR
+            and gap <= self._AMBIGUITY_MAX_GAP
+        )
+
+    def _build_clarification_block(self) -> Optional[Dict[str, Any]]:
+        """Build a clarification UI block from the last prune's top candidates.
+
+        Returns None when there's nothing sensible to clarify (fewer than 2
+        keyword-scored candidates). Hooks into the Phase 1 ui_blocks
+        contract: frontend already renders `clarification`-shaped blocks
+        inline with button actions.
+        """
+        meta = getattr(self, "_last_prune_meta", None) or {}
+        top_scores = meta.get("top_scores") or []
+        keyword_candidates = [(n, s) for (n, s) in top_scores if s < 100][:3]
+        if len(keyword_candidates) < 2:
+            return None
+        return {
+            "type": "text",
+            "data": {
+                "content": (
+                    "I'm not sure which action you meant. "
+                    "Could you pick one, or rephrase?"
+                ),
+                "candidates": [
+                    {"tool": n, "score": round(s, 1)}
+                    for n, s in keyword_candidates
+                ],
+            },
+            "actions": [
+                {"label": n.replace("_", " ").title(), "verb": "open",
+                 "primary": i == 0, "destructive": False,
+                 "target": f"clarify:{n}"}
+                for i, (n, _) in enumerate(keyword_candidates)
+            ],
+            "entity_ref": None,
+        }
 
     # =========================================================================
     # Typed UI Blocks — Phase 1
@@ -1543,6 +1697,195 @@ Response (just the sentence, no quotes):"""
         }
 
     # =========================================================================
+    # Tracked Entities — Phase 3
+    # Session-level memory of things the user has interacted with (workflows,
+    # agents, approvals, etc.). Enables "how's that workflow doing?" style
+    # cross-turn references by mapping pronouns to the most recent entity of
+    # the referenced type.
+    # =========================================================================
+
+    _MAX_TRACKED_ENTITIES = 20  # hard cap — oldest evicted first
+    _PRONOUN_HINTS = frozenset({"that", "the", "my", "this", "it"})
+
+    _TOOL_ENTITY_MAP = {
+        # tool_name -> (TrackedEntityType, id_key, label_key)
+        "create_workflow":       ("workflow", "workflow_id", "workflow_name"),
+        "instantiate_template":  ("workflow", "workflow_id", "workflow_name"),
+        "execute_workflow":      ("execution", "execution_id", "workflow_name"),
+        "create_agent":          ("agent",    "agent_id",    "agent_name"),
+        "assess_risk":           ("risk_assessment", "task_id", "task_id"),
+        "get_governance_policies": ("policy", "id", "name"),
+    }
+
+    def _register_entity(
+        self,
+        session,
+        *,
+        entity_type: str,
+        entity_id: str,
+        label: str,
+        summary: Optional[str] = None,
+    ) -> None:
+        """Record or refresh a tracked entity on session.context.
+
+        Updates `last_seen` on every touch so the resolver picks the entity
+        the user most recently interacted with. Evicts the least-recently-
+        seen entity if we're at the cap.
+        """
+        if not entity_id:
+            return
+        now_iso = datetime.utcnow().isoformat()
+        ctx = session.context = (session.context or {})
+        tracked = ctx.setdefault("tracked_entities", {})
+
+        key = f"{entity_type}:{entity_id}"
+        existing = tracked.get(key)
+        if existing:
+            existing["last_seen"] = now_iso
+            if summary:
+                existing["summary"] = summary
+            if label:
+                existing["label"] = label
+        else:
+            tracked[key] = {
+                "type": entity_type,
+                "id": entity_id,
+                "label": label or entity_id,
+                "summary": summary,
+                "created_at": now_iso,
+                "last_seen": now_iso,
+            }
+            # Enforce cap by evicting least-recently-seen.
+            if len(tracked) > self._MAX_TRACKED_ENTITIES:
+                oldest_key = min(tracked, key=lambda k: tracked[k]["last_seen"])
+                del tracked[oldest_key]
+
+        # Tell SQLAlchemy this mutable JSON column changed. Without this
+        # the UPDATE isn't flushed on commit.
+        try:
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(session, "context")
+        except Exception as e:
+            logger.debug(f"[tracked_entities] flag_modified skipped: {e}")
+
+    def _register_entities_from_results(self, session, tool_results) -> None:
+        """Walk successful tool results and register any known entities."""
+        if not tool_results:
+            return
+        for result in tool_results:
+            if not getattr(result, "success", False):
+                continue
+            data = getattr(result, "data", None) or {}
+            tool_name = data.get("tool_name") or ""
+
+            mapping = self._TOOL_ENTITY_MAP.get(tool_name)
+            if mapping:
+                entity_type, id_key, label_key = mapping
+                self._register_entity(
+                    session,
+                    entity_type=entity_type,
+                    entity_id=str(data.get(id_key) or ""),
+                    label=str(data.get(label_key) or data.get(id_key) or ""),
+                    summary=self._entity_summary_for(tool_name, data),
+                )
+
+            # list_* tools return arrays — register each item.
+            if tool_name == "list_workflows":
+                for wf in data.get("workflows") or []:
+                    wf_id = wf.get("workflow_id") or wf.get("id") or ""
+                    self._register_entity(
+                        session,
+                        entity_type="workflow",
+                        entity_id=str(wf_id),
+                        label=str(wf.get("workflow_name") or wf.get("name") or wf_id),
+                        summary=f"status: {wf.get('status') or 'unknown'}",
+                    )
+            elif tool_name == "list_agents":
+                for ag in data.get("agents") or []:
+                    ag_id = ag.get("agent_id") or ag.get("id") or ""
+                    self._register_entity(
+                        session,
+                        entity_type="agent",
+                        entity_id=str(ag_id),
+                        label=str(ag.get("agent_name") or ag.get("name") or ag_id),
+                        summary=f"status: {ag.get('status') or 'unknown'}",
+                    )
+
+    def _entity_summary_for(self, tool_name: str, data: Dict[str, Any]) -> Optional[str]:
+        """Short status snippet for prompt injection + block summaries."""
+        if tool_name in ("create_workflow", "instantiate_template"):
+            return f"status: {data.get('status', 'draft')}"
+        if tool_name == "execute_workflow":
+            return f"status: {data.get('status', 'running')}"
+        if tool_name == "create_agent":
+            return f"status: {data.get('status', 'active')}"
+        if tool_name == "assess_risk":
+            r = data.get("risk_assessment") or {}
+            return f"score: {r.get('risk_score') or r.get('score') or 'n/a'}"
+        return None
+
+    def _resolve_reference(
+        self, session, phrase: str, entity_type: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve "that workflow" / "the one from earlier" etc. to a tracked entity.
+
+        Strategy: first word-match on label (fuzzy-ish), then fall back to
+        most-recently-seen entity of the requested type. Returns None when
+        there's no sensible match.
+        """
+        ctx = (session.context or {}) if session else {}
+        tracked = ctx.get("tracked_entities") or {}
+        if not tracked:
+            return None
+
+        lowered = (phrase or "").lower()
+        candidates = list(tracked.values())
+        if entity_type:
+            candidates = [c for c in candidates if c.get("type") == entity_type]
+        if not candidates:
+            return None
+
+        # 1. Substring label match.
+        for c in candidates:
+            label = (c.get("label") or "").lower()
+            if label and label in lowered:
+                return c
+
+        # 2. Pronoun / demonstrative → most recent of the requested type.
+        tokens = set(lowered.split())
+        if tokens & self._PRONOUN_HINTS:
+            candidates.sort(key=lambda c: c.get("last_seen", ""), reverse=True)
+            return candidates[0]
+
+        return None
+
+    def _recent_entities_prompt_section(
+        self, session, *, limit: int = 5
+    ) -> str:
+        """Render a compact "Recent entities:" block for the system prompt.
+
+        Returns empty string when there's nothing to inject. Entities are
+        listed most-recent first so the LLM's recency bias aligns with the
+        user's last references.
+        """
+        ctx = (session.context or {}) if session else {}
+        tracked = ctx.get("tracked_entities") or {}
+        if not tracked:
+            return ""
+        items = sorted(
+            tracked.values(),
+            key=lambda c: c.get("last_seen", ""),
+            reverse=True,
+        )[:limit]
+        lines = ["Recent entities (user has interacted with these):"]
+        for e in items:
+            summary = f" — {e['summary']}" if e.get("summary") else ""
+            lines.append(
+                f"- {e['type']} '{e.get('label', e['id'])}' (id: {e['id']}){summary}"
+            )
+        return "\n".join(lines) + "\n"
+
+    # =========================================================================
     # v5 UNIFIED CONVERSATION FLOW - LLM as Brain
     # =========================================================================
 
@@ -1679,11 +2022,25 @@ Response (just the sentence, no quotes):"""
                 personal_agent_config=personal_agent_config,
             )
 
-        # Get available tools (prune if too many for the LLM's effective tool limit)
+        # Inject any tracked entities from prior turns so the LLM can
+        # resolve references like "that workflow" / "the one from earlier".
+        # Appended to the system prompt so it doesn't disrupt the assembler's
+        # core structure, but is visible to the model.
+        recent_entities = self._recent_entities_prompt_section(session)
+        if recent_entities:
+            system_prompt = f"{system_prompt}\n\n{recent_entities}"
+
+        # Get available tools. Always call _prune_tools so scoring metadata
+        # is populated even when under the cap — enables the ambiguity check
+        # below. The pruner no-ops (returns all) when total <= cap.
         tool_dispatcher = ToolDispatcher(self.db, Edition.COMMUNITY)
         all_tools = tool_dispatcher.get_available_tools()
         if needs_tools:
-            tools = self._prune_tools(all_tools, content) if len(all_tools) > 35 else all_tools
+            # Resolve the active adapter so pruning caps match the provider's
+            # reliable tool-calling budget (Ollama≈32, OpenAI/Anthropic≈64).
+            from llm.tier_resolver import get_environment_default_provider
+            active_adapter = get_environment_default_provider()
+            tools = self._prune_tools(all_tools, content, adapter=active_adapter)
         else:
             tools = []  # Greeting/farewell — skip tool definitions entirely
 
@@ -1912,13 +2269,33 @@ Response (just the sentence, no quotes):"""
                 llm_model_used=getattr(llm_response, 'model_used', None)
             )
 
+            # The `session` row was loaded before the db.close() that
+            # preceded the LLM call, so it's detached from the current
+            # SQLAlchemy session. Re-fetch a fresh instance tied to the
+            # live transaction; mutate THAT for the commit. `merge()`
+            # would also work but has been observed to invalidate the
+            # already-staged assistant_message here.
+            from sqlalchemy import select as _select
+            from models.conversation import ConversationSession as _ConvSession
+            _fresh = await self.db.execute(
+                _select(_ConvSession).where(_ConvSession.id == session.id)
+            )
+            live_session = _fresh.scalar_one_or_none() or session
+            # Copy tracked_entities from the detached session's mutations
+            # (they may have been pre-populated earlier in the flow).
+            if session.context and session.context.get("tracked_entities"):
+                live_session.context = live_session.context or {}
+                live_session.context["tracked_entities"] = session.context["tracked_entities"]
+
             # Update session context with any new information
             await self._update_session_context_v5(
-                session=session,
+                session=live_session,
                 user_content=content,
                 assistant_content=response_content,
                 tool_results=tool_results
             )
+            # Register tracked entities (Phase 3) on the live session.
+            self._register_entities_from_results(live_session, tool_results)
             # Single commit for both message + context update
             await self.db.commit()
             await self.db.refresh(assistant_message)
