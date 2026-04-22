@@ -357,6 +357,9 @@ class OnboardingService:
             )
             config.onboarding_state = state
             config.updated_at = datetime.utcnow()
+            # AI Control Spectrum — propagate derived autonomy to user's personal
+            # agent (Business only) + any workflows created during onboarding.
+            await self._apply_onboarding_autonomy(config)
             await self.db.commit()
 
             return {
@@ -564,6 +567,17 @@ class OnboardingService:
             ctx_key = field.split(".", 1)[1]
             user_context = dict(config.user_context or {})
             user_context[ctx_key] = value
+            # AI Control Spectrum — when comfort_level is captured,
+            # derive and persist the canonical autonomy_level alongside
+            # it so the resolver's user tier can use it directly.
+            if ctx_key == "comfort_level":
+                try:
+                    from services.autonomy_taxonomy import comfort_to_level
+                    derived = comfort_to_level(value if isinstance(value, str) else None)
+                    if derived is not None:
+                        user_context["autonomy_level"] = derived
+                except Exception:
+                    logger.debug("failed to derive autonomy_level from comfort", exc_info=True)
             config.user_context = user_context
 
     def _advance(self, chapter: int, question: int) -> Tuple[Optional[int], Optional[int]]:
@@ -731,5 +745,61 @@ class OnboardingService:
         )
         config.onboarding_state = state
         config.updated_at = datetime.utcnow()
+        # AI Control Spectrum — propagate derived autonomy (see sibling path above).
+        await self._apply_onboarding_autonomy(config)
         await self.db.commit()
         return self._build_summary_response(config)
+
+    async def _apply_onboarding_autonomy(self, config: PersonalAgentConfig) -> None:
+        """Stamp autonomy_level derived from comfort_level onto the user's
+        personal EnhancedAgent (Business only) and any workflows referenced
+        in `config.active_workflows`.
+
+        This is best-effort: Business models may not be importable in a
+        pure-Community deploy, and active_workflows may be empty. Never
+        raises — logs a debug and moves on.
+        """
+        user_context = config.user_context or {}
+        autonomy_level = user_context.get("autonomy_level")
+        if autonomy_level is None:
+            return
+        try:
+            autonomy_level = int(autonomy_level)
+        except (TypeError, ValueError):
+            return
+
+        # 1) Stamp the user's personal EnhancedAgent (Business only).
+        try:
+            import sys as _sys
+            if "/workspace/editions/business/src" not in _sys.path:
+                _sys.path.insert(0, "/workspace/editions/business/src")
+            from aictrlnet_business.models.enhanced_agent import EnhancedAgent  # type: ignore
+            from sqlalchemy import select, update as _update
+
+            result = await self.db.execute(
+                select(EnhancedAgent.id).where(EnhancedAgent.human_user_id == config.user_id)
+            )
+            agent_ids = [row[0] for row in result.all()]
+            if agent_ids:
+                await self.db.execute(
+                    _update(EnhancedAgent)
+                    .where(EnhancedAgent.id.in_(agent_ids))
+                    .values(autonomy_level=autonomy_level)
+                )
+        except Exception:
+            logger.debug("onboarding autonomy: agent stamp skipped", exc_info=True)
+
+        # 2) Stamp any active workflows attached to the user.
+        try:
+            workflow_ids = list(config.active_workflows or [])
+            if workflow_ids:
+                from models.community_complete import WorkflowDefinition
+                from sqlalchemy import update as _update
+
+                await self.db.execute(
+                    _update(WorkflowDefinition)
+                    .where(WorkflowDefinition.id.in_(workflow_ids))
+                    .values(autonomy_level=autonomy_level)
+                )
+        except Exception:
+            logger.debug("onboarding autonomy: workflow stamp skipped", exc_info=True)

@@ -264,12 +264,30 @@ class WorkflowExecutionService:
                 # via context.get("db")
                 workflow_name = execution.workflow.name if execution.workflow else ""
                 user_id = str(execution.user_id) if execution.user_id else "system"
+                tenant_id = str(execution.tenant_id) if getattr(execution, "tenant_id", None) else "default-tenant"
+
+                # AI Control Spectrum — resolve autonomy once per execution and
+                # inject into every node's context so the runtime gate can
+                # read `context["autonomy"]` without per-node DB lookups.
+                resolved_autonomy = await self._resolve_autonomy_for_execution(
+                    db=db,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    workflow_id=str(execution.workflow_id),
+                    execution=execution,
+                )
+
                 for ni in node_instances.values():
                     ni.context["db"] = db
                     ni.context["workflow_name"] = workflow_name
                     ni.context["workflow_id"] = str(execution.workflow_id)
+                    ni.context["workflow_definition_id"] = str(execution.workflow_id)
                     ni.context["user_id"] = user_id
+                    ni.context["tenant_id"] = tenant_id
                     ni.context["workflow_instance_id"] = str(execution_id)
+                    ni.context["is_dry_run"] = is_dry_run
+                    if resolved_autonomy is not None:
+                        ni.context["autonomy"] = resolved_autonomy
 
                 # Create workflow instance for node executor
                 workflow_instance = NodeWorkflowInstance(
@@ -334,6 +352,60 @@ class WorkflowExecutionService:
                     }
                 )
     
+    async def _resolve_autonomy_for_execution(
+        self,
+        *,
+        db,
+        tenant_id: str,
+        user_id: str,
+        workflow_id: str,
+        execution,
+    ):
+        """Resolve the effective autonomy policy once per execution.
+
+        Prefers the Business-edition resolver (full org/dept/agent cascade);
+        falls back to the Community stub when Business is not present.
+        Returns a `ResolvedAutonomy` dataclass (or None if resolution fails).
+        """
+        # Pull agent_id / department_id / organization_id hints from the
+        # execution trigger metadata if the caller set them.
+        trigger_meta = getattr(execution, "trigger_metadata", None) or {}
+        agent_id = trigger_meta.get("agent_id")
+        organization_id = trigger_meta.get("organization_id")
+        department_id = trigger_meta.get("department_id")
+
+        resolver = None
+        try:
+            # Business first — full hierarchy.
+            import sys as _sys
+            if "/workspace/editions/business/src" not in _sys.path:
+                _sys.path.insert(0, "/workspace/editions/business/src")
+            from aictrlnet_business.services.autonomy_resolver import (  # type: ignore
+                BusinessAutonomyResolver,
+            )
+            resolver = BusinessAutonomyResolver(db)
+        except Exception:
+            logger.debug("Business autonomy resolver unavailable, using Community stub")
+            try:
+                from services.autonomy_resolver import CommunityAutonomyResolver
+                resolver = CommunityAutonomyResolver(db)
+            except Exception:
+                logger.debug("No autonomy resolver available", exc_info=True)
+                return None
+
+        try:
+            return await resolver.resolve(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+                department_id=department_id,
+            )
+        except Exception:
+            logger.warning("Autonomy resolution failed; proceeding without policy", exc_info=True)
+            return None
+
     async def _send_execution_to_agent(self, execution_id: uuid.UUID, agent_id: uuid.UUID):
         """Send workflow execution request to agent via IAM."""
         # Create execution request message

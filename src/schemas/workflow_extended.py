@@ -16,6 +16,9 @@ class WorkflowDefinitionBase(BaseModel):
     tags: List[str] = Field(default_factory=list, description="Workflow tags")
     is_public: bool = Field(False, description="Is workflow public")
     created_by: str = Field(..., description="Creator user ID")
+    # AI Control Spectrum policy — resolved via hierarchy when null.
+    autonomy_level: Optional[int] = Field(None, ge=0, le=100, description="Autonomy level 0-100")
+    autonomy_locked: bool = Field(False, description="If true, workflow autonomy wins over agent-level setting")
 
 
 class WorkflowDefinitionCreate(WorkflowDefinitionBase):
@@ -32,6 +35,8 @@ class WorkflowDefinitionUpdate(BaseModel):
     category: Optional[str] = None
     tags: Optional[List[str]] = None
     is_public: Optional[bool] = None
+    autonomy_level: Optional[int] = Field(None, ge=0, le=100)
+    autonomy_locked: Optional[bool] = None
 
 
 class WorkflowDefinitionResponse(WorkflowDefinitionBase):
@@ -39,7 +44,7 @@ class WorkflowDefinitionResponse(WorkflowDefinitionBase):
     id: str = Field(..., description="Workflow definition ID")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Update timestamp")
-    
+
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
 # WorkflowTemplatePermission Schemas

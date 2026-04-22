@@ -47,6 +47,7 @@ from .endpoints import (
     pricing,  # Public pricing/plans endpoint
     subscription_plans,  # Subscription plan listing for frontend
     oauth2_login,  # OAuth2 social login (delegates to Business if available)
+    autonomy,  # AI Control Spectrum — workflow + resolve + preview subset
 )
 from . import platform_integration
 
@@ -61,6 +62,7 @@ api_router.include_router(mfa.router, tags=["mfa"])  # MFA router already has /u
 api_router.include_router(tasks.router, prefix="/tasks", tags=["tasks"])
 api_router.include_router(tasks_mcp.router, prefix="/tasks", tags=["tasks", "mcp"])
 api_router.include_router(workflows.router, prefix="/workflows", tags=["workflows"])
+api_router.include_router(autonomy.router, prefix="/autonomy", tags=["autonomy"])
 api_router.include_router(workflow_templates.router, tags=["workflow-templates"])  # Router already has prefix
 api_router.include_router(adapters.router, prefix="/adapters", tags=["adapters"])
 api_router.include_router(adapter_registry.router, prefix="/adapters", tags=["adapter-registry"])  # Registry endpoints

@@ -7,7 +7,7 @@ from datetime import datetime
 import time
 
 from .models import (
-    NodeInstance, NodeStatus, NodeExecutionRequest, 
+    NodeInstance, NodeStatus, NodeExecutionRequest,
     NodeExecutionResult, WorkflowInstance
 )
 from .registry import node_registry
@@ -15,15 +15,34 @@ from .state_manager import NodeStateManager, state_manager as default_state_mana
 from .error_handler import NodeErrorHandler, node_error_handler as default_error_handler
 from events.event_bus import event_bus
 
+# AI Control Spectrum — autonomy gate hook. Community default is the no-op;
+# Business's edition_nodes.py swaps in RuntimeAutonomyGate via
+# NodeExecutor.set_autonomy_gate() at startup.
+from services.autonomy_resolver import NoopAutonomyGate
+
 
 logger = logging.getLogger(__name__)
 
 
 class NodeExecutor:
     """Executor for running nodes in workflows."""
-    
+
+    # Class-level autonomy gate. Swappable via `set_autonomy_gate()` from the
+    # edition plugin hook. Default = no-op (Community).
+    _autonomy_gate: Any = NoopAutonomyGate()
+
+    @classmethod
+    def set_autonomy_gate(cls, gate: Any) -> None:
+        """Register the autonomy gate implementation.
+
+        Called from `nodes/edition_nodes.py::register_edition_nodes` in
+        Business to install `RuntimeAutonomyGate`. Safe to call multiple
+        times (last one wins).
+        """
+        cls._autonomy_gate = gate
+
     def __init__(
-        self, 
+        self,
         max_parallel_nodes: int = 10,
         state_manager: Optional[NodeStateManager] = None,
         error_handler: Optional[NodeErrorHandler] = None
@@ -32,7 +51,7 @@ class NodeExecutor:
         self._execution_semaphore = asyncio.Semaphore(max_parallel_nodes)
         self._running_nodes: Set[str] = set()
         self._lock = asyncio.Lock()
-        
+
         # Use provided managers or defaults
         self.state_manager = state_manager or default_state_manager
         self.error_handler = error_handler or default_error_handler
@@ -189,9 +208,43 @@ class NodeExecutor:
                     workflow_instance.id
                 )
                 
+                # AI Control Spectrum — autonomy gate check.
+                # May pause for approval (synthesized ApprovalRequest) or
+                # raise RuntimeError on rejection. No-op in Community.
+                # We pass node_instance.context (populated by
+                # WorkflowExecutionService with db, tenant_id, user_id,
+                # workflow_id, is_dry_run, autonomy) so the gate has
+                # everything it needs without reaching into other globals.
+                try:
+                    gate_context = dict(node_instance.context or {})
+                    # Thread the workflow-level dry-run flag if it lives
+                    # on variables rather than on node context.
+                    if "is_dry_run" not in gate_context:
+                        gate_context["is_dry_run"] = workflow_instance.variables.get(
+                            "_is_dry_run", False
+                        )
+                    await self._autonomy_gate.check(
+                        node_instance,
+                        workflow_instance,
+                        gate_context,
+                    )
+                    # Propagate any context additions (e.g. recent_approval_at)
+                    # back onto the node so subsequent nodes in the same
+                    # execution can see them.
+                    node_instance.context.update(gate_context)
+                except RuntimeError as gate_error:
+                    logger.warning(
+                        "Autonomy gate blocked node %s: %s",
+                        node_instance.id,
+                        gate_error,
+                    )
+                    return await self.error_handler.handle_node_error(
+                        gate_error, node_instance, workflow_instance
+                    )
+
                 # Create node from config
                 node = node_registry.create_node(node_instance.node_config)
-                
+
                 # Run the node with error handling
                 try:
                     result = await node.run(

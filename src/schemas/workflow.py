@@ -54,6 +54,9 @@ class WorkflowCreate(WorkflowBase):
     template_id: Optional[str] = None
     is_template: bool = False
     status: str = "active"  # draft, active, archived - default to active
+    # AI Control Spectrum — optional on create; falls back to org/user default.
+    autonomy_level: Optional[int] = Field(None, ge=0, le=100)
+    autonomy_locked: Optional[bool] = False
 
 
 class WorkflowUpdate(BaseModel):
@@ -64,6 +67,8 @@ class WorkflowUpdate(BaseModel):
     category: Optional[str] = None
     tags: Optional[List[str]] = None
     status: Optional[str] = None  # draft, active, archived
+    autonomy_level: Optional[int] = Field(None, ge=0, le=100)
+    autonomy_locked: Optional[bool] = None
 
 
 class WorkflowResponse(WorkflowBase, TimestampSchema):
@@ -75,6 +80,8 @@ class WorkflowResponse(WorkflowBase, TimestampSchema):
     template_id: Optional[str] = None
     status: str = "draft"  # draft, active, archived
     tenant_id: Optional[str] = None
+    autonomy_level: Optional[int] = None
+    autonomy_locked: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -103,7 +110,13 @@ class WorkflowResponse(WorkflowBase, TimestampSchema):
             result['is_template'] = metadata.get('is_template', False)
             result['template_id'] = metadata.get('template_id')
             result['status'] = metadata.get('status', 'draft')
-            
+
+            # Autonomy policy columns (new; may not exist on older rows)
+            if hasattr(data, 'autonomy_level'):
+                result['autonomy_level'] = getattr(data, 'autonomy_level')
+            if hasattr(data, 'autonomy_locked'):
+                result['autonomy_locked'] = bool(getattr(data, 'autonomy_locked') or False)
+
             return result
         
         return data

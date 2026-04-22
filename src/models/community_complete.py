@@ -46,9 +46,9 @@ class Task(Base, UUIDMixin, TimestampMixin, TenantMixin):
 
 class WorkflowDefinition(Base, UUIDMixin, TimestampMixin, TenantMixin):
     """Workflow definition model."""
-    
+
     __tablename__ = "workflow_definitions"
-    
+
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     definition: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -56,6 +56,14 @@ class WorkflowDefinition(Base, UUIDMixin, TimestampMixin, TenantMixin):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     tags: Mapped[Optional[List[str]]] = mapped_column(JSON)
     workflow_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, name="metadata")
+    # AI Control Spectrum — autonomy policy for this workflow.
+    # NULL = inherit from department/org/system default; 0-100 = explicit override.
+    autonomy_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # When True, the workflow's autonomy_level short-circuits the hierarchy
+    # cascade even if a more-specific scope (e.g. agent) has a setting.
+    autonomy_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
     
     # Relationships
     instances: Mapped[List["WorkflowInstance"]] = relationship(
