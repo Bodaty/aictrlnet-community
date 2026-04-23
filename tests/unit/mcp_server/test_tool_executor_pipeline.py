@@ -100,23 +100,26 @@ def _reset_rate_bucket(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _register_test_tools(monkeypatch):
-    """Register lightweight handlers for the pipeline tests.
+    """Stub a few handlers for pipeline tests.
 
-    The test tools are NOT removed from TOOL_HANDLERS after the test
-    because monkeypatch's setitem handles the revert automatically.
+    Every override goes through ``monkeypatch.setitem`` so the test
+    teardown reverts it. Tools used here (create_workflow,
+    list_workflows, evaluate_policy, check_compliance, query_analytics)
+    all exist in the real ``TOOL_HANDLERS`` — we're just swapping the
+    implementation to a no-side-effects stub for the duration of the
+    test so the pipeline-ordering assertions stay deterministic.
     """
     async def _ok(args, db, user_id):
         return {"ok": True, "args": args, "user_id": user_id}
 
-    async def _fail(args, db, user_id):
-        raise RuntimeError("boom")
-
-    monkeypatch.setitem(tool_executor.TOOL_HANDLERS, "list_workflows", _ok)
-    monkeypatch.setitem(tool_executor.TOOL_HANDLERS, "create_workflow", _ok)
-    monkeypatch.setitem(tool_executor.TOOL_HANDLERS, "evaluate_policy", _ok)
-    monkeypatch.setitem(tool_executor.TOOL_HANDLERS, "check_compliance", _ok)
-    # Register tools not in the default registry so plan tests can exercise them
-    tool_executor.TOOL_HANDLERS.setdefault("query_analytics", _ok)
+    for name in (
+        "list_workflows",
+        "create_workflow",
+        "evaluate_policy",
+        "check_compliance",
+        "query_analytics",
+    ):
+        monkeypatch.setitem(tool_executor.TOOL_HANDLERS, name, _ok)
 
 
 # ---------------------------------------------------------------------------

@@ -128,16 +128,13 @@ def test_wave2_descriptions_reference_positioning():
 
 
 def test_wave2_total_tool_count_at_least_42():
-    """11 original + 23 Wave 1 + 8 Wave 2 = 42.
+    """11 original + 23 Wave 1 + 8 Wave 2 = 42 after this wave.
 
-    Lower-bound assertion so future waves don't break this test.
-    Checks the three authoritative registries: tool defs (tools.py),
-    scope map, and plan-tier map. TOOL_HANDLERS can temporarily hold
-    test-registered handlers, so we treat that dict as a lower bound.
+    Lower-bound assertion so future waves don't break this file. The
+    three authoritative registries (tool defs, scopes, plan tiers)
+    must agree exactly; handlers are a 1:1 match.
     """
     all_defs = _all_tool_defs()
     assert len(all_defs) >= 42
-    assert len(tools.TOOL_SCOPES) >= 42
-    assert set(all_defs.keys()).issubset(set(tool_executor.TOOL_HANDLERS.keys()))
-    # Sanity: counts between the three registries agree
-    assert len(all_defs) == len(tools.TOOL_SCOPES)
+    assert len(tools.TOOL_SCOPES) == len(all_defs)
+    assert set(all_defs.keys()) == set(tool_executor.TOOL_HANDLERS.keys())
