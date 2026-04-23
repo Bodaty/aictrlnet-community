@@ -5512,6 +5512,343 @@ async def _handle_revoke_oauth2_token(
     return {"status": "feature_pending", "available": False}
 
 
+# ---------------------------------------------------------------------------
+# Wave 7 Track B3 handlers
+# ---------------------------------------------------------------------------
+
+
+# ---- B3.1 File versioning (direct SQL against mcp_file_versions) ----
+
+async def _handle_list_file_versions(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    rows = (await db.execute(
+        text("SELECT version, file_size, checksum_sha256, created_at FROM mcp_file_versions WHERE file_id = :f ORDER BY version DESC"),
+        {"f": arguments["file_id"]},
+    )).all()
+    return {
+        "file_id": arguments["file_id"],
+        "versions": [
+            {"version": r[0], "size": r[1], "checksum": r[2], "created_at": str(r[3])}
+            for r in rows
+        ],
+    }
+
+
+async def _handle_get_file_version(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    row = (await db.execute(
+        text("SELECT version, storage_path, file_size, checksum_sha256, content_type, created_at FROM mcp_file_versions WHERE file_id = :f AND version = :v"),
+        {"f": arguments["file_id"], "v": arguments["version"]},
+    )).first()
+    if not row:
+        raise ToolExecutionError(f"Version {arguments['version']} of {arguments['file_id']} not found")
+    return {
+        "file_id": arguments["file_id"], "version": row[0], "storage_path": row[1],
+        "size": row[2], "checksum": row[3], "content_type": row[4], "created_at": str(row[5]),
+    }
+
+
+async def _handle_generate_signed_file_url(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "message": "Signed-URL generation requires object-store integration (S3/GCS/Azure Blob).",
+        "file_id": arguments["file_id"],
+    }
+
+
+async def _handle_delete_file_version(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    try:
+        await db.execute(
+            text("DELETE FROM mcp_file_versions WHERE file_id = :f AND version = :v"),
+            {"f": arguments["file_id"], "v": arguments["version"]},
+        )
+        await db.commit()
+    except Exception as e:
+        raise ToolExecutionError(f"delete_file_version failed: {e}") from e
+    return {"file_id": arguments["file_id"], "version": arguments["version"], "deleted": True}
+
+
+# ---- B3.2 Notification preferences ----
+
+async def _handle_get_notification_preferences(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {"status": "feature_pending", "available": False, "preferences": {}}
+
+
+async def _handle_update_notification_preferences(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {"status": "feature_pending", "available": False}
+
+
+async def _handle_set_channel_notification_rules(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {"status": "feature_pending", "available": False, "channel_type": arguments["channel_type"]}
+
+
+async def _handle_set_notification_frequency(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {"status": "feature_pending", "available": False, "frequency": arguments["frequency"]}
+
+
+# ---- B3.3 Federation ----
+
+async def _handle_register_federated_peer(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.federation import FederationService  # type: ignore
+        svc = FederationService(db)
+        method = getattr(svc, "register_peer", None) or getattr(svc, "add_peer", None)
+        if method:
+            result = await method(
+                peer_url=arguments["peer_url"], peer_name=arguments["peer_name"],
+                shared_secret=arguments.get("shared_secret"),
+            )
+            return {"peer": _pa_dump(result)}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
+async def _handle_list_federated_peers(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.federation import FederationService  # type: ignore
+        svc = FederationService(db)
+        method = getattr(svc, "list_peers", None) or getattr(svc, "get_peers", None)
+        if method:
+            return {"peers": _pa_dump(await method())}
+    except Exception:
+        pass
+    return {"peers": [], "available": False, "status": "feature_pending"}
+
+
+async def _handle_discover_federated_capabilities(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.federation import FederationService  # type: ignore
+        svc = FederationService(db)
+        method = getattr(svc, "discover_capabilities", None)
+        if method:
+            return {"capabilities": _pa_dump(await method(peer_id=arguments["peer_id"]))}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
+async def _handle_share_resource_with_peer(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.federation import FederationService  # type: ignore
+        svc = FederationService(db)
+        method = getattr(svc, "share_resource", None)
+        if method:
+            result = await method(
+                peer_id=arguments["peer_id"],
+                resource_type=arguments["resource_type"],
+                resource_id=arguments["resource_id"],
+                permissions=arguments.get("permissions") or ["read"],
+            )
+            return {"shared": _pa_dump(result)}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
+# ---- B3.4 Template versioning ----
+
+async def _handle_list_template_versions(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    rows = (await db.execute(
+        text("SELECT version, change_summary, created_by, created_at FROM mcp_template_versions WHERE template_id = :t ORDER BY version DESC"),
+        {"t": arguments["template_id"]},
+    )).all()
+    return {
+        "template_id": arguments["template_id"],
+        "versions": [
+            {"version": r[0], "change_summary": r[1], "created_by": r[2], "created_at": str(r[3])}
+            for r in rows
+        ],
+    }
+
+
+async def _handle_configure_update_notifications(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {"status": "feature_pending", "available": False}
+
+
+# ---- B3.5 Canvas ----
+
+_BLOCK_TYPES = [
+    {"type": "chart", "description": "Line / bar / pie / scatter visualizations"},
+    {"type": "table", "description": "Tabular data with sorting + filtering"},
+    {"type": "form", "description": "Interactive form for gathering input"},
+    {"type": "diagram", "description": "Flow / tree / network diagrams"},
+    {"type": "log", "description": "Streaming log output"},
+    {"type": "text", "description": "Markdown / rich text"},
+]
+
+
+async def _handle_list_block_types(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {"block_types": _BLOCK_TYPES, "count": len(_BLOCK_TYPES)}
+
+
+async def _handle_create_canvas_block(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "message": "Canvas block creation is a frontend rendering contract — the backend does not persist canvas blocks today.",
+        "block_type": arguments["block_type"],
+    }
+
+
+async def _handle_render_canvas(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "message": "Canvas rendering is client-side only — clients consume block-shaped JSON and render.",
+    }
+
+
+# ---- B3.6 Org discovery polling ----
+
+async def _handle_get_org_discovery_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.org_discovery_service import OrgDiscoveryService  # type: ignore
+        svc = OrgDiscoveryService(db)
+        method = getattr(svc, "get_scan_status", None) or getattr(svc, "get_status", None)
+        if method:
+            return {"status": _pa_dump(await method(scan_id=arguments["scan_id"]))}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
+async def _handle_get_org_discovery_logs(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.org_discovery_service import OrgDiscoveryService  # type: ignore
+        svc = OrgDiscoveryService(db)
+        method = getattr(svc, "get_scan_logs", None) or getattr(svc, "get_logs", None)
+        if method:
+            return {"logs": _pa_dump(await method(
+                scan_id=arguments["scan_id"], limit=arguments.get("limit", 100),
+            ))}
+    except Exception:
+        pass
+    return {"logs": [], "status": "feature_pending"}
+
+
+# ---- B3.7 Adapter runtime discovery ----
+
+async def _handle_list_discovered_adapters_by_capability(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.adapter import AdapterService
+        svc = AdapterService(db)
+        adapters, total = await svc.discover_adapters(
+            edition="community", limit=200, search=arguments["capability"],
+        )
+        return {
+            "capability": arguments["capability"],
+            "adapters": [
+                {"id": str(a.id), "name": a.name, "capabilities": getattr(a, "capabilities", None)}
+                for a in adapters
+            ],
+            "count": len(adapters),
+        }
+    except Exception as e:
+        return {"status": "feature_pending", "error": str(e)}
+
+
+async def _handle_rescan_adapter_registry(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.adapter import AdapterService
+        svc = AdapterService(db)
+        method = getattr(svc, "rescan_registry", None) or getattr(svc, "refresh", None)
+        if method:
+            result = await method()
+            return {"rescanned": True, "result": _pa_dump(result)}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
+# ---- B3.8 Resource pools ----
+
+async def _handle_list_resource_pools(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.resource_pool_service import ResourcePoolService  # type: ignore
+        svc = ResourcePoolService(db)
+        method = getattr(svc, "list_pools", None) or getattr(svc, "list", None)
+        if method:
+            return {"pools": _pa_dump(await method())}
+    except Exception:
+        pass
+    return {"pools": [], "status": "feature_pending"}
+
+
+async def _handle_allocate_resource(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.resource_pool_service import ResourcePoolService  # type: ignore
+        svc = ResourcePoolService(db)
+        method = getattr(svc, "allocate", None)
+        if method:
+            result = await method(
+                pool_id=arguments["pool_id"],
+                allocation_size=arguments["allocation_size"],
+                assignee_type=arguments.get("assignee_type"),
+                assignee_id=arguments.get("assignee_id"),
+                user_id=user_id,
+            )
+            return {"allocation": _pa_dump(result)}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -5726,4 +6063,35 @@ TOOL_HANDLERS = {
     "get_mfa_status": _handle_get_mfa_status,
     "list_oauth2_clients": _handle_list_oauth2_clients,
     "revoke_oauth2_token": _handle_revoke_oauth2_token,
+    # Wave 7 B3.1: File versioning
+    "list_file_versions": _handle_list_file_versions,
+    "get_file_version": _handle_get_file_version,
+    "generate_signed_file_url": _handle_generate_signed_file_url,
+    "delete_file_version": _handle_delete_file_version,
+    # Wave 7 B3.2: Notification preferences
+    "get_notification_preferences": _handle_get_notification_preferences,
+    "update_notification_preferences": _handle_update_notification_preferences,
+    "set_channel_notification_rules": _handle_set_channel_notification_rules,
+    "set_notification_frequency": _handle_set_notification_frequency,
+    # Wave 7 B3.3: Federation
+    "register_federated_peer": _handle_register_federated_peer,
+    "list_federated_peers": _handle_list_federated_peers,
+    "discover_federated_capabilities": _handle_discover_federated_capabilities,
+    "share_resource_with_peer": _handle_share_resource_with_peer,
+    # Wave 7 B3.4: Template versioning
+    "list_template_versions": _handle_list_template_versions,
+    "configure_update_notifications": _handle_configure_update_notifications,
+    # Wave 7 B3.5: Canvas rendering
+    "list_block_types": _handle_list_block_types,
+    "create_canvas_block": _handle_create_canvas_block,
+    "render_canvas": _handle_render_canvas,
+    # Wave 7 B3.6: Org discovery polling
+    "get_org_discovery_status": _handle_get_org_discovery_status,
+    "get_org_discovery_logs": _handle_get_org_discovery_logs,
+    # Wave 7 B3.7: Adapter runtime discovery
+    "list_discovered_adapters_by_capability": _handle_list_discovered_adapters_by_capability,
+    "rescan_adapter_registry": _handle_rescan_adapter_registry,
+    # Wave 7 B3.8: Resource pools
+    "list_resource_pools": _handle_list_resource_pools,
+    "allocate_resource": _handle_allocate_resource,
 }

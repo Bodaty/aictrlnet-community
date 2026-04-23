@@ -254,6 +254,37 @@ TOOL_MIN_PLAN: dict[str, str] = {
     "get_mfa_status": "business",
     "list_oauth2_clients": "enterprise",
     "revoke_oauth2_token": "enterprise",
+    # Wave 7 B3.1 — File versioning
+    "list_file_versions": "business",
+    "get_file_version": "business",
+    "generate_signed_file_url": "business",
+    "delete_file_version": "business",
+    # Wave 7 B3.2 — Notification preferences
+    "get_notification_preferences": "business",
+    "update_notification_preferences": "business",
+    "set_channel_notification_rules": "business",
+    "set_notification_frequency": "business",
+    # Wave 7 B3.3 — Federation
+    "register_federated_peer": "enterprise",
+    "list_federated_peers": "enterprise",
+    "discover_federated_capabilities": "enterprise",
+    "share_resource_with_peer": "enterprise",
+    # Wave 7 B3.4 — Template versioning
+    "list_template_versions": "business",
+    "configure_update_notifications": "business",
+    # Wave 7 B3.5 — Canvas rendering
+    "create_canvas_block": "business",
+    "render_canvas": "business",
+    "list_block_types": "community",
+    # Wave 7 B3.6 — Org discovery polling
+    "get_org_discovery_status": "business",
+    "get_org_discovery_logs": "business",
+    # Wave 7 B3.7 — Adapter runtime discovery
+    "list_discovered_adapters_by_capability": "business",
+    "rescan_adapter_registry": "business",
+    # Wave 7 B3.8 — Resource pools
+    "list_resource_pools": "enterprise",
+    "allocate_resource": "enterprise",
 }
 
 # Tools that mutate the plan / subscription — executing one of these

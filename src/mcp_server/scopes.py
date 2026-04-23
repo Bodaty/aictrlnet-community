@@ -55,6 +55,7 @@ READ: Set[str] = {
     "read:federation",
     "read:mfa",
     "read:oauth2",
+    "read:canvas",
 }
 
 WRITE: Set[str] = {
@@ -180,6 +181,7 @@ _DESCRIPTIONS: dict[str, str] = {
     "read:oauth2": "List OAuth2 clients + tokens (Enterprise admin)",
     "write:oauth2": "Revoke OAuth2 tokens (emergency admin)",
     "write:canvas": "Create + render A2UI canvas blocks",
+    "read:canvas": "List A2UI canvas block types",
 }
 
 

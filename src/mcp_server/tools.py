@@ -775,6 +775,16 @@ COMMUNITY_TOOLS = [
             "required": ["workflow_id"],
         },
     },
+    # ---- Wave 7 B3.5 Community-tier canvas catalog ----
+    {
+        "name": "list_block_types",
+        "description": (
+            "List the A2UI canvas block types available (chart, table, "
+            "form, diagram, log, text). Clients use these to render "
+            "Claude's structured output in HitLai + messaging channels."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 BUSINESS_TOOLS = [
@@ -2197,6 +2207,167 @@ BUSINESS_TOOLS = [
         "description": "Read the caller's MFA enrollment status.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # ==== Wave 7 B3.1 — File versioning (feature_pending — needs service layer) ====
+    {
+        "name": "list_file_versions",
+        "description": "List version history for a staged file (feature_pending).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"file_id": {"type": "string"}},
+            "required": ["file_id"],
+        },
+    },
+    {
+        "name": "get_file_version",
+        "description": "Fetch a specific version of a staged file.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"file_id": {"type": "string"}, "version": {"type": "integer"}},
+            "required": ["file_id", "version"],
+        },
+    },
+    {
+        "name": "generate_signed_file_url",
+        "description": "Generate a time-limited signed download URL for a file.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string"},
+                "ttl_seconds": {"type": "integer", "default": 3600, "maximum": 86400},
+            },
+            "required": ["file_id"],
+        },
+    },
+    {
+        "name": "delete_file_version",
+        "description": "Delete a specific version of a staged file.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"file_id": {"type": "string"}, "version": {"type": "integer"}},
+            "required": ["file_id", "version"],
+        },
+    },
+    # ==== Wave 7 B3.2 — Notification preferences ====
+    {
+        "name": "get_notification_preferences",
+        "description": "Read the caller's notification preferences (which events on which channels).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "update_notification_preferences",
+        "description": "Update notification routing preferences per event type.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preferences": {"type": "object"},
+            },
+            "required": ["preferences"],
+        },
+    },
+    {
+        "name": "set_channel_notification_rules",
+        "description": "Configure delivery rules for a specific channel (Slack/Discord/etc).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "channel_type": {"type": "string"},
+                "rules": {"type": "object"},
+            },
+            "required": ["channel_type", "rules"],
+        },
+    },
+    {
+        "name": "set_notification_frequency",
+        "description": "Set digest frequency (immediate / hourly / daily).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "frequency": {"type": "string", "enum": ["immediate", "hourly", "daily"]},
+            },
+            "required": ["frequency"],
+        },
+    },
+    # ==== Wave 7 B3.4 — Template versioning ====
+    {
+        "name": "list_template_versions",
+        "description": "List version history of a workflow template.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"template_id": {"type": "string"}},
+            "required": ["template_id"],
+        },
+    },
+    {
+        "name": "configure_update_notifications",
+        "description": "Opt in / out of template-update notifications.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template_id": {"type": "string"},
+                "enabled": {"type": "boolean"},
+            },
+            "required": ["template_id", "enabled"],
+        },
+    },
+    # ==== Wave 7 B3.5 — Canvas rendering (Business) ====
+    {
+        "name": "create_canvas_block",
+        "description": "Create an A2UI canvas block (chart/table/form/etc) — feature_pending.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "block_type": {"type": "string"},
+                "data": {"type": "object"},
+            },
+            "required": ["block_type", "data"],
+        },
+    },
+    {
+        "name": "render_canvas",
+        "description": "Render a canvas (sequence of blocks) — feature_pending.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"blocks": {"type": "array", "items": {"type": "object"}}},
+            "required": ["blocks"],
+        },
+    },
+    # ==== Wave 7 B3.6 — Org discovery polling ====
+    {
+        "name": "get_org_discovery_status",
+        "description": "Poll the progress of an org_discovery_scan.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"scan_id": {"type": "string"}},
+            "required": ["scan_id"],
+        },
+    },
+    {
+        "name": "get_org_discovery_logs",
+        "description": "Read logs from an org_discovery_scan for detailed debugging.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scan_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 100, "maximum": 1000},
+            },
+            "required": ["scan_id"],
+        },
+    },
+    # ==== Wave 7 B3.7 — Adapter runtime discovery ====
+    {
+        "name": "list_discovered_adapters_by_capability",
+        "description": "List adapters that expose a specific capability (e.g. 'send_message', 'query').",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"capability": {"type": "string"}},
+            "required": ["capability"],
+        },
+    },
+    {
+        "name": "rescan_adapter_registry",
+        "description": "Force a re-scan of the adapter registry to pick up newly-installed adapters.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 ENTERPRISE_TOOLS = [
@@ -2575,6 +2746,68 @@ ENTERPRISE_TOOLS = [
             "required": ["token_id"],
         },
     },
+    # ==== Wave 7 B3.3 — Federation Management ====
+    {
+        "name": "register_federated_peer",
+        "description": "Register a federated AICtrlNet peer for cross-instance workflows.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "peer_url": {"type": "string"},
+                "peer_name": {"type": "string"},
+                "shared_secret": {"type": "string"},
+            },
+            "required": ["peer_url", "peer_name"],
+        },
+    },
+    {
+        "name": "list_federated_peers",
+        "description": "List federated peers this instance is connected to.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "discover_federated_capabilities",
+        "description": "Discover what a federated peer can do (its tool + adapter catalog).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"peer_id": {"type": "string"}},
+            "required": ["peer_id"],
+        },
+    },
+    {
+        "name": "share_resource_with_peer",
+        "description": "Share a resource (workflow / template / agent) with a federated peer.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "peer_id": {"type": "string"},
+                "resource_type": {"type": "string"},
+                "resource_id": {"type": "string"},
+                "permissions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["peer_id", "resource_type", "resource_id"],
+        },
+    },
+    # ==== Wave 7 B3.8 — Resource Pools ====
+    {
+        "name": "list_resource_pools",
+        "description": "List configured resource pools (LLM providers, compute, storage quotas).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "allocate_resource",
+        "description": "Allocate a resource from a pool to a workflow/agent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pool_id": {"type": "string"},
+                "allocation_size": {"type": "number"},
+                "assignee_type": {"type": "string"},
+                "assignee_id": {"type": "string"},
+            },
+            "required": ["pool_id", "allocation_size"],
+        },
+    },
 ]
 
 TOOL_SCOPES = {
@@ -2792,6 +3025,37 @@ TOOL_SCOPES = {
     "get_mfa_status": ["read:mfa"],
     "list_oauth2_clients": ["read:oauth2"],
     "revoke_oauth2_token": ["write:oauth2"],
+    # Wave 7 B3.1: File versioning
+    "list_file_versions": ["read:files"],
+    "get_file_version": ["read:files"],
+    "generate_signed_file_url": ["read:files"],
+    "delete_file_version": ["write:files"],
+    # Wave 7 B3.2: Notification preferences
+    "get_notification_preferences": ["read:notifications"],
+    "update_notification_preferences": ["write:notifications"],
+    "set_channel_notification_rules": ["write:notifications"],
+    "set_notification_frequency": ["write:notifications"],
+    # Wave 7 B3.3: Federation
+    "register_federated_peer": ["write:federation"],
+    "list_federated_peers": ["read:federation"],
+    "discover_federated_capabilities": ["read:federation"],
+    "share_resource_with_peer": ["write:federation"],
+    # Wave 7 B3.4: Template versioning
+    "list_template_versions": ["read:templates"],
+    "configure_update_notifications": ["write:templates"],
+    # Wave 7 B3.5: Canvas
+    "create_canvas_block": ["write:canvas"],
+    "render_canvas": ["write:canvas"],
+    "list_block_types": ["read:canvas"],
+    # Wave 7 B3.6: Org discovery polling
+    "get_org_discovery_status": ["read:org"],
+    "get_org_discovery_logs": ["read:org"],
+    # Wave 7 B3.7: Adapter runtime discovery
+    "list_discovered_adapters_by_capability": ["read:adapters"],
+    "rescan_adapter_registry": ["write:adapters"],
+    # Wave 7 B3.8: Resource pools
+    "list_resource_pools": ["read:org"],
+    "allocate_resource": ["write:org"],
 }
 
 
