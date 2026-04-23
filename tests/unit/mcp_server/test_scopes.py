@@ -69,10 +69,17 @@ def test_expand_passes_through_new_scopes():
     }
 
 
-def test_scopes_satisfy_with_legacy_granted():
-    # A key granted read:all can still satisfy a new per-resource check.
-    assert scopes_satisfy(["read:all"], ["read:policies"])
-    assert scopes_satisfy(["write:all"], ["write:knowledge"])
+def test_scopes_satisfy_phase_b_rejects_legacy():
+    """Phase B (2026-04-23): legacy read:all / write:all no longer
+    satisfy new-taxonomy requirements. Callers must present the
+    specific per-resource scope."""
+    assert not scopes_satisfy(["read:all"], ["read:policies"])
+    assert not scopes_satisfy(["write:all"], ["write:knowledge"])
+    # But ``expand_legacy`` still works if a caller opts in explicitly
+    # (used only by the one-time migration now).
+    from mcp_server.scopes import expand_legacy
+
+    assert "read:policies" in expand_legacy(["read:all"])
 
 
 def test_scopes_satisfy_rejects_missing():

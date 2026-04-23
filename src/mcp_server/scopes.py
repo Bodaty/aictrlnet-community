@@ -1,15 +1,15 @@
 """MCP API-key / OAuth2 scope registry.
 
-Per-resource taxonomy introduced by the MCP expansion plan. Replaces the
-coarse ``read:all`` / ``write:all`` scopes. Legacy scopes are still
-accepted during migration Phase A via ``expand_legacy()``; Phase B drops
-that acceptance.
+Per-resource taxonomy. The coarse ``read:all`` / ``write:all`` legacy
+scopes were migrated to per-resource scopes in Phase A (migration
+``f2b3c4d5e6a7``) and are **no longer accepted at scope-check time**
+as of Phase B (2026-04-23).
 
 Single source of truth for:
 - Which scope strings are valid (``validate_scope``)
 - Human descriptions (``describe_scope``) for API-key UI / OAuth2 consent
-- Legacy -> new expansion (``LEGACY_SCOPE_MAP``) used by the scope
-  migration and by the scope-check compatibility layer
+- Legacy -> new expansion (``LEGACY_SCOPE_MAP``) — retained for the
+  one-time migration only; not applied at request time.
 """
 
 from __future__ import annotations
@@ -147,9 +147,14 @@ def describe_scope(scope: str) -> str:
 def expand_legacy(scopes: Iterable[str]) -> Set[str]:
     """Expand a mixed list of legacy + new scopes to pure new taxonomy.
 
-    Used at migration time (to rewrite stored scopes) and at request
-    time during Phase A (to accept old-taxonomy keys without
-    re-issuing). Unknown scopes are dropped.
+    **Migration-only helper.** The one-time scope migration
+    (``f2b3c4d5e6a7``) uses this to rewrite stored scopes before
+    Phase B dropped request-time acceptance. Keeping the function
+    around in case a future migration needs it; ``scopes_satisfy``
+    no longer calls it.
+
+    Unknown scopes are dropped. Legacy scopes still in this map
+    expand to their new-taxonomy equivalents.
     """
     expanded: Set[str] = set()
     for s in scopes or ():
@@ -162,10 +167,19 @@ def expand_legacy(scopes: Iterable[str]) -> Set[str]:
 
 
 def scopes_satisfy(granted: Iterable[str], required: Iterable[str]) -> bool:
-    """Return True if ``granted`` (possibly containing legacy scopes) covers
-    every ``required`` scope.
+    """Return True if ``granted`` covers every ``required`` scope.
+
+    Phase B (2026-04-23): strict new-taxonomy match. Legacy scopes
+    (``read:all``, ``write:all``) are **no longer accepted** — any
+    API key / OAuth2 client still presenting them will fail the
+    scope check. All stored scopes were rewritten by the Phase A
+    migration, so this should not affect any principal that has
+    passed through the migration.
+
+    If a caller needs to re-admit legacy scopes for a controlled
+    rollout, wrap ``granted`` in ``expand_legacy()`` at the call site.
     """
-    granted_set = expand_legacy(granted)
+    granted_set = {s for s in (granted or ()) if s in ALL_SCOPES}
     return all(r in granted_set for r in required)
 
 

@@ -197,21 +197,24 @@ async def test_scope_check_denies_missing_scope():
 
 
 @pytest.mark.asyncio
-async def test_scope_check_accepts_legacy_read_all():
-    """Phase-A compatibility: an API key with read:all scope still works."""
+async def test_scope_check_rejects_legacy_read_all_phase_b():
+    """Phase B (2026-04-23): legacy read:all / write:all scopes are
+    no longer accepted at scope-check time. Stored scopes were
+    migrated to new taxonomy in Phase A; any key still presenting
+    read:all must have been issued out-of-band and must be re-scoped."""
     db = _StubSession()
     svc = _FakePlanService("business")
     key = _FakeApiKey(scopes=["read:all"])
-    out = await execute_tool(
-        tool_name="evaluate_policy",
-        arguments={"policy_id": "p1", "content": "x"},
-        db=db,
-        user_id="u1",
-        tenant_id="t1",
-        api_key=key,
-        plan_service=svc,
-    )
-    assert out["ok"] is True
+    with pytest.raises(ScopeError):
+        await execute_tool(
+            tool_name="evaluate_policy",
+            arguments={"policy_id": "p1", "content": "x"},
+            db=db,
+            user_id="u1",
+            tenant_id="t1",
+            api_key=key,
+            plan_service=svc,
+        )
 
 
 @pytest.mark.asyncio
