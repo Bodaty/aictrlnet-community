@@ -210,6 +210,19 @@ TOOL_MIN_PLAN: dict[str, str] = {
     "list_a2a_agents": "business",
     "register_runtime_webhook": "enterprise",
     "list_runtime_webhooks": "enterprise",
+    # Wave 7 B1.7 — Pods + Swarm
+    "form_pod": "business",
+    "list_pods": "business",
+    "get_pod_status": "business",
+    "dispatch_swarm": "business",
+    # Wave 7 B1.8 — AI Framework Cascading + ML Matching
+    "get_framework_cascade": "business",
+    "set_framework_priority": "business",
+    "get_execution_framework_trace": "business",
+    "match_agents_to_task": "business",
+    # Wave 7 B1.9 — Activity Timeline + Operations Center
+    "get_activity_timeline": "business",
+    "get_operations_status": "business",
 }
 
 # Tools that mutate the plan / subscription — executing one of these

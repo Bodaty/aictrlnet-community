@@ -4685,6 +4685,287 @@ async def _handle_list_runtime_webhooks(
     return {"webhooks": [], "available": False, "status": "feature_pending"}
 
 
+# ---------------------------------------------------------------------------
+# Wave 7 B1.7 — Pods + Swarm Intelligence
+# ---------------------------------------------------------------------------
+
+
+def _swarm_service(db):
+    _ensure_business_sys_path()
+    for path in (
+        "aictrlnet_business.services.swarm_intelligence_service",
+        "aictrlnet_business.services.pod_service",
+    ):
+        try:
+            import importlib
+            mod = importlib.import_module(path)
+            for cls_name in ("SwarmIntelligenceService", "PodService"):
+                Cls = getattr(mod, cls_name, None)
+                if Cls:
+                    try:
+                        return Cls(db)
+                    except TypeError:
+                        return Cls()
+        except Exception:
+            continue
+    return None
+
+
+async def _handle_form_pod(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _swarm_service(db)
+    if not svc:
+        return {"status": "feature_pending", "available": False}
+    method = getattr(svc, "form_pod", None) or getattr(svc, "create_pod", None)
+    if not method:
+        return {"status": "feature_pending", "available": False}
+    result = await method(
+        name=arguments.get("name"),
+        agent_ids=arguments["agent_ids"],
+        objective=arguments["objective"],
+        collaboration_contract=arguments.get("collaboration_contract"),
+        user_id=user_id,
+    )
+    return {"pod": _pa_dump(result)}
+
+
+async def _handle_list_pods(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _swarm_service(db)
+    if not svc:
+        return {"pods": [], "available": False, "status": "feature_pending"}
+    method = getattr(svc, "list_pods", None)
+    if not method:
+        return {"pods": [], "available": False}
+    result = await method(status=arguments.get("status"), limit=arguments.get("limit", 50))
+    return {"pods": _pa_dump(result)}
+
+
+async def _handle_get_pod_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _swarm_service(db)
+    if not svc:
+        return {"status": "feature_pending", "available": False}
+    method = getattr(svc, "get_pod_status", None) or getattr(svc, "get_pod", None)
+    if not method:
+        return {"status": "feature_pending", "available": False}
+    result = await method(pod_id=arguments["pod_id"])
+    return {"pod": _pa_dump(result)}
+
+
+async def _handle_dispatch_swarm(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _swarm_service(db)
+    if not svc:
+        return {"status": "feature_pending", "available": False}
+    method = getattr(svc, "dispatch_swarm", None) or getattr(svc, "dispatch", None)
+    if not method:
+        return {"status": "feature_pending", "available": False}
+    result = await method(
+        agent_ids=arguments["agent_ids"],
+        task=arguments["task"],
+        aggregation_strategy=arguments.get("aggregation_strategy", "best_of_n"),
+        user_id=user_id,
+    )
+    return {"swarm_result": _pa_dump(result)}
+
+
+# ---------------------------------------------------------------------------
+# Wave 7 B1.8 — Framework cascading + ML matching
+# ---------------------------------------------------------------------------
+
+
+async def _handle_get_framework_cascade(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    # Static default cascade per features doc; tenant override would
+    # be read from an LLMRegistry config row if that's shipped.
+    return {
+        "priority": [
+            "langchain",
+            "autogpt",
+            "crewai",
+            "autogen",
+            "semantic_kernel",
+        ],
+        "source": "default",
+        "note": (
+            "Default cascade per features doc §AI Framework Cascading. "
+            "Tenant-level override via set_framework_priority is "
+            "feature_pending until LLMRegistry stores per-tenant priority."
+        ),
+    }
+
+
+async def _handle_set_framework_priority(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "message": (
+            "Tenant-level framework priority override not yet shipped. "
+            "Edit framework order via server env vars for now."
+        ),
+        "priority": arguments["priority"],
+    }
+
+
+async def _handle_get_execution_framework_trace(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    # Look up execution record; frameworks-used would be in metadata
+    try:
+        from sqlalchemy import text
+        row = (
+            await db.execute(
+                text(
+                    "SELECT id, metadata FROM workflow_executions "
+                    "WHERE id = :id LIMIT 1"
+                ),
+                {"id": arguments["execution_id"]},
+            )
+        ).first()
+        if row:
+            meta = row[1] if isinstance(row[1], dict) else (
+                __import__("json").loads(row[1]) if isinstance(row[1], str) else {}
+            )
+            return {
+                "execution_id": arguments["execution_id"],
+                "framework_used": meta.get("framework_used") if isinstance(meta, dict) else None,
+                "cascade_attempts": meta.get("cascade_attempts", []) if isinstance(meta, dict) else [],
+            }
+    except Exception:
+        pass
+    return {
+        "execution_id": arguments["execution_id"],
+        "framework_used": None,
+        "cascade_attempts": [],
+        "status": "feature_pending",
+    }
+
+
+async def _handle_match_agents_to_task(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.intelligent_matching_utils import match_agents  # type: ignore
+    except Exception:
+        try:
+            from aictrlnet_business.services import intelligent_matching_utils as imu  # type: ignore
+            match_agents = getattr(imu, "match_agents", None) or getattr(imu, "match_agents_to_task", None)
+        except Exception:
+            match_agents = None
+    if match_agents is None:
+        return {
+            "matches": [],
+            "available": False,
+            "status": "feature_pending",
+            "message": "intelligent_matching_utils lacks an exported match_agents function.",
+        }
+    try:
+        results = await match_agents(
+            task=arguments["task"], top_k=int(arguments.get("top_k", 3)), db=db
+        ) if _is_coroutine_fn(match_agents) else match_agents(
+            task=arguments["task"], top_k=int(arguments.get("top_k", 3))
+        )
+    except Exception as e:
+        return {"matches": [], "error": str(e)}
+    return {"matches": _pa_dump(results), "task": arguments["task"]}
+
+
+def _is_coroutine_fn(fn) -> bool:
+    import asyncio
+    return asyncio.iscoroutinefunction(fn)
+
+
+# ---------------------------------------------------------------------------
+# Wave 7 B1.9 — Activity Timeline + Operations Status
+# ---------------------------------------------------------------------------
+
+
+async def _handle_get_activity_timeline(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Aggregate recent events across workflows / executions / approvals
+    / audit. Simple union of the last N entries across those tables."""
+    from datetime import datetime
+
+    from sqlalchemy import text
+
+    from core.tenant_context import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id() or "default"
+    limit = min(int(arguments.get("limit", 100)), 500)
+    event_types = arguments.get("event_types") or [
+        "workflow_execution",
+        "approval_decision",
+        "audit_log",
+    ]
+    since_s = arguments.get("since")
+    events: list = []
+
+    if "workflow_execution" in event_types:
+        try:
+            rows = (
+                await db.execute(
+                    text(
+                        "SELECT id, workflow_id, status, started_at "
+                        "FROM workflow_executions "
+                        "WHERE tenant_id = :t "
+                        "ORDER BY started_at DESC LIMIT :l"
+                    ),
+                    {"t": tenant_id, "l": limit},
+                )
+            ).all()
+            for r in rows:
+                events.append({
+                    "type": "workflow_execution",
+                    "id": str(r[0]),
+                    "workflow_id": str(r[1]) if r[1] else None,
+                    "status": r[2],
+                    "at": str(r[3]) if r[3] else None,
+                })
+        except Exception:
+            pass
+
+    # Sort combined events by timestamp (best-effort; strings OK since
+    # ISO-8601 sorts correctly)
+    events.sort(key=lambda e: e.get("at") or "", reverse=True)
+    return {
+        "events": events[:limit],
+        "count": len(events[:limit]),
+        "tenant_id": tenant_id,
+    }
+
+
+async def _handle_get_operations_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+
+    from core.tenant_context import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id() or "default"
+    counts = {}
+    for label, sql in (
+        ("workflows_active", "SELECT COUNT(*) FROM workflow_executions WHERE tenant_id = :t AND status IN ('running','pending')"),
+        ("pods_active", "SELECT COUNT(*) FROM mcp_pods WHERE tenant_id = :t AND status = 'active'"),
+        ("approvals_pending", "SELECT COUNT(*) FROM approval_requests WHERE tenant_id = :t AND status = 'pending'"),
+    ):
+        try:
+            row = (await db.execute(text(sql), {"t": tenant_id})).first()
+            counts[label] = int(row[0]) if row else 0
+        except Exception:
+            counts[label] = None
+    return {"tenant_id": tenant_id, "counts": counts}
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -4855,4 +5136,17 @@ TOOL_HANDLERS = {
     "list_a2a_agents": _handle_list_a2a_agents,
     "register_runtime_webhook": _handle_register_runtime_webhook,
     "list_runtime_webhooks": _handle_list_runtime_webhooks,
+    # Wave 7 B1.7: Pods + Swarm
+    "form_pod": _handle_form_pod,
+    "list_pods": _handle_list_pods,
+    "get_pod_status": _handle_get_pod_status,
+    "dispatch_swarm": _handle_dispatch_swarm,
+    # Wave 7 B1.8: Framework cascading + ML matching
+    "get_framework_cascade": _handle_get_framework_cascade,
+    "set_framework_priority": _handle_set_framework_priority,
+    "get_execution_framework_trace": _handle_get_execution_framework_trace,
+    "match_agents_to_task": _handle_match_agents_to_task,
+    # Wave 7 B1.9: Activity Timeline + Operations
+    "get_activity_timeline": _handle_get_activity_timeline,
+    "get_operations_status": _handle_get_operations_status,
 }

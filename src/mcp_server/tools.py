@@ -1894,6 +1894,148 @@ BUSINESS_TOOLS = [
             },
         },
     },
+    # ==== Wave 7 B1.7 — Pods + Swarm Intelligence ====
+    {
+        "name": "form_pod",
+        "description": (
+            "Form a pod — a coordinated group of agents that collaborate "
+            "on a shared task. v11 'pod formation' claim."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "agent_ids": {"type": "array", "items": {"type": "string"}},
+                "objective": {"type": "string"},
+                "collaboration_contract": {"type": "object"},
+            },
+            "required": ["agent_ids", "objective"],
+        },
+    },
+    {
+        "name": "list_pods",
+        "description": "List formed pods in the caller's tenant.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "limit": {"type": "integer", "default": 50, "maximum": 200},
+            },
+        },
+    },
+    {
+        "name": "get_pod_status",
+        "description": "Inspect a pod's current state + member agent statuses.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"pod_id": {"type": "string"}},
+            "required": ["pod_id"],
+        },
+    },
+    {
+        "name": "dispatch_swarm",
+        "description": (
+            "Dispatch a swarm pattern — multiple agents working "
+            "independently on variations of a task, results combined. "
+            "Useful for parallel research / brainstorming."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_ids": {"type": "array", "items": {"type": "string"}},
+                "task": {"type": "string"},
+                "aggregation_strategy": {
+                    "type": "string",
+                    "enum": ["best_of_n", "ensemble", "vote"],
+                    "default": "best_of_n",
+                },
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["agent_ids", "task"],
+        },
+    },
+    # ==== Wave 7 B1.8 — AI Framework Cascading + Matching ====
+    {
+        "name": "get_framework_cascade",
+        "description": (
+            "Show the current priority order for AI framework selection "
+            "(LangChain -> AutoGPT -> CrewAI -> AutoGen -> Semantic Kernel "
+            "or tenant override). Features-doc flagship claim."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "set_framework_priority",
+        "description": (
+            "Override the framework cascade order for this tenant. "
+            "Useful when a specific framework handles the workload better."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "priority": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Ordered list of framework names",
+                },
+            },
+            "required": ["priority"],
+        },
+    },
+    {
+        "name": "get_execution_framework_trace",
+        "description": (
+            "For a given workflow/agent execution, show which framework "
+            "actually handled it + any cascade attempts."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"execution_id": {"type": "string"}},
+            "required": ["execution_id"],
+        },
+    },
+    {
+        "name": "match_agents_to_task",
+        "description": (
+            "Given a task description, return the top-k best-matching "
+            "agents + confidence scores (ML-powered cosine similarity "
+            "over capability embeddings). Features-doc 'ML-Powered "
+            "Matching' claim."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string"},
+                "top_k": {"type": "integer", "default": 3, "maximum": 10},
+            },
+            "required": ["task"],
+        },
+    },
+    # ==== Wave 7 B1.9 — Activity Timeline + Operations Center ====
+    {
+        "name": "get_activity_timeline",
+        "description": (
+            "Unified activity feed — recent workflow executions, agent "
+            "actions, approvals, pod events, audit entries. Operations "
+            "center view."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since": {"type": "string", "format": "date-time"},
+                "limit": {"type": "integer", "default": 100, "maximum": 500},
+                "event_types": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
+    {
+        "name": "get_operations_status",
+        "description": (
+            "High-level operations dashboard — pods active, workflows "
+            "running, pending approvals, active alerts."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 ENTERPRISE_TOOLS = [
@@ -2329,6 +2471,19 @@ TOOL_SCOPES = {
     "list_a2a_agents": ["read:runtime_gateway"],
     "register_runtime_webhook": ["write:runtime_gateway"],
     "list_runtime_webhooks": ["read:runtime_gateway"],
+    # Wave 7 B1.7: Pods + Swarm
+    "form_pod": ["write:pods"],
+    "list_pods": ["read:pods"],
+    "get_pod_status": ["read:pods"],
+    "dispatch_swarm": ["write:pods"],
+    # Wave 7 B1.8: Framework cascading + ML matching
+    "get_framework_cascade": ["read:llm"],
+    "set_framework_priority": ["write:agents"],
+    "get_execution_framework_trace": ["read:analytics"],
+    "match_agents_to_task": ["read:agents"],
+    # Wave 7 B1.9: Activity timeline
+    "get_activity_timeline": ["read:analytics"],
+    "get_operations_status": ["read:analytics"],
 }
 
 
