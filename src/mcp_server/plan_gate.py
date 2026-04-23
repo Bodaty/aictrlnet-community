@@ -199,6 +199,17 @@ TOOL_MIN_PLAN: dict[str, str] = {
     "publish_to_org_marketplace": "business",
     "compose_marketplace_items": "business",
     "sync_public_marketplace_updates": "business",
+    # Wave 7 B1.5 — External platform native execution
+    "execute_n8n_workflow": "business",
+    "execute_zapier_zap": "business",
+    "execute_make_scenario": "business",
+    "execute_power_automate_flow": "business",
+    # Wave 7 B1.6 — OpenClaw + A2A (mostly feature_pending)
+    "evaluate_runtime_action": "business",
+    "get_delegation_chain": "business",
+    "list_a2a_agents": "business",
+    "register_runtime_webhook": "enterprise",
+    "list_runtime_webhooks": "enterprise",
 }
 
 # Tools that mutate the plan / subscription — executing one of these

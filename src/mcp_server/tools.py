@@ -1789,6 +1789,111 @@ BUSINESS_TOOLS = [
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # ==== Wave 7 B1.5 — External platform native execution ====
+    {
+        "name": "execute_n8n_workflow",
+        "description": (
+            "Execute a workflow on a registered n8n instance. Requires a "
+            "stored n8n credential. Native execution — cheaper than "
+            "browser_execute fallback."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "credential_id": {"type": "string"},
+                "workflow_id": {"type": "string"},
+                "input_data": {"type": "object"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["credential_id", "workflow_id"],
+        },
+    },
+    {
+        "name": "execute_zapier_zap",
+        "description": (
+            "Trigger a Zapier zap via stored Zapier webhook credential. "
+            "Native execution, no browser."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "credential_id": {"type": "string"},
+                "zap_id": {"type": "string"},
+                "input_data": {"type": "object"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["credential_id", "zap_id"],
+        },
+    },
+    {
+        "name": "execute_make_scenario",
+        "description": "Run a Make (Integromat) scenario natively.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "credential_id": {"type": "string"},
+                "scenario_id": {"type": "string"},
+                "input_data": {"type": "object"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["credential_id", "scenario_id"],
+        },
+    },
+    {
+        "name": "execute_power_automate_flow",
+        "description": "Run a Microsoft Power Automate flow natively.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "credential_id": {"type": "string"},
+                "flow_id": {"type": "string"},
+                "input_data": {"type": "object"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["credential_id", "flow_id"],
+        },
+    },
+    # ==== Wave 7 B1.6 — OpenClaw + A2A delegation ====
+    {
+        "name": "evaluate_runtime_action",
+        "description": (
+            "Run a pre-action evaluation through the OpenClaw runtime "
+            "gateway — check if a proposed agent action is allowed "
+            "given current policies. feature_pending — RuntimeGatewayService "
+            "not factored out yet; fallback attempts via agent_runtime_bridge."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "action": {"type": "string"},
+                "context": {"type": "object"},
+            },
+            "required": ["agent_id", "action"],
+        },
+    },
+    {
+        "name": "get_delegation_chain",
+        "description": (
+            "Return the delegation chain for a given agent invocation "
+            "(who delegated what to whom). Useful for audit of A2A flows."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"invocation_id": {"type": "string"}},
+            "required": ["invocation_id"],
+        },
+    },
+    {
+        "name": "list_a2a_agents",
+        "description": "List agents discoverable via A2A protocol.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "capabilities": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    },
 ]
 
 ENTERPRISE_TOOLS = [
@@ -2027,6 +2132,30 @@ ENTERPRISE_TOOLS = [
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # ==== Wave 7 B1.6 — Runtime gateway (Enterprise) ====
+    {
+        "name": "register_runtime_webhook",
+        "description": (
+            "Register an HMAC-signed bidirectional webhook with the "
+            "OpenClaw runtime gateway. feature_pending — runtime gateway "
+            "service not yet factored out."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "url": {"type": "string"},
+                "events": {"type": "array", "items": {"type": "string"}},
+                "secret": {"type": "string"},
+            },
+            "required": ["name", "url"],
+        },
+    },
+    {
+        "name": "list_runtime_webhooks",
+        "description": "List registered runtime-gateway webhooks.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 TOOL_SCOPES = {
@@ -2189,6 +2318,17 @@ TOOL_SCOPES = {
     "publish_to_org_marketplace": ["write:marketplace"],
     "compose_marketplace_items": ["write:marketplace"],
     "sync_public_marketplace_updates": ["write:marketplace"],
+    # Wave 7 B1.5: Platform native execution
+    "execute_n8n_workflow": ["write:platforms"],
+    "execute_zapier_zap": ["write:platforms"],
+    "execute_make_scenario": ["write:platforms"],
+    "execute_power_automate_flow": ["write:platforms"],
+    # Wave 7 B1.6: OpenClaw + A2A
+    "evaluate_runtime_action": ["write:runtime_gateway"],
+    "get_delegation_chain": ["read:runtime_gateway"],
+    "list_a2a_agents": ["read:runtime_gateway"],
+    "register_runtime_webhook": ["write:runtime_gateway"],
+    "list_runtime_webhooks": ["read:runtime_gateway"],
 }
 
 

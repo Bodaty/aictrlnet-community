@@ -4478,6 +4478,213 @@ async def _handle_sync_public_marketplace_updates(
     return {"synced": True, "result": _pa_dump(result)}
 
 
+# ---------------------------------------------------------------------------
+# Wave 7 B1.5 — External platform native execution
+# ---------------------------------------------------------------------------
+
+
+async def _execute_platform(
+    adapter_module: str,
+    adapter_class: str,
+    db: AsyncSession,
+    user_id: str,
+    credential_id: str,
+    target_id: str,
+    input_data: Optional[Dict[str, Any]] = None,
+    id_field: str = "workflow_id",
+) -> Dict[str, Any]:
+    """Shared platform-execution path — loads credential, instantiates
+    adapter, calls execute."""
+    # Load credential via CredentialService
+    try:
+        from core.services.credential_service import CredentialService
+        cred_svc = CredentialService(db) if hasattr(CredentialService, "__init__") else CredentialService()
+        # Platform name is the module slug before _adapter
+        platform = adapter_module.split(".")[-1].replace("_adapter", "")
+        creds = await cred_svc.get_credentials(platform, credential_id)
+    except Exception as e:
+        raise ToolExecutionError(f"Could not load credential {credential_id}: {e}") from e
+
+    # Instantiate adapter
+    try:
+        import importlib
+        mod = importlib.import_module(adapter_module)
+        AdapterCls = getattr(mod, adapter_class)
+        adapter = AdapterCls(credentials=creds)
+    except Exception as e:
+        return {"status": "feature_pending", "available": False, "message": str(e)}
+
+    execute = getattr(adapter, "execute_workflow", None) or getattr(adapter, "execute", None)
+    if not execute:
+        return {"status": "feature_pending", "available": False}
+
+    try:
+        result = await execute(target_id, input_data or {})
+    except Exception as e:
+        raise ToolExecutionError(f"Platform execution failed: {e}") from e
+
+    return {
+        id_field: target_id,
+        "result": _pa_dump(result) if hasattr(result, "model_dump") or isinstance(result, dict) else str(result),
+    }
+
+
+async def _handle_execute_n8n_workflow(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return await _execute_platform(
+        "services.platform_adapters.n8n_adapter", "N8nAdapter",
+        db, user_id,
+        arguments["credential_id"], arguments["workflow_id"],
+        arguments.get("input_data"), id_field="workflow_id",
+    )
+
+
+async def _handle_execute_zapier_zap(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return await _execute_platform(
+        "services.platform_adapters.zapier_adapter", "ZapierAdapter",
+        db, user_id,
+        arguments["credential_id"], arguments["zap_id"],
+        arguments.get("input_data"), id_field="zap_id",
+    )
+
+
+async def _handle_execute_make_scenario(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return await _execute_platform(
+        "services.platform_adapters.make_adapter", "MakeAdapter",
+        db, user_id,
+        arguments["credential_id"], arguments["scenario_id"],
+        arguments.get("input_data"), id_field="scenario_id",
+    )
+
+
+async def _handle_execute_power_automate_flow(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return await _execute_platform(
+        "services.platform_adapters.power_automate_adapter", "PowerAutomateAdapter",
+        db, user_id,
+        arguments["credential_id"], arguments["flow_id"],
+        arguments.get("input_data"), id_field="flow_id",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave 7 B1.6 — OpenClaw + A2A delegation (mostly feature_pending)
+# ---------------------------------------------------------------------------
+
+
+async def _handle_evaluate_runtime_action(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    # Try dedicated runtime_gateway_service first, then fall back to
+    # agent_runtime_bridge, then feature_pending.
+    for module_path, class_name in (
+        ("aictrlnet_enterprise.services.runtime_gateway_service", "RuntimeGatewayService"),
+        ("aictrlnet_business.services.agent_runtime_bridge", "AgentRuntimeBridge"),
+    ):
+        try:
+            import importlib
+            mod = importlib.import_module(module_path)
+            Cls = getattr(mod, class_name, None)
+            if Cls is None:
+                continue
+            svc = Cls(db) if "db" in Cls.__init__.__code__.co_varnames else Cls()
+            method = (
+                getattr(svc, "evaluate_action", None)
+                or getattr(svc, "pre_action_evaluate", None)
+                or getattr(svc, "evaluate_runtime_action", None)
+            )
+            if method:
+                result = await method(
+                    agent_id=arguments["agent_id"],
+                    action=arguments["action"],
+                    context=arguments.get("context") or {},
+                )
+                return {"result": _pa_dump(result)}
+        except Exception:
+            continue
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "message": (
+            "OpenClaw RuntimeGatewayService not yet factored out. "
+            "Tools for runtime-action evaluation will light up when the "
+            "service lands."
+        ),
+    }
+
+
+async def _handle_get_delegation_chain(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    for module_path, class_name in (
+        ("aictrlnet_enterprise.services.runtime_gateway_service", "RuntimeGatewayService"),
+        ("aictrlnet_business.services.agent_runtime_bridge", "AgentRuntimeBridge"),
+    ):
+        try:
+            import importlib
+            mod = importlib.import_module(module_path)
+            Cls = getattr(mod, class_name, None)
+            if Cls is None:
+                continue
+            svc = Cls(db) if "db" in Cls.__init__.__code__.co_varnames else Cls()
+            method = (
+                getattr(svc, "get_delegation_chain", None)
+                or getattr(svc, "get_chain", None)
+            )
+            if method:
+                result = await method(invocation_id=arguments["invocation_id"])
+                return {"chain": _pa_dump(result)}
+        except Exception:
+            continue
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "chain": None,
+    }
+
+
+async def _handle_list_a2a_agents(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        # A2A agent registry — try standard path
+        from aictrlnet_business.services.a2a_service import A2AService  # type: ignore
+        svc = A2AService(db)
+        method = getattr(svc, "list_agents", None) or getattr(svc, "discover_agents", None)
+        if method:
+            result = await method(capabilities=arguments.get("capabilities"))
+            return {"agents": _pa_dump(result)}
+    except Exception:
+        pass
+    return {"agents": [], "available": False, "status": "feature_pending"}
+
+
+async def _handle_register_runtime_webhook(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "message": "Runtime webhook registration pending RuntimeGatewayService.",
+        "name": arguments.get("name"),
+    }
+
+
+async def _handle_list_runtime_webhooks(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    return {"webhooks": [], "available": False, "status": "feature_pending"}
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -4637,4 +4844,15 @@ TOOL_HANDLERS = {
     "publish_to_org_marketplace": _handle_publish_to_org_marketplace,
     "compose_marketplace_items": _handle_compose_marketplace_items,
     "sync_public_marketplace_updates": _handle_sync_public_marketplace_updates,
+    # Wave 7 B1.5: External platform native execution
+    "execute_n8n_workflow": _handle_execute_n8n_workflow,
+    "execute_zapier_zap": _handle_execute_zapier_zap,
+    "execute_make_scenario": _handle_execute_make_scenario,
+    "execute_power_automate_flow": _handle_execute_power_automate_flow,
+    # Wave 7 B1.6: OpenClaw + A2A
+    "evaluate_runtime_action": _handle_evaluate_runtime_action,
+    "get_delegation_chain": _handle_get_delegation_chain,
+    "list_a2a_agents": _handle_list_a2a_agents,
+    "register_runtime_webhook": _handle_register_runtime_webhook,
+    "list_runtime_webhooks": _handle_list_runtime_webhooks,
 }
