@@ -4966,6 +4966,552 @@ async def _handle_get_operations_status(
     return {"tenant_id": tenant_id, "counts": counts}
 
 
+# ---------------------------------------------------------------------------
+# Wave 7 Track B2 handlers (compact — direct SQL against Track C tables)
+# ---------------------------------------------------------------------------
+
+
+# ---- B2.1 Cost ----
+
+async def _handle_get_cost_analytics(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.mcp_cost_service import MCPCostService  # type: ignore
+        svc = MCPCostService(db)
+        method = getattr(svc, "get_cost_analytics", None) or getattr(svc, "get_analytics", None)
+        if method:
+            return {"analytics": _pa_dump(await method(
+                period=arguments.get("period", "month"),
+                breakdown_by=arguments.get("breakdown_by"),
+            ))}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
+async def _handle_get_platform_cost_estimate(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.platform_cost_optimizer import PlatformCostOptimizer  # type: ignore
+        opt = PlatformCostOptimizer(db) if "db" in PlatformCostOptimizer.__init__.__code__.co_varnames else PlatformCostOptimizer()
+        method = getattr(opt, "estimate_cost", None) or getattr(opt, "get_estimate", None)
+        if method:
+            return {"estimates": _pa_dump(await method(
+                workflow_id=arguments["workflow_id"],
+                input_size=arguments.get("input_size"),
+            ))}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False, "workflow_id": arguments["workflow_id"]}
+
+
+async def _handle_optimize_workflow_cost(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.platform_cost_optimizer import PlatformCostOptimizer  # type: ignore
+        opt = PlatformCostOptimizer(db) if "db" in PlatformCostOptimizer.__init__.__code__.co_varnames else PlatformCostOptimizer()
+        method = getattr(opt, "suggest_optimizations", None) or getattr(opt, "optimize", None)
+        if method:
+            return {"suggestions": _pa_dump(await method(workflow_id=arguments["workflow_id"]))}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
+async def _handle_analyze_cost_trends(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.analytics import AnalyticsService  # type: ignore
+        svc = AnalyticsService(db)
+        method = getattr(svc, "analyze_cost_trends", None) or getattr(svc, "get_cost_trends", None)
+        if method:
+            return {"trends": _pa_dump(await method(days=arguments.get("days", 90)))}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
+# ---- B2.2 SLA (direct SQL against mcp_slas / mcp_sla_violations) ----
+
+async def _handle_create_sla(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    import uuid
+    from sqlalchemy import text
+    from core.tenant_context import get_current_tenant_id
+
+    sla_id = str(uuid.uuid4())
+    tenant_id = get_current_tenant_id() or "default"
+    try:
+        await db.execute(
+            text(
+                """
+                INSERT INTO mcp_slas (id, tenant_id, name, description, resource_type,
+                                      resource_id, metric, target_value, window_seconds,
+                                      severity, enabled, created_by)
+                VALUES (:id, :t, :name, :desc, :rt, :rid, :metric, :target, :window, :sev, true, :u)
+                """
+            ),
+            {
+                "id": sla_id, "t": tenant_id, "name": arguments["name"],
+                "desc": arguments.get("description"),
+                "rt": arguments["resource_type"], "rid": arguments.get("resource_id"),
+                "metric": arguments["metric"], "target": arguments["target_value"],
+                "window": arguments.get("window_seconds", 3600),
+                "sev": arguments.get("severity", "medium"), "u": user_id,
+            },
+        )
+        await db.commit()
+    except Exception as e:
+        raise ToolExecutionError(f"create_sla failed: {e}") from e
+    return {"sla_id": sla_id, "name": arguments["name"]}
+
+
+async def _handle_list_slas(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    from core.tenant_context import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id() or "default"
+    sql = "SELECT id, name, resource_type, metric, target_value, enabled FROM mcp_slas WHERE tenant_id = :t"
+    if arguments.get("enabled_only", True):
+        sql += " AND enabled = true"
+    rows = (await db.execute(text(sql), {"t": tenant_id})).all()
+    return {
+        "slas": [
+            {"id": r[0], "name": r[1], "resource_type": r[2], "metric": r[3],
+             "target_value": r[4], "enabled": r[5]}
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+async def _handle_get_sla_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    row = (await db.execute(
+        text("SELECT id, name, metric, target_value, window_seconds FROM mcp_slas WHERE id = :id"),
+        {"id": arguments["sla_id"]},
+    )).first()
+    if not row:
+        raise ToolExecutionError(f"SLA {arguments['sla_id']} not found")
+    # Violations count
+    viols = (await db.execute(
+        text("SELECT COUNT(*) FROM mcp_sla_violations WHERE sla_id = :id AND resolved = false"),
+        {"id": arguments["sla_id"]},
+    )).first()
+    return {
+        "sla_id": row[0], "name": row[1], "metric": row[2],
+        "target_value": row[3], "window_seconds": row[4],
+        "unresolved_violations": int(viols[0]) if viols else 0,
+    }
+
+
+async def _handle_get_sla_violations(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    from core.tenant_context import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id() or "default"
+    conds = ["tenant_id = :t"]
+    params: Dict[str, Any] = {"t": tenant_id}
+    if "resolved" in arguments:
+        conds.append("resolved = :r")
+        params["r"] = bool(arguments["resolved"])
+    if arguments.get("severity"):
+        conds.append("severity = :sev")
+        params["sev"] = arguments["severity"]
+    sql = f"SELECT id, sla_id, observed_value, target_value, severity, resolved, detected_at FROM mcp_sla_violations WHERE {' AND '.join(conds)} ORDER BY detected_at DESC LIMIT :l"
+    params["l"] = min(int(arguments.get("limit", 100)), 1000)
+    rows = (await db.execute(text(sql), params)).all()
+    return {
+        "violations": [
+            {"id": r[0], "sla_id": r[1], "observed": r[2], "target": r[3],
+             "severity": r[4], "resolved": r[5], "detected_at": str(r[6])}
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+async def _handle_get_sla_metrics(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    from core.tenant_context import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id() or "default"
+    period = arguments.get("period", "month")
+    interval_map = {"day": "1 day", "week": "7 days", "month": "30 days"}
+    interval = interval_map.get(period, "30 days")
+    try:
+        total = (await db.execute(
+            text(f"SELECT COUNT(*) FROM mcp_slas WHERE tenant_id = :t"),
+            {"t": tenant_id},
+        )).first()
+        breaches = (await db.execute(
+            text(f"SELECT COUNT(*) FROM mcp_sla_violations WHERE tenant_id = :t AND detected_at >= now() - interval '{interval}'"),
+            {"t": tenant_id},
+        )).first()
+        return {
+            "period": period,
+            "total_slas": int(total[0]) if total else 0,
+            "breaches_in_period": int(breaches[0]) if breaches else 0,
+        }
+    except Exception as e:
+        return {"status": "feature_pending", "error": str(e)}
+
+
+# ---- B2.3 Workflow versioning (direct SQL) ----
+
+async def _handle_list_workflow_versions(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    rows = (await db.execute(
+        text("SELECT version, created_by, created_at, change_summary FROM mcp_workflow_versions WHERE workflow_id = :w ORDER BY version DESC"),
+        {"w": arguments["workflow_id"]},
+    )).all()
+    return {
+        "workflow_id": arguments["workflow_id"],
+        "versions": [
+            {"version": r[0], "created_by": r[1], "created_at": str(r[2]), "change_summary": r[3]}
+            for r in rows
+        ],
+    }
+
+
+async def _handle_get_workflow_version(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    row = (await db.execute(
+        text("SELECT version, definition_json, created_at, change_summary FROM mcp_workflow_versions WHERE workflow_id = :w AND version = :v"),
+        {"w": arguments["workflow_id"], "v": arguments["version"]},
+    )).first()
+    if not row:
+        raise ToolExecutionError(f"Version {arguments['version']} of {arguments['workflow_id']} not found")
+    import json as _json
+    try:
+        definition = _json.loads(row[1]) if isinstance(row[1], str) else row[1]
+    except Exception:
+        definition = row[1]
+    return {
+        "workflow_id": arguments["workflow_id"],
+        "version": row[0],
+        "definition": definition,
+        "created_at": str(row[2]),
+        "change_summary": row[3],
+    }
+
+
+async def _handle_rollback_workflow(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    # Feature_pending — requires writing a new version from target_version
+    # back to the workflow, which needs WorkflowService integration.
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "message": "Rollback requires WorkflowService integration; list/get/compare are available now.",
+        "workflow_id": arguments["workflow_id"],
+        "target_version": arguments["target_version"],
+    }
+
+
+async def _handle_compare_workflow_versions(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    import json as _json
+
+    from sqlalchemy import text
+
+    rows = (await db.execute(
+        text("SELECT version, definition_json FROM mcp_workflow_versions WHERE workflow_id = :w AND version IN (:a, :b)"),
+        {"w": arguments["workflow_id"], "a": arguments["version_a"], "b": arguments["version_b"]},
+    )).all()
+    defs = {}
+    for r in rows:
+        try:
+            defs[r[0]] = _json.loads(r[1]) if isinstance(r[1], str) else r[1]
+        except Exception:
+            defs[r[0]] = {}
+    a = defs.get(arguments["version_a"]) or {}
+    b = defs.get(arguments["version_b"]) or {}
+    # Simple diff: node-count, edges-count
+    a_nodes = len(a.get("nodes", []) if isinstance(a, dict) else [])
+    b_nodes = len(b.get("nodes", []) if isinstance(b, dict) else [])
+    return {
+        "workflow_id": arguments["workflow_id"],
+        "version_a": arguments["version_a"],
+        "version_b": arguments["version_b"],
+        "summary": {
+            "nodes_a": a_nodes,
+            "nodes_b": b_nodes,
+            "nodes_delta": b_nodes - a_nodes,
+        },
+        "definition_a": a,
+        "definition_b": b,
+    }
+
+
+# ---- B2.4 RBAC (direct SQL against mcp_roles / mcp_role_permissions / mcp_user_roles) ----
+
+async def _handle_list_roles(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    from core.tenant_context import get_current_tenant_id
+    tenant_id = get_current_tenant_id() or "default"
+    rows = (await db.execute(
+        text("SELECT id, name, description, is_system FROM mcp_roles WHERE tenant_id = :t"),
+        {"t": tenant_id},
+    )).all()
+    return {
+        "roles": [
+            {"id": r[0], "name": r[1], "description": r[2], "is_system": r[3]}
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+async def _handle_get_role(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    role = (await db.execute(
+        text("SELECT id, name, description, is_system FROM mcp_roles WHERE id = :id"),
+        {"id": arguments["role_id"]},
+    )).first()
+    if not role:
+        raise ToolExecutionError(f"Role {arguments['role_id']} not found")
+    perms = (await db.execute(
+        text("SELECT resource, action, scope FROM mcp_role_permissions WHERE role_id = :id"),
+        {"id": arguments["role_id"]},
+    )).all()
+    return {
+        "id": role[0], "name": role[1], "description": role[2], "is_system": role[3],
+        "permissions": [
+            {"resource": p[0], "action": p[1], "scope": p[2]} for p in perms
+        ],
+    }
+
+
+async def _handle_create_role(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    import uuid
+    from sqlalchemy import text
+    from core.tenant_context import get_current_tenant_id
+
+    role_id = str(uuid.uuid4())
+    tenant_id = get_current_tenant_id() or "default"
+    try:
+        await db.execute(
+            text(
+                "INSERT INTO mcp_roles (id, tenant_id, name, description, is_system) "
+                "VALUES (:id, :t, :name, :desc, false)"
+            ),
+            {"id": role_id, "t": tenant_id, "name": arguments["name"],
+             "desc": arguments.get("description")},
+        )
+        for perm in (arguments.get("permissions") or []):
+            await db.execute(
+                text(
+                    "INSERT INTO mcp_role_permissions (id, role_id, resource, action) "
+                    "VALUES (:id, :r, :res, :act)"
+                ),
+                {"id": str(uuid.uuid4()), "r": role_id,
+                 "res": perm["resource"], "act": perm["action"]},
+            )
+        await db.commit()
+    except Exception as e:
+        raise ToolExecutionError(f"create_role failed: {e}") from e
+    return {"role_id": role_id, "name": arguments["name"]}
+
+
+async def _handle_grant_role(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    import uuid
+    from sqlalchemy import text
+    from core.tenant_context import get_current_tenant_id
+
+    tenant_id = get_current_tenant_id() or "default"
+    try:
+        await db.execute(
+            text(
+                "INSERT INTO mcp_user_roles (id, user_id, role_id, tenant_id, granted_by) "
+                "VALUES (:id, :u, :r, :t, :by) ON CONFLICT DO NOTHING"
+            ),
+            {"id": str(uuid.uuid4()), "u": arguments["user_id"],
+             "r": arguments["role_id"], "t": tenant_id, "by": user_id},
+        )
+        await db.commit()
+    except Exception as e:
+        raise ToolExecutionError(f"grant_role failed: {e}") from e
+    return {"user_id": arguments["user_id"], "role_id": arguments["role_id"], "granted": True}
+
+
+async def _handle_revoke_role(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+    try:
+        await db.execute(
+            text("DELETE FROM mcp_user_roles WHERE user_id = :u AND role_id = :r"),
+            {"u": arguments["user_id"], "r": arguments["role_id"]},
+        )
+        await db.commit()
+    except Exception as e:
+        raise ToolExecutionError(f"revoke_role failed: {e}") from e
+    return {"user_id": arguments["user_id"], "role_id": arguments["role_id"], "revoked": True}
+
+
+async def _handle_list_permissions(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    # Static catalog — one entry per scope in our taxonomy
+    from .scopes import READ, WRITE
+    perms = []
+    for s in sorted(READ):
+        _, resource = s.split(":", 1)
+        perms.append({"resource": resource, "action": "read", "scope": s})
+    for s in sorted(WRITE):
+        _, resource = s.split(":", 1)
+        perms.append({"resource": resource, "action": "write", "scope": s})
+    return {"permissions": perms, "count": len(perms)}
+
+
+# ---- B2.5 Template CRUD ----
+
+async def _handle_create_template(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.workflow_template_service import create_workflow_template_service
+        svc = create_workflow_template_service()
+        method = getattr(svc, "create_template", None)
+        if not method:
+            return {"status": "feature_pending", "available": False}
+        result = await method(
+            db=db, user_id=user_id,
+            name=arguments["name"],
+            description=arguments.get("description"),
+            category=arguments["category"],
+            definition=arguments.get("definition"),
+            parameters_schema=arguments.get("parameters_schema"),
+            source_workflow_id=arguments.get("source_workflow_id"),
+        )
+        return {"template_id": str(getattr(result, "id", result))}
+    except Exception as e:
+        return {"status": "feature_pending", "available": False, "error": str(e)}
+
+
+async def _handle_update_template(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.workflow_template_service import create_workflow_template_service
+        svc = create_workflow_template_service()
+        method = getattr(svc, "update_template", None)
+        if not method:
+            return {"status": "feature_pending", "available": False}
+        result = await method(
+            db=db, user_id=user_id,
+            template_id=arguments["template_id"],
+            definition=arguments.get("definition"),
+            parameters_schema=arguments.get("parameters_schema"),
+            change_summary=arguments.get("change_summary"),
+        )
+        return {"template_id": arguments["template_id"], "updated": bool(result)}
+    except Exception as e:
+        return {"status": "feature_pending", "available": False, "error": str(e)}
+
+
+async def _handle_delete_template(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.workflow_template_service import create_workflow_template_service
+        svc = create_workflow_template_service()
+        method = getattr(svc, "delete_template", None)
+        if not method:
+            return {"status": "feature_pending", "available": False}
+        result = await method(db=db, user_id=user_id, template_id=arguments["template_id"])
+        return {"template_id": arguments["template_id"], "deleted": bool(result)}
+    except Exception as e:
+        return {"status": "feature_pending", "available": False, "error": str(e)}
+
+
+# ---- B2.6 MFA + OAuth2 admin ----
+
+async def _handle_get_mfa_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    try:
+        from services.mfa_service import MFAService
+        svc = MFAService(db)
+        method = getattr(svc, "get_mfa_status", None) or getattr(svc, "get_status", None)
+        if method:
+            return {"mfa_status": _pa_dump(await method(user_id))}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
+async def _handle_list_oauth2_clients(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from sqlalchemy import select
+        from aictrlnet_business.models.oauth2 import OAuth2Client  # type: ignore
+        from core.tenant_context import get_current_tenant_id
+        tenant_id = get_current_tenant_id() or "default"
+        rows = (await db.execute(
+            select(OAuth2Client).where(OAuth2Client.tenant_id == tenant_id)
+        )).scalars().all()
+        return {
+            "clients": [
+                {"id": c.id, "client_name": c.client_name, "client_type": c.client_type,
+                 "is_active": c.is_active, "allowed_scopes": c.allowed_scopes,
+                 "created_at": str(getattr(c, "created_at", ""))}
+                for c in rows
+            ],
+            "count": len(rows),
+        }
+    except Exception:
+        return {"status": "feature_pending", "available": False, "clients": []}
+
+
+async def _handle_revoke_oauth2_token(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.oauth2_service_async import OAuth2ServiceAsync  # type: ignore
+        svc = OAuth2ServiceAsync(db)
+        method = getattr(svc, "revoke_token", None) or getattr(svc, "revoke_access_token", None)
+        if method:
+            await method(arguments["token_id"])
+            return {"token_id": arguments["token_id"], "revoked": True}
+    except Exception:
+        pass
+    return {"status": "feature_pending", "available": False}
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -5149,4 +5695,35 @@ TOOL_HANDLERS = {
     # Wave 7 B1.9: Activity Timeline + Operations
     "get_activity_timeline": _handle_get_activity_timeline,
     "get_operations_status": _handle_get_operations_status,
+    # Wave 7 B2.1: Cost
+    "get_cost_analytics": _handle_get_cost_analytics,
+    "get_platform_cost_estimate": _handle_get_platform_cost_estimate,
+    "optimize_workflow_cost": _handle_optimize_workflow_cost,
+    "analyze_cost_trends": _handle_analyze_cost_trends,
+    # Wave 7 B2.2: SLA
+    "create_sla": _handle_create_sla,
+    "list_slas": _handle_list_slas,
+    "get_sla_status": _handle_get_sla_status,
+    "get_sla_violations": _handle_get_sla_violations,
+    "get_sla_metrics": _handle_get_sla_metrics,
+    # Wave 7 B2.3: Workflow versioning
+    "list_workflow_versions": _handle_list_workflow_versions,
+    "get_workflow_version": _handle_get_workflow_version,
+    "rollback_workflow": _handle_rollback_workflow,
+    "compare_workflow_versions": _handle_compare_workflow_versions,
+    # Wave 7 B2.4: RBAC
+    "list_roles": _handle_list_roles,
+    "get_role": _handle_get_role,
+    "create_role": _handle_create_role,
+    "grant_role": _handle_grant_role,
+    "revoke_role": _handle_revoke_role,
+    "list_permissions": _handle_list_permissions,
+    # Wave 7 B2.5: Template CRUD
+    "create_template": _handle_create_template,
+    "update_template": _handle_update_template,
+    "delete_template": _handle_delete_template,
+    # Wave 7 B2.6: MFA + OAuth2 admin
+    "get_mfa_status": _handle_get_mfa_status,
+    "list_oauth2_clients": _handle_list_oauth2_clients,
+    "revoke_oauth2_token": _handle_revoke_oauth2_token,
 }

@@ -2036,6 +2036,167 @@ BUSINESS_TOOLS = [
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # ==== Wave 7 B2.1 — Cost Analysis ====
+    {
+        "name": "get_cost_analytics",
+        "description": "Cost analytics for the caller's tenant — LLM tokens, browser-actions, platform API calls.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "period": {"type": "string", "enum": ["day", "week", "month"], "default": "month"},
+                "breakdown_by": {"type": "string", "enum": ["provider", "workflow", "agent"]},
+            },
+        },
+    },
+    {
+        "name": "get_platform_cost_estimate",
+        "description": "Estimate cost of running a workflow on each supported platform — pick the cheapest.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "input_size": {"type": "integer"},
+            },
+            "required": ["workflow_id"],
+        },
+    },
+    {
+        "name": "optimize_workflow_cost",
+        "description": "Analyze a workflow and suggest cost-reducing edits (model downgrades, prompt compaction, platform switches).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"workflow_id": {"type": "string"}},
+            "required": ["workflow_id"],
+        },
+    },
+    # ==== Wave 7 B2.2 — SLA Management (Business) ====
+    {
+        "name": "create_sla",
+        "description": "Define an SLA target for a resource (workflow/agent/tool) + metric + window.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "resource_type": {"type": "string"},
+                "resource_id": {"type": "string"},
+                "metric": {"type": "string", "description": "e.g. latency_p95, success_rate"},
+                "target_value": {"type": "number"},
+                "window_seconds": {"type": "integer", "default": 3600},
+                "severity": {"type": "string", "default": "medium"},
+            },
+            "required": ["name", "resource_type", "metric", "target_value"],
+        },
+    },
+    {
+        "name": "list_slas",
+        "description": "List SLAs defined in the caller's tenant.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"enabled_only": {"type": "boolean", "default": True}},
+        },
+    },
+    {
+        "name": "get_sla_status",
+        "description": "Current status of an SLA — observed vs target, in-breach flag.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"sla_id": {"type": "string"}},
+            "required": ["sla_id"],
+        },
+    },
+    # ==== Wave 7 B2.3 — Workflow versioning ====
+    {
+        "name": "list_workflow_versions",
+        "description": "List version history of a workflow.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"workflow_id": {"type": "string"}},
+            "required": ["workflow_id"],
+        },
+    },
+    {
+        "name": "get_workflow_version",
+        "description": "Fetch a specific workflow version (definition snapshot).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "version": {"type": "integer"},
+            },
+            "required": ["workflow_id", "version"],
+        },
+    },
+    {
+        "name": "rollback_workflow",
+        "description": "Revert a workflow to a previous version. Current definition becomes a new version.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "target_version": {"type": "integer"},
+            },
+            "required": ["workflow_id", "target_version"],
+        },
+    },
+    {
+        "name": "compare_workflow_versions",
+        "description": "Diff two versions of a workflow (node-level + edge-level changes).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "version_a": {"type": "integer"},
+                "version_b": {"type": "integer"},
+            },
+            "required": ["workflow_id", "version_a", "version_b"],
+        },
+    },
+    # ==== Wave 7 B2.5 — Template CRUD ====
+    {
+        "name": "create_template",
+        "description": "Create a new workflow template (from scratch or from an existing workflow).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "category": {"type": "string"},
+                "definition": {"type": "object"},
+                "parameters_schema": {"type": "object"},
+                "source_workflow_id": {"type": "string"},
+            },
+            "required": ["name", "category"],
+        },
+    },
+    {
+        "name": "update_template",
+        "description": "Update a template (creates a new version automatically).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template_id": {"type": "string"},
+                "definition": {"type": "object"},
+                "parameters_schema": {"type": "object"},
+                "change_summary": {"type": "string"},
+            },
+            "required": ["template_id"],
+        },
+    },
+    {
+        "name": "delete_template",
+        "description": "Delete a template (soft delete — published copies remain).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"template_id": {"type": "string"}},
+            "required": ["template_id"],
+        },
+    },
+    # ==== Wave 7 B2.6 — MFA read (Business) ====
+    {
+        "name": "get_mfa_status",
+        "description": "Read the caller's MFA enrollment status.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 ENTERPRISE_TOOLS = [
@@ -2298,6 +2459,122 @@ ENTERPRISE_TOOLS = [
         "description": "List registered runtime-gateway webhooks.",
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # ==== Wave 7 B2.1 Enterprise cost ====
+    {
+        "name": "analyze_cost_trends",
+        "description": "Long-range cost trend analysis across tenants (Enterprise fleet view).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 90, "maximum": 365},
+            },
+        },
+    },
+    # ==== Wave 7 B2.2 Enterprise SLA ====
+    {
+        "name": "get_sla_violations",
+        "description": "List SLA violations (breaches) for the tenant.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "resolved": {"type": "boolean"},
+                "severity": {"type": "string"},
+                "limit": {"type": "integer", "default": 100, "maximum": 1000},
+            },
+        },
+    },
+    {
+        "name": "get_sla_metrics",
+        "description": "Aggregate SLA-compliance metrics for reporting.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "period": {"type": "string", "enum": ["day", "week", "month"], "default": "month"},
+            },
+        },
+    },
+    # ==== Wave 7 B2.4 RBAC ====
+    {
+        "name": "list_roles",
+        "description": "List roles defined in the tenant.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_role",
+        "description": "Get a role + its permissions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"role_id": {"type": "string"}},
+            "required": ["role_id"],
+        },
+    },
+    {
+        "name": "create_role",
+        "description": "Create a new role with a set of resource+action permissions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "permissions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "resource": {"type": "string"},
+                            "action": {"type": "string"},
+                        },
+                        "required": ["resource", "action"],
+                    },
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "grant_role",
+        "description": "Grant a role to a user.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string"},
+                "role_id": {"type": "string"},
+            },
+            "required": ["user_id", "role_id"],
+        },
+    },
+    {
+        "name": "revoke_role",
+        "description": "Revoke a user's role.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string"},
+                "role_id": {"type": "string"},
+            },
+            "required": ["user_id", "role_id"],
+        },
+    },
+    {
+        "name": "list_permissions",
+        "description": "List the permission catalog (all resource+action pairs known to the system).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    # ==== Wave 7 B2.6 OAuth2 admin (Enterprise) ====
+    {
+        "name": "list_oauth2_clients",
+        "description": "List OAuth2 machine-credential clients in the tenant.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "revoke_oauth2_token",
+        "description": "Emergency-revoke an OAuth2 access token (kill a leaked credential).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"token_id": {"type": "string"}},
+            "required": ["token_id"],
+        },
+    },
 ]
 
 TOOL_SCOPES = {
@@ -2484,6 +2761,37 @@ TOOL_SCOPES = {
     # Wave 7 B1.9: Activity timeline
     "get_activity_timeline": ["read:analytics"],
     "get_operations_status": ["read:analytics"],
+    # Wave 7 B2.1: Cost
+    "get_cost_analytics": ["read:cost"],
+    "get_platform_cost_estimate": ["read:cost"],
+    "optimize_workflow_cost": ["write:workflows"],
+    "analyze_cost_trends": ["read:cost"],
+    # Wave 7 B2.2: SLA
+    "create_sla": ["write:sla"],
+    "list_slas": ["read:sla"],
+    "get_sla_status": ["read:sla"],
+    "get_sla_violations": ["read:sla"],
+    "get_sla_metrics": ["read:analytics"],
+    # Wave 7 B2.3: Workflow versioning
+    "list_workflow_versions": ["read:workflows"],
+    "get_workflow_version": ["read:workflows"],
+    "rollback_workflow": ["write:workflows"],
+    "compare_workflow_versions": ["read:workflows"],
+    # Wave 7 B2.4: RBAC
+    "list_roles": ["read:roles"],
+    "get_role": ["read:roles"],
+    "create_role": ["write:roles"],
+    "grant_role": ["write:roles"],
+    "revoke_role": ["write:roles"],
+    "list_permissions": ["read:roles"],
+    # Wave 7 B2.5: Template CRUD
+    "create_template": ["write:templates"],
+    "update_template": ["write:templates"],
+    "delete_template": ["write:templates"],
+    # Wave 7 B2.6: MFA + OAuth2 admin
+    "get_mfa_status": ["read:mfa"],
+    "list_oauth2_clients": ["read:oauth2"],
+    "revoke_oauth2_token": ["write:oauth2"],
 }
 
 

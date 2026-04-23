@@ -223,6 +223,37 @@ TOOL_MIN_PLAN: dict[str, str] = {
     # Wave 7 B1.9 — Activity Timeline + Operations Center
     "get_activity_timeline": "business",
     "get_operations_status": "business",
+    # Wave 7 B2.1 — Cost analysis
+    "get_cost_analytics": "business",
+    "get_platform_cost_estimate": "business",
+    "optimize_workflow_cost": "business",
+    "analyze_cost_trends": "enterprise",
+    # Wave 7 B2.2 — SLA management
+    "create_sla": "business",
+    "list_slas": "business",
+    "get_sla_status": "business",
+    "get_sla_violations": "enterprise",
+    "get_sla_metrics": "enterprise",
+    # Wave 7 B2.3 — Workflow versioning
+    "list_workflow_versions": "business",
+    "get_workflow_version": "business",
+    "rollback_workflow": "business",
+    "compare_workflow_versions": "business",
+    # Wave 7 B2.4 — RBAC
+    "list_roles": "enterprise",
+    "get_role": "enterprise",
+    "create_role": "enterprise",
+    "grant_role": "enterprise",
+    "revoke_role": "enterprise",
+    "list_permissions": "enterprise",
+    # Wave 7 B2.5 — Template CRUD
+    "create_template": "business",
+    "update_template": "business",
+    "delete_template": "business",
+    # Wave 7 B2.6 — MFA + OAuth2 admin
+    "get_mfa_status": "business",
+    "list_oauth2_clients": "enterprise",
+    "revoke_oauth2_token": "enterprise",
 }
 
 # Tools that mutate the plan / subscription — executing one of these
