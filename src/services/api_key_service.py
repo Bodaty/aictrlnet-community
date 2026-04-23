@@ -64,6 +64,7 @@ class APIKeyService:
             key_salt=salt.hex(),  # Store as hex string
             scopes=data.scopes,
             allowed_ips=data.allowed_ips,
+            rate_limit_per_tool=data.rate_limit_per_tool or {},
             expires_at=expires_at
         )
         

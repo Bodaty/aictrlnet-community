@@ -185,6 +185,108 @@ _DESCRIPTIONS: dict[str, str] = {
 }
 
 
+# Semantic groups for UI rendering. Each scope maps to exactly one group so
+# the API-key picker + OAuth consent screen can render scopes as an accordion
+# per feature area. Unmapped scopes default to "other" — keep the map in sync
+# when adding scopes.
+SCOPE_GROUPS: dict[str, str] = {
+    # Workflows + Templates + Tasks
+    "read:workflows": "workflows",
+    "write:workflows": "workflows",
+    "read:templates": "workflows",
+    "write:templates": "workflows",
+    "read:tasks": "workflows",
+    "write:tasks": "workflows",
+    "read:patterns": "workflows",
+    "write:patterns": "workflows",
+    # Adapters + Self-extending + Platforms
+    "read:adapters": "adapters",
+    "write:adapters": "adapters",
+    "read:self_extending": "adapters",
+    "write:self_extending": "adapters",
+    "write:platforms": "adapters",
+    "write:browser": "adapters",
+    # Agents + LLM + Pods + Runtime
+    "read:agents": "agents",
+    "write:agents": "agents",
+    "read:autonomy": "agents",
+    "write:autonomy": "agents",
+    "read:llm": "agents",
+    "read:pods": "agents",
+    "write:pods": "agents",
+    "read:personal_agent": "agents",
+    "write:personal_agent": "agents",
+    "read:runtime_gateway": "agents",
+    "write:runtime_gateway": "agents",
+    # Approvals + Notifications + Conversations
+    "read:approvals": "approvals",
+    "write:approvals": "approvals",
+    "read:conversations": "approvals",
+    "write:conversations": "approvals",
+    "write:messaging": "approvals",
+    "read:notifications": "approvals",
+    "write:notifications": "approvals",
+    # Knowledge + Memory + Files + Canvas
+    "read:knowledge": "knowledge",
+    "write:knowledge": "knowledge",
+    "read:memory": "knowledge",
+    "write:memory": "knowledge",
+    "read:files": "knowledge",
+    "write:files": "knowledge",
+    "read:canvas": "knowledge",
+    "write:canvas": "knowledge",
+    # Governance (policies, compliance, audit, quality)
+    "read:policies": "governance",
+    "write:policies": "governance",
+    "read:compliance": "governance",
+    "read:audit": "governance",
+    "write:quality": "governance",
+    "read:sla": "governance",
+    "write:sla": "governance",
+    # Org + Company + Federation + Marketplace + Institute
+    "read:org": "org",
+    "write:org": "org",
+    "write:company": "org",
+    "read:federation": "org",
+    "write:federation": "org",
+    "read:marketplace": "org",
+    "write:marketplace": "org",
+    "read:institute": "org",
+    "write:institute": "org",
+    # Analytics + Cost + Fleet + License
+    "read:analytics": "analytics",
+    "read:cost": "analytics",
+    "read:fleet": "analytics",
+    "read:license": "analytics",
+    # Admin (account, auth, roles, credentials, mcp_client)
+    "read:subscription": "admin",
+    "read:usage": "admin",
+    "read:roles": "admin",
+    "write:roles": "admin",
+    "read:mfa": "admin",
+    "read:oauth2": "admin",
+    "write:oauth2": "admin",
+    "read:credentials": "admin",
+    "write:credentials": "admin",
+    "read:mcp_client": "admin",
+    "write:mcp_client": "admin",
+}
+
+
+def scope_group(scope: str) -> str:
+    """Return the semantic UI group for ``scope``, or ``"other"`` if unmapped."""
+    return SCOPE_GROUPS.get(scope, "other")
+
+
+def scope_action(scope: str) -> str:
+    """Return ``"read"`` or ``"write"`` based on scope prefix."""
+    if scope.startswith("read:"):
+        return "read"
+    if scope.startswith("write:"):
+        return "write"
+    return "other"
+
+
 def validate_scope(scope: str) -> bool:
     """Return True if ``scope`` is a known new-taxonomy scope string.
 
@@ -242,9 +344,12 @@ __all__ = [
     "ALL_SCOPES",
     "LEGACY_SCOPE_MAP",
     "READ",
+    "SCOPE_GROUPS",
     "WRITE",
     "describe_scope",
     "expand_legacy",
+    "scope_action",
+    "scope_group",
     "scopes_satisfy",
     "validate_scope",
 ]

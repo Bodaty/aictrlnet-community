@@ -13,8 +13,29 @@ from schemas import (
 )
 from services.api_key_service import APIKeyService
 from api.v1.endpoints._auth_helpers import get_safe_user_id
+from mcp_server.scopes import ALL_SCOPES, describe_scope, scope_action, scope_group
 
 router = APIRouter()
+
+
+@router.get("/api-keys/available-scopes")
+async def list_available_scopes():
+    """Return every valid API-key scope with its UI metadata.
+
+    Public endpoint — no auth required. Consumed by the HitLai API-key
+    picker + the OAuth consent screen so both render the same 71-scope
+    taxonomy without hardcoding.
+    """
+    scopes = [
+        {
+            "scope": s,
+            "description": describe_scope(s),
+            "group": scope_group(s),
+            "action": scope_action(s),
+        }
+        for s in sorted(ALL_SCOPES)
+    ]
+    return {"scopes": scopes, "total": len(scopes)}
 
 
 @router.get("/api-keys", response_model=APIKeyListResponse)
@@ -167,12 +188,19 @@ async def regenerate_api_key(
         reason="Regenerated"
     )
     
+    # Filter any legacy scopes that were valid at creation time but dropped
+    # at request-time in Wave 2 Phase B. Regenerating a legacy-scoped key
+    # otherwise fails the stricter validator. See also docs/MCP_V11_CLAIM_AUDIT.md.
+    from mcp_server.scopes import ALL_SCOPES
+    filtered_scopes = [s for s in (old_key.scopes or []) if s in ALL_SCOPES]
+
     # Create new key with same settings
     new_key_data = APIKeyCreate(
         name=f"{old_key.name} (Regenerated)",
         description=old_key.description,
-        scopes=old_key.scopes,
+        scopes=filtered_scopes,
         allowed_ips=old_key.allowed_ips,
+        rate_limit_per_tool=getattr(old_key, "rate_limit_per_tool", None) or None,
         expires_in_days=None  # Reset expiration
     )
     

@@ -33,6 +33,7 @@ class APIKey(Base):
     # Security settings
     scopes = Column(JSON, default=list)  # List of permissions
     allowed_ips = Column(JSON, default=list)  # IP whitelist (empty = all allowed)
+    rate_limit_per_tool = Column(JSON, default=dict)  # {"tool_name": {"per_minute": N, "per_day": M}}
     
     # Usage tracking
     last_used_at = Column(DateTime)
@@ -61,6 +62,7 @@ class APIKey(Base):
             "key_identifier": f"{self.key_prefix}...{self.key_suffix}",
             "scopes": self.scopes or [],
             "allowed_ips": self.allowed_ips or [],
+            "rate_limit_per_tool": self.rate_limit_per_tool or {},
             "last_used_at": self.last_used_at.isoformat() if self.last_used_at else None,
             "last_used_ip": self.last_used_ip,
             "usage_count": self.usage_count,
