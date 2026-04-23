@@ -155,7 +155,7 @@ def test_wave4_critical_required_fields():
         "execute_agent": {"agent_id", "prompt"},
         "get_llm_recommendation": {"task_type"},
         "promote_pattern_to_template": {"pattern_id"},
-        "automate_company": {"goals"},
+        "automate_company": {"request"},
         "get_company_automation_status": {"plan_id"},
         "verify_quality": {"content"},
     }

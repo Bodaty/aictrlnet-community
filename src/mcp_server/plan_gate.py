@@ -148,6 +148,8 @@ TOOL_MIN_PLAN: dict[str, str] = {
     "get_org_recommendations": "business",
     "automate_company": "business",
     "get_company_automation_status": "business",
+    "list_industry_packs": "business",
+    "detect_industry": "business",
     "verify_quality": "business",
     "assess_data_quality": "community",
     "list_quality_dimensions": "community",

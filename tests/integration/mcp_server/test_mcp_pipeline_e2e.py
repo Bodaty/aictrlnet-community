@@ -495,22 +495,62 @@ async def test_cross_tenant_send_channel_message_denied(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_automate_company_returns_poll_tool_and_plan_id(monkeypatch):
-    """Long-running contract: automate_company returns plan_id + poll_tool
-    immediately; the backing service runs generation asynchronously."""
+    """Long-running contract: automate_company returns plan_id +
+    poll_tool + industry summary. Uses the real orchestrator schema —
+    request + industry override — not the old goals-based shape.
+    """
     db = _StubDB()
 
-    class _StubCompanySvc:
-        def __init__(self, db): pass
-        async def generate_plan(self, user_id, goals, autonomy_level, dry_run):
-            return {"plan_id": "plan-42", "status": "generating"}
+    # Stub the orchestrator's return shape (AutomateCompanyResponse
+    # fields) and the schemas module.
+    class _StubResponse:
+        def __init__(self):
+            self.activation_plan_id = "plan-42"
+            self.organization_id = "org-1"
+            self.industry = "healthcare"
+            self.company_name = "Demo Health"
+            self.type = "automation_complete"
+            self.summary = {"workflows_created": 5}
+
+        def model_dump(self):
+            return {
+                "activation_plan_id": self.activation_plan_id,
+                "organization_id": self.organization_id,
+                "industry": self.industry,
+                "company_name": self.company_name,
+                "type": self.type,
+                "summary": self.summary,
+            }
+
+    class _StubOrchestrator:
+        async def automate_company(self, db, request, user_id):
+            assert request.request == "automate our health startup"
+            assert request.industry_override == "healthcare"
+            return _StubResponse()
+
+    class _StubRequest:
+        def __init__(self, request, organization_id=None,
+                      use_bodaty_template=True, industry_override=None):
+            self.request = request
+            self.organization_id = organization_id
+            self.use_bodaty_template = use_bodaty_template
+            self.industry_override = industry_override
 
     import sys
     import types
-    mod = types.ModuleType("aictrlnet_business.services.company_automation_service")
-    mod.CompanyAutomationService = _StubCompanySvc
-    monkeypatch.setitem(sys.modules,
-                        "aictrlnet_business.services.company_automation_service",
-                        mod)
+    mod_orch = types.ModuleType(
+        "aictrlnet_business.services.company_automation_orchestrator")
+    mod_orch.CompanyAutomationOrchestrator = _StubOrchestrator
+    monkeypatch.setitem(
+        sys.modules,
+        "aictrlnet_business.services.company_automation_orchestrator",
+        mod_orch,
+    )
+    mod_schema = types.ModuleType("aictrlnet_business.schemas.company_automation")
+    mod_schema.AutomateCompanyRequest = _StubRequest
+    monkeypatch.setitem(
+        sys.modules, "aictrlnet_business.schemas.company_automation", mod_schema
+    )
 
     h = MCPProtocolHandler(
         tools_registry=_full_registry(),
@@ -519,12 +559,14 @@ async def test_automate_company_returns_poll_tool_and_plan_id(monkeypatch):
     h.plan_service = _FakePlanService("business")
 
     resp = await _call_tool(h, "automate_company", {
-        "goals": ["increase revenue", "reduce manual work"],
+        "request": "automate our health startup",
+        "industry": "healthcare",
     })
     result = resp["result"]
     assert result["isError"] is False
     body = json.loads(result["content"][0]["text"])
     assert body["plan_id"] == "plan-42"
+    assert body["industry"] == "healthcare"
     assert body["poll_tool"] == "get_company_automation_status"
 
 

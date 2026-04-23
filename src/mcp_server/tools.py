@@ -1365,37 +1365,84 @@ BUSINESS_TOOLS = [
     {
         "name": "automate_company",
         "description": (
-            "Generate a complete automation plan for the caller's company "
-            "based on org landscape + goals. v11 '24 hours to a running "
-            "company' magic moment. Long-running: returns plan_id; poll "
-            "get_company_automation_status until status=ready."
+            "Generate a complete automation plan for the caller's company. "
+            "v11 '24 hours to a running company' magic moment. Takes a "
+            "natural-language request and an optional industry override — "
+            "the platform auto-detects industry and loads the matching "
+            "industry pack (41 available: healthcare, finance, ecommerce, "
+            "cybersecurity, etc.) which contributes compliance rules, "
+            "recommended workflows + agents, integrations, and KPIs. "
+            "Returns the activation plan id + workflow/agent summary; "
+            "poll get_company_automation_status for execution progress."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "goals": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Business goals to optimize for",
+                "request": {
+                    "type": "string",
+                    "description": "Natural-language automation request (e.g. 'automate our 50-person marketing SaaS')",
                 },
-                "autonomy_level": {"type": "integer", "minimum": 0, "maximum": 100, "default": 30},
-                "dry_run": {"type": "boolean", "default": True},
+                "industry": {
+                    "type": "string",
+                    "description": (
+                        "Optional industry override — id or alias "
+                        "(healthcare, finance, ecommerce, etc.). If omitted, "
+                        "the orchestrator detects from the request text. "
+                        "Call list_industry_packs to see options."
+                    ),
+                },
+                "organization_id": {
+                    "type": "string",
+                    "description": "Existing organization UUID, or omit to create a new one",
+                },
+                "use_bodaty_template": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Start from Bodaty's opinionated template",
+                },
                 "idempotency_key": {"type": "string"},
             },
-            "required": ["goals"],
+            "required": ["request"],
         },
     },
     {
         "name": "get_company_automation_status",
         "description": (
-            "Poll the status of an automate_company plan generation. "
-            "Returns status (generating | reviewing | ready | failed), "
-            "progress, and the plan itself once ready."
+            "Poll the status of a company activation plan. Returns status "
+            "(generating | approved | executing | completed | failed), "
+            "progress, and the full plan payload once ready."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {"plan_id": {"type": "string"}},
             "required": ["plan_id"],
+        },
+    },
+    # ---- Wave 4: Industry Packs (horizontal-first, vertical-enabled) ----
+    {
+        "name": "list_industry_packs",
+        "description": (
+            "List available industry packs — vertical-specific knowledge "
+            "bundles (compliance, workflows, agents, integrations, KPIs, "
+            "ROI) that customize company automation. 41 packs shipped "
+            "(healthcare, finance, ecommerce, cybersecurity, edtech, "
+            "government, etc.). Use the returned id as automate_company's "
+            "`industry` param."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "detect_industry",
+        "description": (
+            "Detect the best-fit industry pack for a piece of text "
+            "(e.g. a company description). Returns the pack id or null "
+            "if no match. Uses the same keyword/alias detection the "
+            "automate_company orchestrator uses internally."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
         },
     },
     # ---- Wave 4: Quality Verification ----
@@ -1762,6 +1809,8 @@ TOOL_SCOPES = {
     "get_org_recommendations": ["read:org"],
     "automate_company": ["write:company"],
     "get_company_automation_status": ["read:org"],
+    "list_industry_packs": ["read:org"],
+    "detect_industry": ["read:org"],
     "verify_quality": ["write:quality"],
     # Wave 4: Data Quality
     "assess_data_quality": ["read:workflows"],

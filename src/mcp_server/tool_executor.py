@@ -2890,67 +2890,171 @@ async def _handle_get_org_recommendations(
 async def _handle_automate_company(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    """Run Bobby's full company-automation orchestrator. Loads the
+    matching industry pack automatically (or uses ``industry`` override)
+    and returns the activation plan id + workflow/agent summary.
+    """
     _ensure_business_sys_path()
     try:
-        from aictrlnet_business.services.company_automation_service import (  # type: ignore
-            CompanyAutomationService,
+        from aictrlnet_business.schemas.company_automation import (  # type: ignore
+            AutomateCompanyRequest,
         )
-    except Exception:
-        raise ToolExecutionError("Company automation service unavailable")
+        from aictrlnet_business.services.company_automation_orchestrator import (  # type: ignore
+            CompanyAutomationOrchestrator,
+        )
+    except Exception as e:
+        raise ToolExecutionError(
+            f"Company automation orchestrator unavailable: {e}"
+        ) from e
 
-    svc = CompanyAutomationService(db)
-    method = (
-        getattr(svc, "generate_plan", None)
-        or getattr(svc, "create_plan", None)
-        or getattr(svc, "automate", None)
-    )
-    if not method:
-        raise ToolExecutionError("Automation plan generator unavailable")
+    from uuid import UUID
 
-    # Long-running op — service returns a plan_id, background task
-    # updates status. Consistent with v2 plan's long-running contract.
-    result = await method(
-        user_id=user_id,
-        goals=arguments["goals"],
-        autonomy_level=int(arguments.get("autonomy_level", 30)),
-        dry_run=bool(arguments.get("dry_run", True)),
+    org_id = arguments.get("organization_id")
+    try:
+        org_uuid = UUID(org_id) if org_id else None
+    except ValueError as e:
+        raise ToolExecutionError(f"Invalid organization_id: {e}") from e
+
+    request = AutomateCompanyRequest(
+        request=arguments["request"],
+        organization_id=org_uuid,
+        use_bodaty_template=bool(arguments.get("use_bodaty_template", True)),
+        industry_override=arguments.get("industry"),
     )
-    if hasattr(result, "model_dump"):
-        payload = result.model_dump()
-    elif hasattr(result, "dict"):
-        payload = result.dict()
-    elif isinstance(result, dict):
-        payload = result
-    else:
-        payload = {"plan_id": str(result)}
+
+    orchestrator = CompanyAutomationOrchestrator()
+    try:
+        result = await orchestrator.automate_company(
+            db=db, request=request, user_id=user_id
+        )
+    except ValueError as e:
+        raise ToolExecutionError(str(e)) from e
+
+    payload = (
+        result.model_dump() if hasattr(result, "model_dump")
+        else result.dict() if hasattr(result, "dict")
+        else (result if isinstance(result, dict) else {"result": str(result)})
+    )
+    # Normalize key names — the orchestrator returns activation_plan_id
+    # but we advertise plan_id for the polling contract.
+    if "activation_plan_id" in payload and "plan_id" not in payload:
+        payload["plan_id"] = str(payload["activation_plan_id"])
     payload.setdefault("poll_tool", "get_company_automation_status")
+    # Cast UUIDs so json.dumps in the protocol layer doesn't choke
+    if "organization_id" in payload and payload["organization_id"] is not None:
+        payload["organization_id"] = str(payload["organization_id"])
+    if "activation_plan_id" in payload and payload["activation_plan_id"] is not None:
+        payload["activation_plan_id"] = str(payload["activation_plan_id"])
     return payload
 
 
 async def _handle_get_company_automation_status(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    """Query CompanyActivationPlan by id and return the status + phases.
+
+    Mirrors the GET /plans/{plan_id} endpoint so Claude polls the same
+    source of truth the HitLai UI does.
+    """
     _ensure_business_sys_path()
     try:
-        from aictrlnet_business.services.company_automation_service import (  # type: ignore
-            CompanyAutomationService,
+        from sqlalchemy import select
+
+        from aictrlnet_business.models.company_automation import (  # type: ignore
+            CompanyActivationPlan,
         )
     except Exception:
         return {"status": "unavailable", "available": False}
 
-    svc = CompanyAutomationService(db)
-    method = (
-        getattr(svc, "get_plan_status", None)
-        or getattr(svc, "get_status", None)
-    )
-    if not method:
-        return {"status": "unavailable", "available": False}
-    result = await method(plan_id=arguments["plan_id"], user_id=user_id)
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    return {"status": result}
+    plan = (
+        await db.execute(
+            select(CompanyActivationPlan).where(
+                CompanyActivationPlan.id == arguments["plan_id"]
+            )
+        )
+    ).scalar_one_or_none()
+    if not plan:
+        raise ToolExecutionError(f"Plan {arguments['plan_id']} not found")
+
+    return {
+        "plan_id": str(plan.id),
+        "organization_id": str(getattr(plan, "organization_id", "") or ""),
+        "name": getattr(plan, "name", None),
+        "status": getattr(plan, "status", None),
+        "industry": getattr(plan, "industry", None),
+        "phases": getattr(plan, "phases", None),
+        "current_phase": getattr(plan, "current_phase", None),
+        "progress_percent": getattr(plan, "progress_percent", None),
+        "created_at": str(getattr(plan, "created_at", "")),
+        "updated_at": str(getattr(plan, "updated_at", "")),
+    }
+
+
+async def _handle_list_industry_packs(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """List the 41 available industry packs. Each pack bundles
+    compliance, workflows, agents, integrations, KPIs, ROI calc for
+    a vertical. Used by automate_company to customize the activation
+    plan."""
+    _ensure_business_sys_path()
+    try:
+        from services.industry_pack_loader import get_industry_pack_loader  # type: ignore
+    except Exception:
+        try:
+            from services.industry_pack_loader import IndustryPackLoader  # type: ignore
+            loader = IndustryPackLoader()
+        except Exception as e:
+            return {
+                "packs": [],
+                "available": False,
+                "message": f"Industry pack loader unavailable: {e}",
+            }
+    else:
+        loader = get_industry_pack_loader()
+
+    method = getattr(loader, "list_industries", None)
+    if method is None:
+        return {"packs": [], "available": False}
+    industries = method()
+    return {
+        "packs": industries,
+        "count": len(industries) if hasattr(industries, "__len__") else 0,
+    }
+
+
+async def _handle_detect_industry(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Detect the best-fit industry pack for arbitrary text.
+
+    Uses the same loader the orchestrator uses — keyword + alias match.
+    Returns None if no pack matches (caller can fall through to a
+    generic template)."""
+    _ensure_business_sys_path()
+    try:
+        from services.industry_pack_loader import get_industry_pack_loader  # type: ignore
+    except Exception:
+        try:
+            from services.industry_pack_loader import IndustryPackLoader  # type: ignore
+            loader = IndustryPackLoader()
+        except Exception as e:
+            return {
+                "industry": None,
+                "available": False,
+                "message": f"Industry pack loader unavailable: {e}",
+            }
+    else:
+        loader = get_industry_pack_loader()
+
+    industry_id = loader.detect_industry(arguments["text"]) if hasattr(
+        loader, "detect_industry"
+    ) else None
+    return {
+        "industry": industry_id,
+        "text_length": len(arguments["text"]),
+        "matched": industry_id is not None,
+    }
 
 
 # ---- Quality Verification ----
@@ -3791,6 +3895,8 @@ TOOL_HANDLERS = {
     "get_org_recommendations": _handle_get_org_recommendations,
     "automate_company": _handle_automate_company,
     "get_company_automation_status": _handle_get_company_automation_status,
+    "list_industry_packs": _handle_list_industry_packs,
+    "detect_industry": _handle_detect_industry,
     "verify_quality": _handle_verify_quality,
     # Wave 5: Institute
     "list_institute_modules": _handle_list_institute_modules,
