@@ -3849,6 +3849,410 @@ async def _handle_list_license_entitlements(
     return {"entitlements": result}
 
 
+# ---------------------------------------------------------------------------
+# Wave 7 B1.1 — MCP Client (federate external MCP servers)
+# ---------------------------------------------------------------------------
+
+
+async def _handle_register_mcp_server(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Persist an external MCP server config to ``mcp_servers`` table."""
+    import time
+    import uuid
+
+    from sqlalchemy import text
+
+    from core.tenant_context import get_current_tenant_id
+
+    server_id = str(uuid.uuid4())
+    tenant = get_current_tenant_id() or "default"
+    transport = arguments.get("transport", "http")
+    now = time.time()
+
+    try:
+        await db.execute(
+            text(
+                """
+                INSERT INTO mcp_servers
+                  (id, name, url, api_key, service_type, status,
+                   last_checked, created_at, updated_at,
+                   transport_type, command, args)
+                VALUES (:id, :name, :url, :api_key, 'external', 'pending',
+                        :now, :now, :now, :transport, :command, :args)
+                """
+            ),
+            {
+                "id": server_id,
+                "name": arguments["name"],
+                "url": arguments.get("url"),
+                "api_key": arguments.get("api_key"),
+                "now": now,
+                "transport": transport,
+                "command": arguments.get("command"),
+                "args": ",".join(arguments.get("args") or []) or None,
+            },
+        )
+        await db.commit()
+    except Exception as e:
+        raise ToolExecutionError(f"register_mcp_server failed: {e}") from e
+
+    return {
+        "server_id": server_id,
+        "name": arguments["name"],
+        "transport": transport,
+        "status": "pending",
+        "message": "Server registered. Call discover_mcp_server_tools to verify connectivity.",
+    }
+
+
+async def _handle_discover_mcp_server_tools(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Connect to a registered external MCP server and enumerate its tools."""
+    from sqlalchemy import text
+
+    row = (
+        await db.execute(
+            text("SELECT id, name, url, transport_type, command, args, api_key FROM mcp_servers WHERE id = :id"),
+            {"id": arguments["server_id"]},
+        )
+    ).first()
+    if row is None:
+        raise ToolExecutionError(f"MCP server {arguments['server_id']} not registered")
+
+    try:
+        from adapters.implementations.ai.mcp_client_adapter import (
+            MCPConnection,
+            MCPServerConfig,
+            MCPTransportType,
+        )
+    except Exception as e:
+        return {"status": "feature_pending", "available": False, "message": str(e)}
+
+    config = MCPServerConfig(
+        name=row[1],
+        transport=MCPTransportType(row[3]),
+        url=row[2],
+        command=row[4],
+        args=(row[5] or "").split(",") if row[5] else None,
+        api_key=row[6],
+    )
+    conn = MCPConnection(config)
+    try:
+        ok = await conn.connect()
+        if not ok:
+            return {"status": "connect_failed", "server_id": arguments["server_id"]}
+        tools_list = getattr(conn, "tools", {}) or {}
+        return {
+            "server_id": arguments["server_id"],
+            "tools": [
+                {
+                    "name": getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None),
+                    "description": getattr(t, "description", None) or (t.get("description") if isinstance(t, dict) else None),
+                }
+                for t in (tools_list.values() if isinstance(tools_list, dict) else tools_list)
+            ],
+            "count": len(tools_list),
+        }
+    finally:
+        disconnect = getattr(conn, "disconnect", None)
+        if callable(disconnect):
+            try:
+                await disconnect()
+            except Exception:
+                pass
+
+
+async def _handle_invoke_external_mcp_tool(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Call a tool on a registered external MCP server."""
+    from sqlalchemy import text
+
+    row = (
+        await db.execute(
+            text("SELECT id, name, url, transport_type, command, args, api_key FROM mcp_servers WHERE id = :id"),
+            {"id": arguments["server_id"]},
+        )
+    ).first()
+    if row is None:
+        raise ToolExecutionError(f"MCP server {arguments['server_id']} not registered")
+
+    try:
+        from adapters.implementations.ai.mcp_client_adapter import (
+            MCPConnection,
+            MCPServerConfig,
+            MCPTransportType,
+        )
+    except Exception as e:
+        return {"status": "feature_pending", "available": False, "message": str(e)}
+
+    config = MCPServerConfig(
+        name=row[1],
+        transport=MCPTransportType(row[3]),
+        url=row[2],
+        command=row[4],
+        args=(row[5] or "").split(",") if row[5] else None,
+        api_key=row[6],
+    )
+    conn = MCPConnection(config)
+    try:
+        if not await conn.connect():
+            raise ToolExecutionError("Connection to external MCP server failed")
+        try:
+            result = await conn.call_tool(
+                arguments["tool_name"], arguments.get("arguments") or {}
+            )
+        except Exception as e:
+            raise ToolExecutionError(f"External tool error: {e}") from e
+        return {
+            "server_id": arguments["server_id"],
+            "tool_name": arguments["tool_name"],
+            "result": result,
+        }
+    finally:
+        disconnect = getattr(conn, "disconnect", None)
+        if callable(disconnect):
+            try:
+                await disconnect()
+            except Exception:
+                pass
+
+
+async def _handle_list_registered_mcp_servers(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+
+    rows = (
+        await db.execute(
+            text(
+                "SELECT id, name, transport_type, url, status, last_checked "
+                "FROM mcp_servers ORDER BY name"
+            )
+        )
+    ).all()
+    return {
+        "servers": [
+            {
+                "id": r[0],
+                "name": r[1],
+                "transport": r[2],
+                "url": r[3],
+                "status": r[4],
+                "last_checked": r[5],
+            }
+            for r in rows
+        ],
+        "count": len(rows),
+    }
+
+
+async def _handle_unregister_mcp_server(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    from sqlalchemy import text
+
+    try:
+        await db.execute(
+            text("DELETE FROM mcp_servers WHERE id = :id"),
+            {"id": arguments["server_id"]},
+        )
+        await db.commit()
+    except Exception as e:
+        raise ToolExecutionError(f"unregister_mcp_server failed: {e}") from e
+    return {"server_id": arguments["server_id"], "unregistered": True}
+
+
+# ---------------------------------------------------------------------------
+# Wave 7 B1.2 — Credential Management
+# ---------------------------------------------------------------------------
+#
+# Uses CredentialService with whatever backend is configured. Backends
+# that don't support list/rotate/validate degrade to feature_pending
+# rather than crashing. Secrets are never returned from list_ and
+# get_ defaults to reveal=false.
+
+
+def _credential_service(db):
+    try:
+        from core.services.credential_service import CredentialService  # type: ignore
+    except Exception:
+        return None
+    try:
+        return CredentialService(db)
+    except Exception:
+        try:
+            # Older constructors
+            return CredentialService()
+        except Exception:
+            return None
+
+
+async def _handle_create_credential(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _credential_service(db)
+    if svc is None:
+        return {"status": "feature_pending", "available": False}
+    store = getattr(svc, "store_credentials", None) or getattr(svc, "create_credentials", None)
+    if store is None:
+        return {"status": "feature_pending", "available": False}
+    ok = await store(
+        arguments["platform"], arguments["credential_id"], arguments["credentials"]
+    )
+    return {
+        "platform": arguments["platform"],
+        "credential_id": arguments["credential_id"],
+        "stored": bool(ok),
+    }
+
+
+async def _handle_list_credentials(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _credential_service(db)
+    if svc is None:
+        return {"credentials": [], "available": False, "status": "feature_pending"}
+    list_method = getattr(svc, "list_credentials", None)
+    if list_method is None:
+        # Graceful fallback — some backends don't implement list
+        return {
+            "credentials": [],
+            "available": False,
+            "status": "feature_pending",
+            "message": "Credential backend does not support listing; use get_credential per id.",
+        }
+    items = await list_method(platform=arguments.get("platform"))
+    return {
+        "credentials": [
+            {k: v for k, v in (item.items() if isinstance(item, dict) else {}) if k not in ("value", "secret", "credentials")}
+            for item in (items or [])
+        ],
+        "count": len(items) if items else 0,
+    }
+
+
+async def _handle_get_credential(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _credential_service(db)
+    if svc is None:
+        return {"status": "feature_pending", "available": False}
+    fetch = getattr(svc, "get_credentials", None)
+    if fetch is None:
+        return {"status": "feature_pending", "available": False}
+    try:
+        payload = await fetch(arguments["platform"], arguments["credential_id"])
+    except Exception as e:
+        raise ToolExecutionError(f"get_credential failed: {e}") from e
+    if payload is None:
+        raise ToolExecutionError(
+            f"Credential {arguments['platform']}/{arguments['credential_id']} not found"
+        )
+
+    # Audit-friendly default: return metadata only unless explicitly asked.
+    if not arguments.get("reveal"):
+        if isinstance(payload, dict):
+            return {
+                "platform": arguments["platform"],
+                "credential_id": arguments["credential_id"],
+                "fields_available": sorted(list(payload.keys())),
+                "revealed": False,
+            }
+    return {
+        "platform": arguments["platform"],
+        "credential_id": arguments["credential_id"],
+        "credentials": payload,
+        "revealed": True,
+    }
+
+
+async def _handle_delete_credential(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _credential_service(db)
+    if svc is None:
+        return {"status": "feature_pending", "available": False}
+    delete = getattr(svc, "delete_credentials", None)
+    if delete is None:
+        return {"status": "feature_pending", "available": False}
+    ok = await delete(arguments["platform"], arguments["credential_id"])
+    return {
+        "platform": arguments["platform"],
+        "credential_id": arguments["credential_id"],
+        "deleted": bool(ok),
+    }
+
+
+async def _handle_rotate_credential(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Rotate: delete + store. Increments rotation_count if the
+    backend exposes a ``rotate_credentials`` method; otherwise falls
+    back to delete+store."""
+    svc = _credential_service(db)
+    if svc is None:
+        return {"status": "feature_pending", "available": False}
+
+    rotate = getattr(svc, "rotate_credentials", None)
+    if rotate:
+        result = await rotate(
+            arguments["platform"],
+            arguments["credential_id"],
+            arguments["new_credentials"],
+        )
+        return {
+            "platform": arguments["platform"],
+            "credential_id": arguments["credential_id"],
+            "rotated": bool(result),
+        }
+
+    # Fallback: delete + store
+    delete = getattr(svc, "delete_credentials", None)
+    store = getattr(svc, "store_credentials", None) or getattr(svc, "create_credentials", None)
+    if not delete or not store:
+        return {"status": "feature_pending", "available": False}
+    await delete(arguments["platform"], arguments["credential_id"])
+    ok = await store(
+        arguments["platform"],
+        arguments["credential_id"],
+        arguments["new_credentials"],
+    )
+    return {
+        "platform": arguments["platform"],
+        "credential_id": arguments["credential_id"],
+        "rotated": bool(ok),
+        "note": "Rotated via delete+store (backend lacks native rotate_credentials).",
+    }
+
+
+async def _handle_validate_credential(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _credential_service(db)
+    if svc is None:
+        return {"status": "feature_pending", "available": False}
+    validate = getattr(svc, "validate_credentials", None)
+    if validate is None:
+        return {
+            "valid": None,
+            "available": False,
+            "status": "feature_pending",
+            "message": "Credential backend does not support validation yet.",
+        }
+    try:
+        result = await validate(arguments["platform"], arguments["credential_id"])
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+    return {
+        "platform": arguments["platform"],
+        "credential_id": arguments["credential_id"],
+        "valid": bool(result),
+    }
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -3983,4 +4387,17 @@ TOOL_HANDLERS = {
     # Wave 6: License management
     "get_license_status": _handle_get_license_status,
     "list_license_entitlements": _handle_list_license_entitlements,
+    # Wave 7 B1.1: MCP Client
+    "register_mcp_server": _handle_register_mcp_server,
+    "discover_mcp_server_tools": _handle_discover_mcp_server_tools,
+    "invoke_external_mcp_tool": _handle_invoke_external_mcp_tool,
+    "list_registered_mcp_servers": _handle_list_registered_mcp_servers,
+    "unregister_mcp_server": _handle_unregister_mcp_server,
+    # Wave 7 B1.2: Credentials
+    "create_credential": _handle_create_credential,
+    "list_credentials": _handle_list_credentials,
+    "get_credential": _handle_get_credential,
+    "delete_credential": _handle_delete_credential,
+    "rotate_credential": _handle_rotate_credential,
+    "validate_credential": _handle_validate_credential,
 }

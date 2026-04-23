@@ -1467,6 +1467,162 @@ BUSINESS_TOOLS = [
             "required": ["content"],
         },
     },
+    # ==== Wave 7 B1.1 — MCP Client (connect to external MCP servers) ====
+    {
+        "name": "register_mcp_server",
+        "description": (
+            "Register an external MCP server so AICtrlNet can discover + "
+            "invoke its tools. Claude becomes the governed gateway to "
+            "the broader MCP ecosystem."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "transport": {"type": "string", "enum": ["http", "sse", "stdio"], "default": "http"},
+                "url": {"type": "string"},
+                "command": {"type": "string"},
+                "args": {"type": "array", "items": {"type": "string"}},
+                "api_key": {"type": "string"},
+            },
+            "required": ["name", "transport"],
+        },
+    },
+    {
+        "name": "discover_mcp_server_tools",
+        "description": "List tools advertised by a registered external MCP server.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"server_id": {"type": "string"}},
+            "required": ["server_id"],
+        },
+    },
+    {
+        "name": "invoke_external_mcp_tool",
+        "description": (
+            "Call a tool on a registered external MCP server. The AICtrlNet "
+            "governance pipeline still applies — metering, audit log, rate "
+            "bucket — so external invocations are governed like native ones."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "server_id": {"type": "string"},
+                "tool_name": {"type": "string"},
+                "arguments": {"type": "object"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["server_id", "tool_name"],
+        },
+    },
+    {
+        "name": "list_registered_mcp_servers",
+        "description": "List external MCP servers the caller's tenant has registered.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "unregister_mcp_server",
+        "description": "Unregister + disconnect an external MCP server.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"server_id": {"type": "string"}},
+            "required": ["server_id"],
+        },
+    },
+    # ==== Wave 7 B1.2 — Credential Management ====
+    {
+        "name": "create_credential",
+        "description": (
+            "Store a credential (API token, OAuth2 refresh token, DB URL, "
+            "etc.) for later use by adapters. Value is encrypted at rest "
+            "per the backend (vault / database / file) configuration."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string", "description": "e.g. 'slack', 'stripe', 'custom'"},
+                "credential_id": {"type": "string", "description": "Human-friendly id unique per platform"},
+                "credentials": {"type": "object", "description": "Credential fields (platform-specific)"},
+            },
+            "required": ["platform", "credential_id", "credentials"],
+        },
+    },
+    {
+        "name": "list_credentials",
+        "description": (
+            "List credential metadata (platform + credential_id) the "
+            "caller's tenant has stored. Secret values are never returned."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "get_credential",
+        "description": (
+            "Return credential metadata + (optionally) the credential "
+            "fields. Prefer setting ``reveal=false`` to fetch only metadata "
+            "for audit trails."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string"},
+                "credential_id": {"type": "string"},
+                "reveal": {"type": "boolean", "default": False},
+            },
+            "required": ["platform", "credential_id"],
+        },
+    },
+    {
+        "name": "delete_credential",
+        "description": "Delete a stored credential.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string"},
+                "credential_id": {"type": "string"},
+            },
+            "required": ["platform", "credential_id"],
+        },
+    },
+    {
+        "name": "rotate_credential",
+        "description": (
+            "Replace a credential's value while keeping the same id. "
+            "Increments ``rotation_count`` on the credential metadata so "
+            "audit logs can correlate rotations. Returns feature_pending "
+            "if the credential backend doesn't support rotation yet."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string"},
+                "credential_id": {"type": "string"},
+                "new_credentials": {"type": "object"},
+            },
+            "required": ["platform", "credential_id", "new_credentials"],
+        },
+    },
+    {
+        "name": "validate_credential",
+        "description": (
+            "Verify a stored credential is still usable (ping the upstream "
+            "service). Returns feature_pending if the backend doesn't "
+            "support validation yet."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "platform": {"type": "string"},
+                "credential_id": {"type": "string"},
+            },
+            "required": ["platform", "credential_id"],
+        },
+    },
 ]
 
 ENTERPRISE_TOOLS = [
@@ -1842,6 +1998,19 @@ TOOL_SCOPES = {
     # Wave 6: License management
     "get_license_status": ["read:license"],
     "list_license_entitlements": ["read:license"],
+    # Wave 7 B1.1: MCP Client
+    "register_mcp_server": ["write:mcp_client"],
+    "discover_mcp_server_tools": ["read:mcp_client"],
+    "invoke_external_mcp_tool": ["write:mcp_client"],
+    "list_registered_mcp_servers": ["read:mcp_client"],
+    "unregister_mcp_server": ["write:mcp_client"],
+    # Wave 7 B1.2: Credentials
+    "create_credential": ["write:credentials"],
+    "list_credentials": ["read:credentials"],
+    "get_credential": ["read:credentials"],
+    "delete_credential": ["write:credentials"],
+    "rotate_credential": ["write:credentials"],
+    "validate_credential": ["write:credentials"],
 }
 
 

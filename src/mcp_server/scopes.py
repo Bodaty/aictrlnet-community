@@ -42,6 +42,19 @@ READ: Set[str] = {
     "read:llm",
     "read:fleet",
     "read:license",
+    # Wave 7 additions
+    "read:mcp_client",
+    "read:credentials",
+    "read:personal_agent",
+    "read:marketplace",
+    "read:runtime_gateway",
+    "read:pods",
+    "read:cost",
+    "read:sla",
+    "read:roles",
+    "read:federation",
+    "read:mfa",
+    "read:oauth2",
 }
 
 WRITE: Set[str] = {
@@ -65,6 +78,20 @@ WRITE: Set[str] = {
     "write:notifications",
     "write:quality",
     "write:institute",
+    # Wave 7 additions
+    "write:mcp_client",
+    "write:credentials",
+    "write:personal_agent",
+    "write:marketplace",
+    "write:platforms",
+    "write:runtime_gateway",
+    "write:pods",
+    "write:sla",
+    "write:roles",
+    "write:templates",
+    "write:federation",
+    "write:oauth2",
+    "write:canvas",
 }
 
 ALL_SCOPES: Set[str] = READ | WRITE
@@ -127,6 +154,32 @@ _DESCRIPTIONS: dict[str, str] = {
     "write:notifications": "Mark notifications read",
     "write:quality": "Run data-quality / governance verifications",
     "write:institute": "Enroll in Institute modules",
+    # Wave 7
+    "read:mcp_client": "List + discover external MCP servers registered to this tenant",
+    "write:mcp_client": "Register, invoke, and unregister external MCP servers",
+    "read:credentials": "List stored credential metadata (no secret values)",
+    "write:credentials": "Create, rotate, delete, and validate stored credentials",
+    "read:personal_agent": "Read personal-agent config + activity timeline",
+    "write:personal_agent": "Update personal-agent config + promote personal workflows",
+    "read:marketplace": "Browse the workflow marketplace",
+    "write:marketplace": "Publish, compose, and sync marketplace templates",
+    "write:platforms": "Execute workflows on external platforms (n8n, Zapier, Make, Power Automate)",
+    "read:runtime_gateway": "Read delegation chains + runtime webhooks",
+    "write:runtime_gateway": "Evaluate runtime actions + register runtime webhooks",
+    "read:pods": "List pods + fleet formation status",
+    "write:pods": "Form pods + dispatch swarms",
+    "read:cost": "Read cost analytics + platform cost estimates",
+    "read:sla": "Read SLA definitions + status",
+    "write:sla": "Create + configure SLAs",
+    "read:roles": "List roles + permissions",
+    "write:roles": "Create, grant, and revoke roles",
+    "write:templates": "Create + update workflow templates",
+    "read:federation": "Read federation peers + shared resources",
+    "write:federation": "Register federated peers + share resources",
+    "read:mfa": "Read MFA enrollment status",
+    "read:oauth2": "List OAuth2 clients + tokens (Enterprise admin)",
+    "write:oauth2": "Revoke OAuth2 tokens (emergency admin)",
+    "write:canvas": "Create + render A2UI canvas blocks",
 }
 
 

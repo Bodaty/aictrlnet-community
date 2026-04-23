@@ -174,6 +174,19 @@ TOOL_MIN_PLAN: dict[str, str] = {
     "get_fleet_autonomy_summary": "enterprise",
     "get_license_status": "enterprise",
     "list_license_entitlements": "enterprise",
+    # Wave 7 B1.1 — MCP Client (federate MCP servers)
+    "register_mcp_server": "business",
+    "discover_mcp_server_tools": "business",
+    "invoke_external_mcp_tool": "business",
+    "list_registered_mcp_servers": "business",
+    "unregister_mcp_server": "business",
+    # Wave 7 B1.2 — Credential Management
+    "create_credential": "business",
+    "list_credentials": "business",
+    "get_credential": "business",
+    "delete_credential": "business",
+    "rotate_credential": "business",
+    "validate_credential": "business",
 }
 
 # Tools that mutate the plan / subscription — executing one of these
