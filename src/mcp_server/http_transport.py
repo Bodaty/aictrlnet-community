@@ -43,12 +43,24 @@ router = APIRouter()
 _MCP_CORS_NOTE = "see http_transport.py docstring"
 
 
+def _public_base_url(request: Request) -> str:
+    """Absolute base URL for this server — used in WWW-Authenticate header."""
+    env = os.environ.get("MCP_PUBLIC_URL", "").rstrip("/")
+    if env:
+        return env
+    return f"{request.url.scheme}://{request.url.netloc}"
+
+
 def _require_bearer_or_apikey(request: Request) -> None:
     """A9: hard-reject requests without an explicit MCP auth header.
 
     Applies before ``get_current_active_user`` so cookie-session users
     can't accidentally reach the endpoint. Disabled by setting
     ``MCP_REQUIRE_BEARER_OR_APIKEY=false`` (not recommended — see A9).
+
+    On reject, emits an MCP 2.1 compliant ``WWW-Authenticate`` header
+    pointing at the protected-resource metadata endpoint so clients can
+    auto-discover the authorization server.
     """
     if os.environ.get("MCP_REQUIRE_BEARER_OR_APIKEY", "true").lower() != "true":
         return
@@ -56,16 +68,35 @@ def _require_bearer_or_apikey(request: Request) -> None:
     apikey = request.headers.get("X-API-Key", "")
     if auth.startswith("Bearer ") or apikey:
         return
+    base = _public_base_url(request)
     raise HTTPException(
         status_code=401,
         detail=(
             "MCP endpoint requires an Authorization: Bearer header or an "
             "X-API-Key header. Cookie-only sessions are not accepted."
         ),
+        headers={
+            "WWW-Authenticate": (
+                f'Bearer resource_metadata="{base}/.well-known/oauth-protected-resource"'
+            ),
+        },
     )
 
 
-@router.post("/mcp-transport")
+async def _mcp_auth_pregate(request: Request) -> None:
+    """FastAPI dependency running BEFORE ``get_current_active_user``.
+
+    Ensures the enriched WWW-Authenticate header with ``resource_metadata``
+    is emitted on auth-missing requests — lets MCP 2.1 clients discover
+    the authorization server.
+    """
+    _require_bearer_or_apikey(request)
+
+
+@router.post(
+    "/mcp-transport",
+    dependencies=[Depends(_mcp_auth_pregate)],
+)
 async def handle_mcp_request(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -76,11 +107,7 @@ async def handle_mcp_request(
     Accepts JSON-RPC 2.0 requests (single or batch array).
     Returns JSON responses. Notifications (no 'id') return 202.
     """
-    # A9 gate runs before any processing. get_current_active_user already
-    # validates identity; this guard is a defense-in-depth for the
-    # pre-auth path (CORS preflight won't hit here, but cookie-based
-    # attempts to the POST will).
-    _require_bearer_or_apikey(request)
+    # A9 pre-gate runs via Depends above (see _mcp_auth_pregate).
 
     body = await request.json()
 

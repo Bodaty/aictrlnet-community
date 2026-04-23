@@ -129,12 +129,30 @@ class MCPProtocolHandler:
 
     async def _handle_initialize(self, message: dict) -> dict:
         msg_id = message.get("id")
+        import os
+        # Public URL for auth-server metadata. MCP clients fetch
+        # .well-known/oauth-authorization-server from this base.
+        public_url = os.environ.get("MCP_PUBLIC_URL", "").rstrip("/")
+        capabilities: Dict[str, Any] = {
+            # Flipped True: server emits list_changed on plan mutation.
+            "tools": {"listChanged": True},
+        }
+        if public_url:
+            # Non-standard capability block — clients that understand it will
+            # auto-configure the OAuth flow. Clients that don't will fall
+            # back to the 401 + WWW-Authenticate: Bearer resource_metadata=...
+            # challenge emitted by http_transport.py.
+            capabilities["authentication"] = {
+                "oauth2": {
+                    "authorization_server": f"{public_url}/.well-known/oauth-authorization-server",
+                    "supported_grants": [
+                        "authorization_code", "refresh_token", "client_credentials"
+                    ],
+                },
+            }
         return _jsonrpc_result(msg_id, {
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": {
-                # Flipped True: server emits list_changed on plan mutation.
-                "tools": {"listChanged": True},
-            },
+            "capabilities": capabilities,
             "serverInfo": {
                 "name": SERVER_NAME,
                 "version": SERVER_VERSION,
