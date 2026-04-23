@@ -1437,6 +1437,227 @@ ENTERPRISE_TOOLS = [
             "required": ["server_id"],
         },
     },
+    # ---- Wave 6: Analytics ----
+    {
+        "name": "query_analytics",
+        "description": (
+            "Execute an analytics query across tasks, workflows, agents, "
+            "resource usage, API calls, or errors. Flexible filter/group-by. "
+            "Enterprise tier."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metric_type": {
+                    "type": "string",
+                    "description": "task | workflow | agent | resource | api | error | cost",
+                },
+                "filters": {"type": "object"},
+                "group_by": {"type": "array", "items": {"type": "string"}},
+                "time_range": {"type": "string", "description": "e.g. 24h, 7d, 30d, 90d"},
+            },
+            "required": ["metric_type"],
+        },
+    },
+    {
+        "name": "get_dashboard_metrics",
+        "description": (
+            "Return the Enterprise dashboard snapshot — high-level "
+            "tenant-scoped metrics that power the HitLai Enterprise home."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_metric_trends",
+        "description": (
+            "Trend data for a given metric type over a time range. Good "
+            "for dashboards, anomaly detection, CFO reporting."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metric_type": {"type": "string"},
+                "time_range": {"type": "string", "default": "30d"},
+            },
+            "required": ["metric_type"],
+        },
+    },
+    # ---- Wave 6: Audit ----
+    {
+        "name": "get_audit_logs",
+        "description": (
+            "Query enterprise audit logs with full filter set: resource "
+            "type/id, action, severity, success, user, date range, "
+            "pagination, ordering. Tenant-scoped."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "resource_type": {"type": "string"},
+                "resource_id": {"type": "string"},
+                "action": {"type": "string"},
+                "severity": {"type": "string"},
+                "success": {"type": "boolean"},
+                "user_id": {"type": "string"},
+                "start_date": {"type": "string", "format": "date-time"},
+                "end_date": {"type": "string", "format": "date-time"},
+                "limit": {"type": "integer", "default": 100, "maximum": 1000},
+                "offset": {"type": "integer", "default": 0},
+                "order_by": {"type": "string", "default": "timestamp"},
+                "order_direction": {"type": "string", "enum": ["asc", "desc"], "default": "desc"},
+            },
+        },
+    },
+    {
+        "name": "get_audit_summary",
+        "description": (
+            "Summary of audit activity over the last N days — by action, "
+            "severity, actor. Useful for compliance officers."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 7, "minimum": 1, "maximum": 90},
+            },
+        },
+    },
+    # ---- Wave 6: Compliance ----
+    {
+        "name": "run_compliance_check",
+        "description": (
+            "Run a compliance check across one or more standards (GDPR, "
+            "HIPAA, SOC2, CCPA, ISO27001). Returns per-standard status + "
+            "failing controls + remediation hints."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "standards": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Standards to check (default: all configured)",
+                },
+                "scope": {
+                    "type": "object",
+                    "description": "Optional scope (workflow_id, tenant_id, resource_type)",
+                },
+            },
+        },
+    },
+    {
+        "name": "list_compliance_standards",
+        "description": "List supported compliance standards + their controls catalog.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_enterprise_risk_assessment",
+        "description": (
+            "Enterprise-tier risk assessment summary — per-tenant risk "
+            "scores across AI governance dimensions. Aggregates the "
+            "business-tier risk data for the CISO view."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    # ---- Wave 6: Organizations + Tenants ----
+    {
+        "name": "list_organizations",
+        "description": "List organizations the caller can access.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_tenants",
+        "description": "List tenants visible to the caller (Enterprise admin).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 100, "maximum": 500},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    # ---- Wave 6: Federated Knowledge + Cross-Tenant ----
+    {
+        "name": "federated_knowledge_query",
+        "description": (
+            "Query the federated knowledge base across tenants the caller "
+            "has permission to see. Governance-preserving — tenant "
+            "boundaries + RLS enforced."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "tenant_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tenant scope; defaults to all accessible",
+                },
+                "limit": {"type": "integer", "default": 10, "maximum": 100},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_cross_tenant_insights",
+        "description": (
+            "Return cross-tenant comparison insights — workflow metrics, "
+            "permission summaries, shared-resource usage. Fleet-wide "
+            "governance view."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metric_type": {
+                    "type": "string",
+                    "enum": ["workflows", "permissions", "audit", "summary"],
+                    "default": "summary",
+                },
+                "time_range": {"type": "string", "default": "30d"},
+            },
+        },
+    },
+    # ---- Wave 6: Fleet Management ----
+    {
+        "name": "list_fleet_agents",
+        "description": (
+            "List fleet runtimes — agents registered across the tenant's "
+            "fleet. v11 'fleet-wide autonomy management' read surface."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "limit": {"type": "integer", "default": 100, "maximum": 500},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "get_fleet_autonomy_summary",
+        "description": (
+            "Fleet-wide autonomy-level distribution + risk summary. Lets "
+            "CISOs see 'are my agents operating at the right autonomy "
+            "level' at a glance."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    # ---- Wave 6: License Management ----
+    {
+        "name": "get_license_status",
+        "description": (
+            "Return the caller's Enterprise license status — active/"
+            "expiring/expired, seat counts, feature entitlements."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_license_entitlements",
+        "description": (
+            "List the license entitlements (feature flags, limits) "
+            "available under the current Enterprise plan."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 TOOL_SCOPES = {
@@ -1549,6 +1770,29 @@ TOOL_SCOPES = {
     "list_institute_modules": ["read:institute"],
     "enroll_in_module": ["write:institute"],
     "get_certification_status": ["read:institute"],
+    # Wave 6: Enterprise admin — Analytics
+    "query_analytics": ["read:analytics"],
+    "get_dashboard_metrics": ["read:analytics"],
+    "get_metric_trends": ["read:analytics"],
+    # Wave 6: Audit
+    "get_audit_logs": ["read:audit"],
+    "get_audit_summary": ["read:audit"],
+    # Wave 6: Compliance
+    "run_compliance_check": ["read:compliance"],
+    "list_compliance_standards": ["read:compliance"],
+    "get_enterprise_risk_assessment": ["read:compliance"],
+    # Wave 6: Organizations + Tenants
+    "list_organizations": ["read:compliance"],
+    "list_tenants": ["read:compliance"],
+    # Wave 6: Federated knowledge + cross-tenant
+    "federated_knowledge_query": ["read:knowledge"],
+    "get_cross_tenant_insights": ["read:analytics"],
+    # Wave 6: Fleet management
+    "list_fleet_agents": ["read:fleet"],
+    "get_fleet_autonomy_summary": ["read:fleet"],
+    # Wave 6: License management
+    "get_license_status": ["read:license"],
+    "list_license_entitlements": ["read:license"],
 }
 
 

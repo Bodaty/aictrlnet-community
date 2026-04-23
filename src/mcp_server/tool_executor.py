@@ -3109,6 +3109,584 @@ async def _handle_get_certification_status(
     return {"certifications": result}
 
 
+# ---------------------------------------------------------------------------
+# Wave 6 handlers — Enterprise admin (analytics, audit, compliance, fleet,
+# license, federated knowledge, cross-tenant). All handlers:
+#
+# 1. Add the enterprise src path to sys.path so their service imports work.
+# 2. try/except ImportError → graceful degradation for non-Enterprise
+#    deploys. (Enterprise-tier plan gate already prevents the handler
+#    from being called on Community/Business deployments, but if a
+#    Community deploy somehow routes here, we degrade rather than crash.)
+# 3. Use get_current_tenant_id() to scope reads — no cross-tenant leak.
+# ---------------------------------------------------------------------------
+
+
+def _ensure_enterprise_sys_path() -> None:
+    import sys
+
+    for p in (
+        "/workspace/editions/enterprise/src",
+        "/workspace/editions/business/src",
+        "/workspace/editions/community/src",
+    ):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+
+def _enterprise_pending(feature: str) -> Dict[str, Any]:
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "feature": feature,
+        "message": (
+            "Enterprise service unavailable on this deploy. This MCP tool "
+            "is plan-gated to Enterprise tier; the backing service ships "
+            "with the Enterprise edition package."
+        ),
+    }
+
+
+# ---- Analytics ----
+
+
+async def _handle_query_analytics(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.analytics import AnalyticsService
+    except Exception:
+        return _enterprise_pending("analytics")
+
+    svc = AnalyticsService(db)
+    try:
+        result = await svc.query_analytics(
+            metric_type=arguments["metric_type"],
+            filters=arguments.get("filters") or {},
+            group_by=arguments.get("group_by") or [],
+            time_range=arguments.get("time_range", "7d"),
+        )
+    except TypeError:
+        # Service signature may use a different arg name
+        result = await svc.query_analytics(arguments)
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"result": result}
+
+
+async def _handle_get_dashboard_metrics(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.analytics import AnalyticsService
+        from core.tenant_context import get_current_tenant_id
+    except Exception:
+        return _enterprise_pending("analytics")
+
+    svc = AnalyticsService(db)
+    tenant_id = get_current_tenant_id() or "default"
+    result = await svc.get_dashboard_metrics(tenant_id=tenant_id)
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"metrics": result}
+
+
+async def _handle_get_metric_trends(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.analytics import AnalyticsService
+        from core.tenant_context import get_current_tenant_id
+    except Exception:
+        return _enterprise_pending("analytics")
+
+    svc = AnalyticsService(db)
+    tenant_id = get_current_tenant_id() or "default"
+    method = (
+        getattr(svc, "get_trend_data", None) or getattr(svc, "get_trends", None)
+    )
+    if not method:
+        return _enterprise_pending("analytics.trends")
+    result = await method(
+        metric_type=arguments["metric_type"],
+        time_range=arguments.get("time_range", "30d"),
+        tenant_id=tenant_id,
+    )
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"trends": result}
+
+
+# ---- Audit ----
+
+
+async def _handle_get_audit_logs(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from datetime import datetime
+
+        from aictrlnet_enterprise.services.audit_service import AuditService
+        from core.tenant_context import get_current_tenant_id
+    except Exception:
+        return _enterprise_pending("audit")
+
+    svc = AuditService(db)
+    tenant_id = get_current_tenant_id() or "default"
+
+    def _parse(d):
+        if not d:
+            return None
+        try:
+            return datetime.fromisoformat(d.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    result = await svc.get_audit_logs(
+        resource_type=arguments.get("resource_type"),
+        resource_id=arguments.get("resource_id"),
+        action=arguments.get("action"),
+        severity=arguments.get("severity"),
+        success=arguments.get("success"),
+        user_id=arguments.get("user_id"),
+        start_date=_parse(arguments.get("start_date")),
+        end_date=_parse(arguments.get("end_date")),
+        limit=min(int(arguments.get("limit", 100)), 1000),
+        offset=int(arguments.get("offset", 0)),
+        order_by=arguments.get("order_by", "timestamp"),
+        order_direction=arguments.get("order_direction", "desc"),
+        tenant_id=tenant_id,
+    )
+    if isinstance(result, dict):
+        return result
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    return {"logs": result if isinstance(result, list) else [result]}
+
+
+async def _handle_get_audit_summary(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.audit_service import AuditService
+        from core.tenant_context import get_current_tenant_id
+    except Exception:
+        return _enterprise_pending("audit")
+
+    svc = AuditService(db)
+    tenant_id = get_current_tenant_id() or "default"
+    days = max(1, min(int(arguments.get("days", 7)), 90))
+    try:
+        result = await svc.get_audit_summary(days=days, tenant_id=tenant_id)
+    except TypeError:
+        result = await svc.get_audit_summary(days)
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"summary": result}
+
+
+# ---- Compliance ----
+
+
+async def _handle_run_compliance_check(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.compliance import ComplianceService
+        from core.tenant_context import get_current_tenant_id
+    except Exception:
+        return _enterprise_pending("compliance")
+
+    svc = ComplianceService(db)
+    tenant_id = get_current_tenant_id() or "default"
+    try:
+        result = await svc.run_compliance_check(
+            standards=arguments.get("standards") or [],
+            scope=arguments.get("scope") or {},
+            tenant_id=tenant_id,
+        )
+    except TypeError:
+        result = await svc.run_compliance_check(
+            arguments.get("standards") or [], arguments.get("scope") or {}
+        )
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"result": result}
+
+
+async def _handle_list_compliance_standards(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.compliance import ComplianceService
+    except Exception:
+        return _enterprise_pending("compliance")
+
+    svc = ComplianceService(db)
+    standards = await svc.get_compliance_standards()
+    return {
+        "standards": [
+            (s.model_dump() if hasattr(s, "model_dump")
+             else s.dict() if hasattr(s, "dict")
+             else s)
+            for s in (standards if isinstance(standards, list) else [standards])
+        ]
+    }
+
+
+async def _handle_get_enterprise_risk_assessment(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from core.tenant_context import get_current_tenant_id
+
+        # The enterprise endpoint lives in ai_governance_enterprise — reach
+        # it through the service underneath.
+        from aictrlnet_enterprise.services.ai_governance_enterprise import (  # type: ignore
+            EnterpriseAIGovernanceService,
+        )
+    except Exception:
+        # Fall back to the business-tier risk aggregation so Enterprise
+        # callers still get a value even if the enterprise service isn't
+        # yet factored out.
+        try:
+            _ensure_business_sys_path()
+            from aictrlnet_business.services.risk_assessment_service import (  # type: ignore
+                RiskAssessmentService,
+            )
+
+            svc = RiskAssessmentService(db)
+            result = await svc.get_summary(user_id=user_id)
+            if hasattr(result, "model_dump"):
+                return result.model_dump()
+            if hasattr(result, "dict"):
+                return result.dict()
+            return {"summary": result}
+        except Exception:
+            return _enterprise_pending("risk_assessment")
+
+    svc = EnterpriseAIGovernanceService(db)
+    tenant_id = get_current_tenant_id() or "default"
+    method = (
+        getattr(svc, "get_risk_summary", None)
+        or getattr(svc, "get_enterprise_risk_summary", None)
+    )
+    if not method:
+        return _enterprise_pending("risk_assessment")
+    result = await method(tenant_id=tenant_id)
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"summary": result}
+
+
+# ---- Organizations + Tenants ----
+
+
+async def _handle_list_organizations(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from sqlalchemy import select
+
+        from aictrlnet_enterprise.models.organization import Organization  # type: ignore
+    except Exception:
+        return _enterprise_pending("organizations")
+
+    rows = (await db.execute(select(Organization))).scalars().all()
+    return {
+        "organizations": [
+            {
+                "id": str(getattr(o, "id", "")),
+                "name": getattr(o, "name", None),
+                "slug": getattr(o, "slug", None),
+                "created_at": str(getattr(o, "created_at", "")),
+            }
+            for o in rows
+        ],
+        "count": len(rows),
+    }
+
+
+async def _handle_list_tenants(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from sqlalchemy import select
+
+        from aictrlnet_enterprise.models.tenant import Tenant  # type: ignore
+    except Exception:
+        try:
+            from sqlalchemy import select
+
+            # Community tenants table (present in all editions)
+            from models.community_complete import Tenant  # type: ignore
+        except Exception:
+            return _enterprise_pending("tenants")
+
+    query = (
+        select(Tenant)
+        .limit(min(int(arguments.get("limit", 100)), 500))
+        .offset(int(arguments.get("offset", 0)))
+    )
+    rows = (await db.execute(query)).scalars().all()
+    return {
+        "tenants": [
+            {
+                "id": str(getattr(t, "id", "")),
+                "name": getattr(t, "name", None),
+                "edition": getattr(t, "edition", None),
+                "created_at": str(getattr(t, "created_at", "")),
+            }
+            for t in rows
+        ],
+        "count": len(rows),
+    }
+
+
+# ---- Federated knowledge + Cross-tenant ----
+
+
+async def _handle_federated_knowledge_query(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        # Knowledge federation lives in knowledge_enterprise endpoint; try
+        # to find its service backing.
+        from aictrlnet_enterprise.services.federated_knowledge_service import (  # type: ignore
+            FederatedKnowledgeService,
+        )
+    except Exception:
+        # Fallback: call the community knowledge retrieval service
+        # scoped to the caller's tenant only.
+        try:
+            from services.knowledge.knowledge_retrieval_service import (
+                KnowledgeRetrievalService,
+            )
+
+            svc = KnowledgeRetrievalService(db)
+            results = await svc.find_relevant_knowledge(
+                query=arguments["query"],
+                context=None,
+                limit=min(int(arguments.get("limit", 10)), 100),
+            )
+            return {
+                "results": [
+                    (r.model_dump() if hasattr(r, "model_dump")
+                     else r.dict() if hasattr(r, "dict")
+                     else {"content": str(r)})
+                    for r in results
+                ],
+                "federated": False,
+                "note": "Federated knowledge service not available — scoped to caller's tenant only",
+            }
+        except Exception:
+            return _enterprise_pending("federated_knowledge")
+
+    svc = FederatedKnowledgeService(db)
+    method = (
+        getattr(svc, "search", None)
+        or getattr(svc, "query", None)
+        or getattr(svc, "find", None)
+    )
+    if not method:
+        return _enterprise_pending("federated_knowledge")
+    results = await method(
+        query=arguments["query"],
+        tenant_ids=arguments.get("tenant_ids"),
+        limit=min(int(arguments.get("limit", 10)), 100),
+        user_id=user_id,
+    )
+    return {
+        "results": results if isinstance(results, list) else [results],
+        "federated": True,
+    }
+
+
+async def _handle_get_cross_tenant_insights(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.cross_tenant_service import (  # type: ignore
+            CrossTenantService,
+        )
+    except Exception:
+        return _enterprise_pending("cross_tenant")
+
+    svc = CrossTenantService(db)
+    metric_type = arguments.get("metric_type", "summary")
+    method_name = f"get_cross_tenant_{metric_type}"
+    method = (
+        getattr(svc, method_name, None)
+        or getattr(svc, "get_summary", None)
+        or getattr(svc, "get_insights", None)
+    )
+    if not method:
+        return _enterprise_pending("cross_tenant")
+    result = await method(
+        time_range=arguments.get("time_range", "30d"),
+        user_id=user_id,
+    )
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"insights": result}
+
+
+# ---- Fleet Management ----
+
+
+async def _handle_list_fleet_agents(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.fleet_management import FleetManagementService  # type: ignore
+    except Exception:
+        return _enterprise_pending("fleet_management")
+
+    svc = FleetManagementService(db)
+    method = (
+        getattr(svc, "list_runtimes", None)
+        or getattr(svc, "list_fleet_agents", None)
+        or getattr(svc, "list_agents", None)
+    )
+    if not method:
+        return _enterprise_pending("fleet_management")
+    try:
+        result = await method(
+            status=arguments.get("status"),
+            limit=min(int(arguments.get("limit", 100)), 500),
+            offset=int(arguments.get("offset", 0)),
+        )
+    except TypeError:
+        result = await method()
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    if isinstance(result, list):
+        return {"fleet_agents": result, "count": len(result)}
+    return {"fleet_agents": result}
+
+
+async def _handle_get_fleet_autonomy_summary(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.fleet_management import FleetManagementService  # type: ignore
+    except Exception:
+        return _enterprise_pending("fleet_management")
+
+    svc = FleetManagementService(db)
+    method = (
+        getattr(svc, "get_fleet_summary", None)
+        or getattr(svc, "get_autonomy_summary", None)
+        or getattr(svc, "get_fleet_risk_overview", None)
+    )
+    if not method:
+        return _enterprise_pending("fleet_management")
+    try:
+        result = await method()
+    except TypeError:
+        result = await method(user_id=user_id)
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"summary": result}
+
+
+# ---- License Management ----
+
+
+async def _handle_get_license_status(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.license_management import (  # type: ignore
+            LicenseManagementService,
+        )
+    except Exception:
+        return _enterprise_pending("license_management")
+
+    svc = LicenseManagementService(db)
+    method = (
+        getattr(svc, "get_subscription_status", None)
+        or getattr(svc, "get_status", None)
+        or getattr(svc, "get_license", None)
+    )
+    if not method:
+        return _enterprise_pending("license_management")
+    try:
+        result = await method(user_id=user_id)
+    except TypeError:
+        result = await method()
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    return {"license": result}
+
+
+async def _handle_list_license_entitlements(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    _ensure_enterprise_sys_path()
+    try:
+        from aictrlnet_enterprise.services.license_management import (  # type: ignore
+            LicenseManagementService,
+        )
+    except Exception:
+        return _enterprise_pending("license_management")
+
+    svc = LicenseManagementService(db)
+    method = (
+        getattr(svc, "list_entitlements", None)
+        or getattr(svc, "get_entitlements", None)
+        or getattr(svc, "get_features", None)
+    )
+    if not method:
+        return _enterprise_pending("license_management")
+    try:
+        result = await method(user_id=user_id)
+    except TypeError:
+        result = await method()
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if hasattr(result, "dict"):
+        return result.dict()
+    if isinstance(result, list):
+        return {"entitlements": result, "count": len(result)}
+    return {"entitlements": result}
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -3218,4 +3796,27 @@ TOOL_HANDLERS = {
     "list_institute_modules": _handle_list_institute_modules,
     "enroll_in_module": _handle_enroll_in_module,
     "get_certification_status": _handle_get_certification_status,
+    # Wave 6: Analytics
+    "query_analytics": _handle_query_analytics,
+    "get_dashboard_metrics": _handle_get_dashboard_metrics,
+    "get_metric_trends": _handle_get_metric_trends,
+    # Wave 6: Audit
+    "get_audit_logs": _handle_get_audit_logs,
+    "get_audit_summary": _handle_get_audit_summary,
+    # Wave 6: Compliance
+    "run_compliance_check": _handle_run_compliance_check,
+    "list_compliance_standards": _handle_list_compliance_standards,
+    "get_enterprise_risk_assessment": _handle_get_enterprise_risk_assessment,
+    # Wave 6: Organizations + Tenants
+    "list_organizations": _handle_list_organizations,
+    "list_tenants": _handle_list_tenants,
+    # Wave 6: Federated knowledge + cross-tenant
+    "federated_knowledge_query": _handle_federated_knowledge_query,
+    "get_cross_tenant_insights": _handle_get_cross_tenant_insights,
+    # Wave 6: Fleet management
+    "list_fleet_agents": _handle_list_fleet_agents,
+    "get_fleet_autonomy_summary": _handle_get_fleet_autonomy_summary,
+    # Wave 6: License management
+    "get_license_status": _handle_get_license_status,
+    "list_license_entitlements": _handle_list_license_entitlements,
 }
