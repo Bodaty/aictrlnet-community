@@ -1539,11 +1539,20 @@ Response (just the sentence, no quotes):"""
         keyword_candidates = (meta.get("top_keyword_scores") or [])[:3]
         if len(keyword_candidates) < 2:
             return None
+        # Spell out the candidates inline so the user can just retype a
+        # disambiguated message. Buttons were removed because the only
+        # idempotent verb available (`open`) expects a route, and there
+        # isn't a clean "re-submit scoped" verb in the contract yet.
+        candidate_lines = "\n".join(
+            f"- {n.replace('_', ' ')}" for n, _ in keyword_candidates
+        )
         return {
             "type": "text",
             "data": {
                 "content": (
                     "I'm not sure which action you meant. "
+                    "Candidates:\n"
+                    f"{candidate_lines}\n"
                     "Could you pick one, or rephrase?"
                 ),
                 "candidates": [
@@ -1551,12 +1560,7 @@ Response (just the sentence, no quotes):"""
                     for n, s in keyword_candidates
                 ],
             },
-            "actions": [
-                {"label": n.replace("_", " ").title(), "verb": "open",
-                 "primary": i == 0, "destructive": False,
-                 "target": f"clarify:{n}"}
-                for i, (n, _) in enumerate(keyword_candidates)
-            ],
+            "actions": [],
             "entity_ref": None,
         }
 
@@ -2096,6 +2100,7 @@ Response (just the sentence, no quotes):"""
                     "session_context": {
                         "parameters": (session.context or {}).get('v5_parameters', {}),
                         "turn_count": len(conversation_history),
+                        "tracked_entities": (session.context or {}).get('tracked_entities', {}),
                     },
                     "ui_blocks": [clarif_block],
                     "clarification": True,
@@ -2389,8 +2394,9 @@ Response (just the sentence, no quotes):"""
                 "tools_executed": [r.data.get('tool_name') for r in tool_results if r.data] if tool_results else [],
                 "all_successful": all(r.success for r in tool_results) if tool_results else True,
                 "session_context": {
-                    "parameters": session.context.get('v5_parameters', {}),
-                    "turn_count": len(conversation_history)
+                    "parameters": live_session.context.get('v5_parameters', {}),
+                    "turn_count": len(conversation_history),
+                    "tracked_entities": live_session.context.get('tracked_entities', {}),
                 },
                 # Typed UI blocks — frontend renders via component registry.
                 # When non-empty, frontend suppresses the legacy `created_workflow`/

@@ -180,11 +180,14 @@ def test_build_clarification_block_emits_text_with_candidates():
     candidates = block["data"]["candidates"]
     assert len(candidates) == 3
     assert candidates[0]["tool"] == "create_workflow"
-    # One action per candidate, all `open` verb (idempotent-only rule).
-    assert all(a["verb"] == "open" for a in block["actions"])
-    # First candidate's button is primary.
-    assert block["actions"][0]["primary"] is True
-    assert block["actions"][1]["primary"] is False
+    # Buttons intentionally empty — the chat verb contract has no
+    # idempotent re-submit verb, so we list candidates in `content`
+    # and let the user retype a disambiguated message.
+    assert block["actions"] == []
+    # Content surfaces the candidate names so the UI doesn't have to
+    # introspect `data.candidates` to render them.
+    assert "create workflow" in block["data"]["content"].lower()
+    assert "update workflow" in block["data"]["content"].lower()
 
 
 def test_build_clarification_block_returns_none_when_not_enough():

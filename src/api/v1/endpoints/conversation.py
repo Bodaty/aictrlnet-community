@@ -578,25 +578,36 @@ async def get_entity_status(
     fresh_summary: Optional[str] = None
     try:
         if entity_type == "workflow":
-            from models.workflow import Workflow  # type: ignore
+            # Community's workflow entity is WorkflowDefinition in
+            # models.community — not a top-level Workflow class.
+            from models.community import WorkflowDefinition  # type: ignore
             wf_result = await db.execute(
-                select(Workflow).where(Workflow.id == entity_id)
+                select(WorkflowDefinition).where(WorkflowDefinition.id == entity_id)
             )
             wf = wf_result.scalar_one_or_none()
             if wf is not None:
                 fresh_status = getattr(wf, "status", None) or "unknown"
                 fresh_summary = f"status: {fresh_status}"
+        elif entity_type == "execution":
+            from models.workflow_execution import WorkflowExecution  # type: ignore
+            ex_result = await db.execute(
+                select(WorkflowExecution).where(WorkflowExecution.id == entity_id)
+            )
+            ex = ex_result.scalar_one_or_none()
+            if ex is not None:
+                raw = getattr(ex, "status", None)
+                # WorkflowExecutionStatus is an Enum; normalize to string.
+                fresh_status = getattr(raw, "value", raw) or "unknown"
+                fresh_summary = f"status: {fresh_status}"
         elif entity_type == "agent":
             # No unified agent model in Community; defer to cached summary.
             pass
-        elif entity_type == "execution":
-            # Execution status lives in workflow_executions — service-agnostic
-            # fallback to cached value for now.
-            pass
     except Exception as e:
-        # Don't 500 the polling caller — return cached.
+        # Don't 500 the polling caller — return cached. Log at INFO so a
+        # broken lookup is visible in prod (DEBUG previously masked a real
+        # wrong-import bug for weeks).
         import logging
-        logging.getLogger(__name__).debug(
+        logging.getLogger(__name__).info(
             f"[entity_status] fresh lookup failed for {key}: {e}"
         )
 
