@@ -541,6 +541,86 @@ async def promote_pattern(
     return {"message": "Pattern promoted successfully", "pattern_id": pattern_id}
 
 
+# === Tracked Entity Live Status (Phase 3 follow-up) ===
+
+@router.get("/sessions/{session_id}/entities/{entity_type}/{entity_id}/status")
+async def get_entity_status(
+    session_id: UUID,
+    entity_type: str,
+    entity_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return fresh status for a tracked entity referenced by a ui_block.
+
+    Blocks with an `entity_ref` poll this endpoint to refresh their status
+    chip without re-running the full conversation turn. Resolution is
+    edition-agnostic here (Community-level); Business/Enterprise can add
+    per-type enhancements.
+    """
+    # Authorize via the session.
+    result = await db.execute(
+        select(ConversationSession).where(
+            ConversationSession.id == session_id,
+            ConversationSession.user_id == get_safe_attr(current_user, 'id'),
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    tracked = (session.context or {}).get("tracked_entities") or {}
+    key = f"{entity_type}:{entity_id}"
+    cached = tracked.get(key)
+
+    # Pull a fresh status from the underlying service when we know how.
+    fresh_status: Optional[str] = None
+    fresh_summary: Optional[str] = None
+    try:
+        if entity_type == "workflow":
+            from models.workflow import Workflow  # type: ignore
+            wf_result = await db.execute(
+                select(Workflow).where(Workflow.id == entity_id)
+            )
+            wf = wf_result.scalar_one_or_none()
+            if wf is not None:
+                fresh_status = getattr(wf, "status", None) or "unknown"
+                fresh_summary = f"status: {fresh_status}"
+        elif entity_type == "agent":
+            # No unified agent model in Community; defer to cached summary.
+            pass
+        elif entity_type == "execution":
+            # Execution status lives in workflow_executions — service-agnostic
+            # fallback to cached value for now.
+            pass
+    except Exception as e:
+        # Don't 500 the polling caller — return cached.
+        import logging
+        logging.getLogger(__name__).debug(
+            f"[entity_status] fresh lookup failed for {key}: {e}"
+        )
+
+    # Update tracked_entity summary if we got fresh data.
+    if fresh_summary and cached:
+        cached["summary"] = fresh_summary
+        cached["last_seen"] = dt.utcnow().isoformat()
+        try:
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(session, "context")
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+    return {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "status": fresh_status or (cached or {}).get("summary", "").replace("status: ", "") or None,
+        "summary": fresh_summary or (cached or {}).get("summary"),
+        "label": (cached or {}).get("label"),
+        "tracked": cached is not None,
+    }
+
+
 # === Action Execution Endpoints ===
 
 @router.post("/sessions/{session_id}/actions", response_model=ConversationActionResponse)

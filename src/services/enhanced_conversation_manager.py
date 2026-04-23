@@ -1485,7 +1485,12 @@ Response (just the sentence, no quotes):"""
         )
 
         # Expose scoring metadata for the clarification loop without
-        # changing the public return contract.
+        # changing the public return contract. Track keyword-scored tools
+        # separately because ALWAYS_INCLUDE sentinels (score 200) otherwise
+        # drown out the keyword signal in the top-5 view.
+        top_keyword_scores = [
+            (t.name, s) for t, s, src in scored if src != "always_include"
+        ][:5]
         self._last_prune_meta = {
             "adapter": adapter,
             "total": len(tools),
@@ -1493,6 +1498,7 @@ Response (just the sentence, no quotes):"""
             "cap": max_tools,
             "reason": reason,
             "top_scores": [(t.name, s) for t, s, _ in scored[:5]],
+            "top_keyword_scores": top_keyword_scores,
             "took_ms": took_ms,
         }
         return selected
@@ -1506,13 +1512,15 @@ Response (just the sentence, no quotes):"""
         LLM call is just as likely to pick wrong as right.
         """
         meta = getattr(self, "_last_prune_meta", None) or {}
-        top_scores = meta.get("top_scores") or []
-        # Skip ALWAYS_INCLUDE sentinels (score == 200) when looking for
-        # keyword-based rankings.
-        keyword_scores = [(n, s) for (n, s) in top_scores if s < 100]
+        keyword_scores = meta.get("top_keyword_scores") or []
         if len(keyword_scores) < 2:
             return False
         top_score = keyword_scores[0][1]
+        if top_score <= 0:
+            # No keyword hits at all — user's message is unrelated to tools
+            # (e.g., small talk slipped past _needs_tools). Don't clarify;
+            # let the LLM handle it in text-only fashion.
+            return False
         gap = top_score - keyword_scores[1][1]
         return (
             top_score <= self._AMBIGUITY_SCORE_FLOOR
@@ -1528,8 +1536,7 @@ Response (just the sentence, no quotes):"""
         inline with button actions.
         """
         meta = getattr(self, "_last_prune_meta", None) or {}
-        top_scores = meta.get("top_scores") or []
-        keyword_candidates = [(n, s) for (n, s) in top_scores if s < 100][:3]
+        keyword_candidates = (meta.get("top_keyword_scores") or [])[:3]
         if len(keyword_candidates) < 2:
             return None
         return {
@@ -2053,6 +2060,49 @@ Response (just the sentence, no quotes):"""
                     "message": "Context assembled"
                 }
             }
+
+        # =====================================================================
+        # Clarification short-circuit (Phase 2)
+        # When keyword-based tool scoring is genuinely ambiguous, a wrong
+        # LLM pick is as likely as a right one. Ask the user which action
+        # they meant before spending an LLM call.
+        # =====================================================================
+        if needs_tools and self._prune_is_ambiguous():
+            clarif_block = self._build_clarification_block()
+            if clarif_block:
+                logger.info(
+                    "[clarification] ambiguous tool selection — emitting "
+                    "clarification block (top: %s)",
+                    [c.get("tool") for c in clarif_block["data"].get("candidates", [])],
+                )
+                if stream:
+                    yield {"event": "ui_block", "data": {"block": clarif_block}}
+
+                # Persist the user message and a short assistant response so
+                # the conversation history stays consistent with what the
+                # user sees.
+                clarif_text = clarif_block["data"]["content"]
+                assistant_message = await self._store_message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=clarif_text,
+                    commit=True,
+                )
+                response_data = {
+                    "content": clarif_text,
+                    "message_id": str(assistant_message.id),
+                    "tools_executed": [],
+                    "all_successful": True,
+                    "session_context": {
+                        "parameters": (session.context or {}).get('v5_parameters', {}),
+                        "turn_count": len(conversation_history),
+                    },
+                    "ui_blocks": [clarif_block],
+                    "clarification": True,
+                }
+                yield {"event": "response", "data": response_data}
+                yield {"event": "complete", "data": {"status": "clarification"}}
+                return
 
         # =====================================================================
         # Step 5: LLM generation with full context - LLM DECIDES what to do
