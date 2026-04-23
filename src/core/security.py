@@ -151,8 +151,9 @@ async def get_current_user(
         if user_id is None:
             raise credentials_exception
     except JWTError:
-        # JWT decode failed — try OAuth2 access token (Business+ feature)
-        oauth2_user = await _try_oauth2_token_auth(token, db)
+        # JWT decode failed — try OAuth2 access token (Business+ feature).
+        # Pass request so _try_oauth2 can set tenant ContextVar + state.
+        oauth2_user = await _try_oauth2_token_auth(token, db, request=request)
         if oauth2_user:
             return oauth2_user
         raise credentials_exception
@@ -285,8 +286,17 @@ async def verify_token(token: str, db=None) -> Optional[dict]:
 async def _try_api_key_auth(
     api_key_value: str, request: Request, db: AsyncSession
 ) -> Optional["User"]:
-    """Attempt authentication via API key. Returns User or None."""
+    """Attempt authentication via API key. Returns User or None.
+
+    Wave 7 A7/A11: also re-syncs the tenant ContextVar to the
+    authenticated user's tenant_id. The TenantMiddleware couldn't do
+    this for API-key-only requests (no JWT to decode). Setting the
+    ContextVar here ensures the plan gate and downstream handlers see
+    the correct tenant, regardless of what ``X-Tenant-ID`` did (or
+    didn't) set.
+    """
     try:
+        from core.tenant_context import set_current_tenant_id
         from services.api_key_service import APIKeyService
 
         svc = APIKeyService(db)
@@ -294,6 +304,13 @@ async def _try_api_key_auth(
         user, key = await svc.verify_api_key(api_key_value, ip_address=ip_address)
         if user and key:
             request.state.api_key = key
+            # Re-sync tenant ContextVar from the authenticated user.
+            # The middleware's default-fallback or a prior (ignored)
+            # X-Tenant-ID header attempt is superseded here.
+            user_tenant = getattr(user, "tenant_id", None)
+            if user_tenant:
+                set_current_tenant_id(str(user_tenant))
+                request.state.tenant_id = str(user_tenant)
             return user
     except Exception:
         pass
@@ -301,29 +318,60 @@ async def _try_api_key_auth(
 
 
 async def _try_oauth2_token_auth(
-    token: str, db: AsyncSession
+    token: str, db: AsyncSession, request: Optional[Request] = None
 ) -> Optional["User"]:
     """Attempt authentication via OAuth2 access token (Business+ feature).
 
-    OAuth2 tokens are issued by POST /api/v1/oauth2/token (client_credentials grant).
-    They're opaque tokens stored in oauth2_access_tokens, not JWTs.
+    OAuth2 tokens are issued by POST /api/v1/oauth2/token
+    (client_credentials grant). They're opaque tokens stored in
+    ``oauth2_access_tokens``, not JWTs.
+
+    Wave 7 A7: resolves the token's parent ``OAuth2Client.tenant_id``
+    and sets the tenant ContextVar — the middleware couldn't do this
+    because OAuth2 tokens aren't JWTs (and the middleware's sync-path
+    helper returns None for this case by design).
     """
     try:
         import sys
         if "/workspace/editions/business/src" not in sys.path:
             sys.path.insert(0, "/workspace/editions/business/src")
 
-        from aictrlnet_business.services.oauth2_service_async import OAuth2ServiceAsync
+        from aictrlnet_business.models.oauth2 import OAuth2Client  # type: ignore
+        from aictrlnet_business.services.oauth2_service_async import (  # type: ignore
+            OAuth2ServiceAsync,
+        )
+        from core.tenant_context import set_current_tenant_id
         from models.user import User
 
         svc = OAuth2ServiceAsync(db)
         access_token = await svc.verify_access_token(token)
         if access_token and not access_token.revoked:
+            # Resolve tenant from the OAuth2 client (authoritative)
+            client_row = (
+                await db.execute(
+                    select(OAuth2Client).where(
+                        OAuth2Client.client_id == access_token.client_id
+                    )
+                )
+            ).scalar_one_or_none()
+
             result = await db.execute(
                 select(User).where(User.id == access_token.user_id)
             )
             user = result.scalar_one_or_none()
             if user and user.is_active:
+                # Prefer the OAuth2 client's tenant (this is what the
+                # subscription is scoped to). Fall back to user.tenant_id
+                # if client lookup failed.
+                resolved_tenant = None
+                if client_row and client_row.tenant_id:
+                    resolved_tenant = str(client_row.tenant_id)
+                elif getattr(user, "tenant_id", None):
+                    resolved_tenant = str(user.tenant_id)
+                if resolved_tenant:
+                    set_current_tenant_id(resolved_tenant)
+                    if request is not None:
+                        request.state.tenant_id = resolved_tenant
                 return user
     except ImportError:
         pass

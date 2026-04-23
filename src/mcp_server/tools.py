@@ -1848,21 +1848,58 @@ TOOL_SCOPES = {
 def get_tools_for_edition() -> list:
     """Return tool definitions available for the current edition.
 
-    Uses accretive try/except pattern: Community tools always present,
-    Business/Enterprise tools added if their modules are importable.
+    Wave 7 A3: Business/Enterprise tools are registered only when BOTH
+    their module is importable AND the corresponding env flag is set.
+    This is belt-and-suspenders with the plan gate — even if Business
+    code leaks into PYTHONPATH on a Community deploy (dev image pushed
+    to prod, shared container), the flag must be explicit ``true`` or
+    the tools don't register. ``tools/list`` thus doesn't leak tool
+    existence across editions.
+
+    Defaults:
+    - ``MCP_ENABLE_BUSINESS_TOOLS``: defaults to ``true`` so existing
+      Business/Enterprise deployments keep working without config change.
+    - ``MCP_ENABLE_ENTERPRISE_TOOLS``: defaults to ``true`` for the same
+      reason.
+
+    Set to ``false`` explicitly on pure Community deploys to harden.
     """
+    import os
+
     tools = list(COMMUNITY_TOOLS)
 
-    try:
-        from aictrlnet_business.api.v1.endpoints import agp_evaluation  # noqa: F401
-        tools.extend(BUSINESS_TOOLS)
-    except ImportError:
-        pass
+    business_flag = os.environ.get("MCP_ENABLE_BUSINESS_TOOLS", "true").lower() == "true"
+    if business_flag:
+        try:
+            from aictrlnet_business.api.v1.endpoints import agp_evaluation  # noqa: F401
+            tools.extend(BUSINESS_TOOLS)
+        except ImportError:
+            pass
+    else:
+        try:
+            from aictrlnet_business.api.v1.endpoints import agp_evaluation  # noqa: F401
+            logger.warning(
+                "Business edition code is importable but MCP_ENABLE_BUSINESS_TOOLS=false — "
+                "refusing to register Business tools. Set the flag to 'true' to enable."
+            )
+        except ImportError:
+            pass
 
-    try:
-        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # noqa: F401
-        tools.extend(ENTERPRISE_TOOLS)
-    except ImportError:
-        pass
+    enterprise_flag = os.environ.get("MCP_ENABLE_ENTERPRISE_TOOLS", "true").lower() == "true"
+    if enterprise_flag:
+        try:
+            from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # noqa: F401
+            tools.extend(ENTERPRISE_TOOLS)
+        except ImportError:
+            pass
+    else:
+        try:
+            from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # noqa: F401
+            logger.warning(
+                "Enterprise edition code is importable but MCP_ENABLE_ENTERPRISE_TOOLS=false — "
+                "refusing to register Enterprise tools. Set the flag to 'true' to enable."
+            )
+        except ImportError:
+            pass
 
     return tools

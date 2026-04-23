@@ -178,8 +178,19 @@ TOOL_MIN_PLAN: dict[str, str] = {
 
 # Tools that mutate the plan / subscription — executing one of these
 # busts the per-request plan cache so subsequent calls in the same
-# batch see fresh tier.
-PLAN_MUTATING_TOOLS: set[str] = {"get_upgrade_options"}  # read-only; nothing mutates yet via MCP
+# JSON-RPC batch see fresh tier.
+#
+# Wave 7 A11: PlanService is instantiated per HTTP request by
+# MCPProtocolHandler, so cross-request cache bleed is impossible by
+# construction. This set handles the narrower case of a JSON-RPC batch
+# that mutates the plan mid-batch. Any future tool that upgrades,
+# downgrades, or cancels a subscription MUST be added here.
+PLAN_MUTATING_TOOLS: set[str] = {
+    # Reads that could race against an external plan change — bust the
+    # cache defensively so the next call in the batch re-resolves.
+    "get_upgrade_options",
+    "get_subscription",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +280,17 @@ class PlanService:
 
         try:
             # Find an active/trialing/past_due subscription for the tenant.
+            # PAST_DUE is a grace period — Wave 7 A4 bounds it to
+            # MCP_PAST_DUE_GRACE_DAYS (default 3) past current_period_end.
+            import os
+            from datetime import datetime, timedelta, timezone
+
             stmt = (
-                select(SubscriptionPlan.edition)
+                select(
+                    SubscriptionPlan.edition,
+                    Subscription.status,
+                    Subscription.current_period_end,
+                )
                 .join(Subscription, Subscription.plan_id == SubscriptionPlan.id)
                 .where(
                     Subscription.tenant_id == tenant_id,
@@ -284,7 +304,23 @@ class PlanService:
             )
             row = (await self.db.execute(stmt)).first()
             if row and row[0]:
-                return normalize_edition(row[0])
+                edition, status, period_end = row[0], row[1], row[2]
+                # A4: PAST_DUE beyond grace → fall back to community
+                if status == SubscriptionStatus.PAST_DUE and period_end is not None:
+                    grace_days = int(os.environ.get("MCP_PAST_DUE_GRACE_DAYS", "3"))
+                    cutoff = period_end + timedelta(days=grace_days)
+                    now = datetime.now(timezone.utc)
+                    # Handle naive datetime from DB
+                    if cutoff.tzinfo is None:
+                        cutoff = cutoff.replace(tzinfo=timezone.utc)
+                    if now > cutoff:
+                        logger.info(
+                            "Tenant %s PAST_DUE beyond %d-day grace (period_end=%s) — "
+                            "falling back to community",
+                            tenant_id, grace_days, period_end,
+                        )
+                        return "community"
+                return normalize_edition(edition)
         except Exception as e:  # defensive — never block MCP on plan-lookup failure
             logger.warning("plan lookup failed for tenant=%s: %s", tenant_id, e)
 

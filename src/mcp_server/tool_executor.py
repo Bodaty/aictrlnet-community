@@ -117,7 +117,7 @@ async def execute_tool(
                 )
 
         # 3. Enterprise compliance check
-        await _enforce_compliance_if_enterprise(tool_name, tenant_id, db)
+        await _enforce_compliance_if_enterprise(tool_name, tenant_id, db, plan_tier=plan_tier)
 
         # 4. Per-tool rate bucket (Redis / in-memory fallback)
         try:
@@ -125,6 +125,7 @@ async def execute_tool(
                 tool_name=tool_name,
                 api_key=api_key,
                 user_id=user_id,
+                tenant_id=tenant_id,  # A10: tenant-scoped principal
             )
         except RateError as e:
             observability.record_rate_denied(
@@ -200,12 +201,30 @@ async def execute_tool(
             duration * 1000,
             status,
             db,
+            plan_tier=plan_tier,
         )
 
 
 async def _enforce_compliance_if_enterprise(
-    tool_name: str, tenant_id: Optional[str], db: AsyncSession
+    tool_name: str,
+    tenant_id: Optional[str],
+    db: AsyncSession,
+    plan_tier: str = "community",
 ) -> None:
+    """Enforce Enterprise compliance gate before tool execution.
+
+    Wave 7 A2: **fail-secure for Enterprise plan tier**. If the
+    compliance service is reachable but errors mid-check, previously
+    we logged a warning and let the tool through — which is unsafe for
+    SOC2/HIPAA-scoped deploys. Now: Enterprise-plan callers fail with
+    ComplianceError on unexpected errors; Community/Business keep the
+    warning-and-continue behavior (they don't expect compliance
+    enforcement).
+
+    Controlled by ``MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE`` (default
+    ``true``). Operators can flip to ``false`` for an intentional
+    graceful-degradation window.
+    """
     try:
         from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # type: ignore
     except ImportError:
@@ -228,6 +247,21 @@ async def _enforce_compliance_if_enterprise(
     except ComplianceError:
         raise
     except Exception as e:
+        import os
+
+        fail_secure = (
+            plan_tier == "enterprise"
+            and os.environ.get("MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE", "true").lower() == "true"
+        )
+        if fail_secure:
+            observability.record_compliance_denied(
+                tool=tool_name,
+                reason=f"compliance service error: {e}",
+                tenant_id=tenant_id,
+            )
+            raise ComplianceError(
+                f"Enterprise compliance service unavailable: {e}"
+            ) from e
         logger.warning("Compliance check errored for %s: %s", tool_name, e)
 
 
@@ -240,7 +274,20 @@ async def _audit_if_enterprise(
     duration_ms: float,
     status: str,
     db: AsyncSession,
+    plan_tier: str = "community",
 ) -> None:
+    """Persist the MCP tool call to the Enterprise audit log.
+
+    Wave 7 A12: **fail-closed for Enterprise plan tier**. Previously
+    audit failures were silently logged as warnings — unacceptable for
+    SOC2/HIPAA-scoped deploys where the audit trail is a compliance
+    requirement. Now: if the audit service errors for an Enterprise
+    caller, the tool call surfaces as a ComplianceError so the caller
+    knows the trail is incomplete and can decide what to do.
+
+    Controlled by the same ``MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE``
+    flag as A2.
+    """
     try:
         from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # type: ignore
     except ImportError:
@@ -259,6 +306,17 @@ async def _audit_if_enterprise(
             db=db,
         )
     except Exception as e:
+        import os
+
+        fail_secure = (
+            plan_tier == "enterprise"
+            and os.environ.get("MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE", "true").lower() == "true"
+        )
+        if fail_secure:
+            logger.error("Enterprise audit log failed — raising: %s", e)
+            raise ComplianceError(
+                f"Enterprise audit trail incomplete: {e}"
+            ) from e
         logger.warning("Enterprise audit logging failed: %s", e)
 
 

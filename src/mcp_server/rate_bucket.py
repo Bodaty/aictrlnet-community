@@ -120,12 +120,24 @@ def _memory_incr(key: str, ttl_seconds: int) -> int:
         return count
 
 
-def _principal_from(api_key, oauth_client_id: Optional[str], user_id: Optional[str]) -> str:
+def _principal_from(
+    api_key,
+    oauth_client_id: Optional[str],
+    user_id: Optional[str],
+    tenant_id: Optional[str] = None,
+) -> str:
+    """Build the rate-bucket principal string.
+
+    Wave 7 A10: principal is now tenant-scoped so a rogue or reused key
+    id across tenants can't share a bucket. Falls back to ``default``
+    when no tenant is present.
+    """
+    tenant = tenant_id or "default"
     if api_key is not None:
-        return f"apikey:{getattr(api_key, 'id', 'unknown')}"
+        return f"apikey:{tenant}:{getattr(api_key, 'id', 'unknown')}"
     if oauth_client_id:
-        return f"oauth:{oauth_client_id}"
-    return f"user:{user_id or 'anonymous'}"
+        return f"oauth:{tenant}:{oauth_client_id}"
+    return f"user:{tenant}:{user_id or 'anonymous'}"
 
 
 def _limits_for(principal: str, api_key, tool_name: str) -> dict[str, int]:
@@ -163,11 +175,15 @@ async def check_rate(
     api_key=None,
     oauth_client_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> None:
     """Raise ``RateError`` if the caller has exceeded any configured
     window for this tool.
+
+    Wave 7 A10: ``tenant_id`` is now scoped into the principal so
+    cross-tenant id collisions can't share buckets.
     """
-    principal = _principal_from(api_key, oauth_client_id, user_id)
+    principal = _principal_from(api_key, oauth_client_id, user_id, tenant_id=tenant_id)
     limits = _limits_for(principal, api_key, tool_name)
     client = _get_redis()
 
