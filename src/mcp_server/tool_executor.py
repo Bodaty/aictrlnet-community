@@ -4253,6 +4253,231 @@ async def _handle_validate_credential(
     }
 
 
+# ---------------------------------------------------------------------------
+# Wave 7 B1.3 — Personal Agent Hub
+# ---------------------------------------------------------------------------
+
+
+def _personal_agent_service(db):
+    try:
+        from services.personal_agent_service import PersonalAgentService  # type: ignore
+    except Exception:
+        return None
+    try:
+        return PersonalAgentService(db)
+    except Exception:
+        return None
+
+
+def _pa_dump(obj) -> Any:
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if hasattr(obj, "dict"):
+        return obj.dict()
+    if isinstance(obj, (dict, list, str, int, float, bool)) or obj is None:
+        return obj
+    return str(obj)
+
+
+async def _handle_get_personal_agent_config(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _personal_agent_service(db)
+    if svc is None:
+        return {"status": "feature_pending", "available": False}
+    config = await svc.get_or_create_config(user_id)
+    return {"config": _pa_dump(config)}
+
+
+async def _handle_update_personal_agent_config(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _personal_agent_service(db)
+    if svc is None:
+        return {"status": "feature_pending", "available": False}
+    method = getattr(svc, "update_config", None)
+    if not method:
+        return {"status": "feature_pending", "available": False}
+    config = await method(user_id, arguments)
+    return {"config": _pa_dump(config), "updated": True}
+
+
+async def _handle_get_personal_agent_activity(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _personal_agent_service(db)
+    if svc is None:
+        return {"activity": [], "available": False, "status": "feature_pending"}
+    feed = getattr(svc, "get_activity_feed", None)
+    if not feed:
+        return {"activity": [], "available": False}
+    result = await feed(user_id, limit=int(arguments.get("limit", 50)))
+    return {"activity": _pa_dump(result)}
+
+
+async def _handle_connect_external_agent(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Attach an external agent (BYOA) to the personal-agent config.
+
+    Uses update_config under the hood — external_agents is a list on
+    the personal agent config.
+    """
+    svc = _personal_agent_service(db)
+    if svc is None:
+        return {"status": "feature_pending", "available": False}
+    # Read current config, append external agent, write back.
+    config = await svc.get_or_create_config(user_id)
+    current = _pa_dump(config) or {}
+    externals = current.get("external_agents") or []
+    externals.append({
+        "agent_id": arguments["agent_id"],
+        "agent_type": arguments["agent_type"],
+        "endpoint": arguments.get("endpoint"),
+        "credentials_ref": arguments.get("credentials_ref"),
+    })
+    update = getattr(svc, "update_config", None)
+    if update:
+        result = await update(user_id, {"external_agents": externals})
+        return {"external_agents": externals, "config": _pa_dump(result)}
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "message": "Personal agent service lacks update_config.",
+    }
+
+
+async def _handle_create_personal_workflow(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _personal_agent_service(db)
+    if svc is None:
+        return {"status": "feature_pending", "available": False}
+    add = getattr(svc, "add_workflow", None)
+    if not add:
+        return {"status": "feature_pending", "available": False}
+    result = await add(
+        user_id=user_id,
+        workflow_id=arguments["workflow_id"],
+        role=arguments.get("role", "primary"),
+    )
+    return {
+        "workflow_id": arguments["workflow_id"],
+        "role": arguments.get("role", "primary"),
+        "result": _pa_dump(result),
+    }
+
+
+async def _handle_promote_personal_workflow(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Feature_pending — org-promotion service not yet shipped."""
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "message": (
+            "Personal-to-org workflow promotion service not yet factored "
+            "out. Tracked under Wave 7 B1.3 follow-up."
+        ),
+        "workflow_id": arguments["workflow_id"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Wave 7 B1.4 — Marketplace (publish / compose / sync — feature_pending)
+# ---------------------------------------------------------------------------
+
+
+def _marketplace_service(db):
+    try:
+        from services.marketplace_service import MarketplaceService  # type: ignore
+    except Exception:
+        return None
+    try:
+        return MarketplaceService(db)
+    except Exception:
+        return None
+
+
+async def _handle_list_org_marketplace_items(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _marketplace_service(db)
+    if svc is None:
+        return {"items": [], "available": False, "status": "feature_pending"}
+    browse = getattr(svc, "browse", None)
+    if not browse:
+        return {"items": [], "available": False}
+    result = await browse(
+        category=arguments.get("category"),
+        limit=int(arguments.get("limit", 50)),
+        offset=int(arguments.get("offset", 0)),
+    )
+    return {"items": _pa_dump(result)}
+
+
+async def _handle_publish_to_org_marketplace(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _marketplace_service(db)
+    publish = getattr(svc, "publish", None) if svc else None
+    if publish is None:
+        return {
+            "status": "feature_pending",
+            "available": False,
+            "message": (
+                "MarketplaceService.publish not yet implemented "
+                "(Feature #19 P4 Planned)."
+            ),
+            "item_id": arguments.get("item_id"),
+        }
+    result = await publish(
+        user_id=user_id,
+        item_type=arguments["item_type"],
+        item_id=arguments["item_id"],
+        title=arguments.get("title"),
+        description=arguments.get("description"),
+        visibility=arguments.get("visibility", "org"),
+    )
+    return {"published": True, "result": _pa_dump(result)}
+
+
+async def _handle_compose_marketplace_items(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _marketplace_service(db)
+    compose = getattr(svc, "compose", None) if svc else None
+    if compose is None:
+        return {
+            "status": "feature_pending",
+            "available": False,
+            "message": "Composition engine not yet shipped.",
+            "item_ids": arguments["item_ids"],
+        }
+    result = await compose(
+        user_id=user_id,
+        item_ids=arguments["item_ids"],
+        name=arguments["name"],
+        description=arguments.get("description"),
+    )
+    return {"composed": True, "result": _pa_dump(result)}
+
+
+async def _handle_sync_public_marketplace_updates(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    svc = _marketplace_service(db)
+    sync = getattr(svc, "sync_public_updates", None) if svc else None
+    if sync is None:
+        return {
+            "status": "feature_pending",
+            "available": False,
+            "message": "Public registry sync not yet shipped.",
+        }
+    result = await sync(user_id=user_id)
+    return {"synced": True, "result": _pa_dump(result)}
+
+
 TOOL_HANDLERS = {
     # Original 11
     "create_workflow": _handle_create_workflow,
@@ -4400,4 +4625,16 @@ TOOL_HANDLERS = {
     "delete_credential": _handle_delete_credential,
     "rotate_credential": _handle_rotate_credential,
     "validate_credential": _handle_validate_credential,
+    # Wave 7 B1.3: Personal Agent Hub
+    "get_personal_agent_config": _handle_get_personal_agent_config,
+    "update_personal_agent_config": _handle_update_personal_agent_config,
+    "get_personal_agent_activity": _handle_get_personal_agent_activity,
+    "connect_external_agent": _handle_connect_external_agent,
+    "create_personal_workflow": _handle_create_personal_workflow,
+    "promote_personal_workflow": _handle_promote_personal_workflow,
+    # Wave 7 B1.4: Marketplace
+    "list_org_marketplace_items": _handle_list_org_marketplace_items,
+    "publish_to_org_marketplace": _handle_publish_to_org_marketplace,
+    "compose_marketplace_items": _handle_compose_marketplace_items,
+    "sync_public_marketplace_updates": _handle_sync_public_marketplace_updates,
 }

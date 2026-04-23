@@ -748,6 +748,33 @@ COMMUNITY_TOOLS = [
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # ---- Wave 7 B1.3 Community-tier Personal Agent tools ----
+    {
+        "name": "get_personal_agent_config",
+        "description": (
+            "Get the caller's personal agent config (autonomy level, "
+            "connected external agents, attached workflows, preferences). "
+            "Community-tier; everyone has a personal agent."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "create_personal_workflow",
+        "description": (
+            "Attach a workflow to the caller's personal agent. The workflow "
+            "runs at personal scope; to share with the org use "
+            "promote_personal_workflow (business+)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "role": {"type": "string", "default": "primary"},
+                "idempotency_key": {"type": "string"},
+            },
+            "required": ["workflow_id"],
+        },
+    },
 ]
 
 BUSINESS_TOOLS = [
@@ -1623,6 +1650,145 @@ BUSINESS_TOOLS = [
             "required": ["platform", "credential_id"],
         },
     },
+    # ==== Wave 7 B1.3 — Personal Agent Hub (Business+ tools) ====
+    {
+        "name": "update_personal_agent_config",
+        "description": (
+            "Update the caller's personal agent config — autonomy level, "
+            "connected external agents (BYOA/OpenClaw), preferences."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "autonomy_level": {"type": "integer", "minimum": 0, "maximum": 100},
+                "autonomy_locked": {"type": "boolean"},
+                "external_agents": {"type": "array", "items": {"type": "object"}},
+                "preferences": {"type": "object"},
+            },
+        },
+    },
+    {
+        "name": "get_personal_agent_activity",
+        "description": (
+            "Return the caller's personal agent activity feed — recent "
+            "actions, decisions, approvals. Useful for audit trails."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 50, "maximum": 500},
+                "since": {"type": "string", "format": "date-time"},
+            },
+        },
+    },
+    {
+        "name": "connect_external_agent",
+        "description": (
+            "Register an external agent (BYOA — e.g. OpenClaw, custom "
+            "A2A agent) with the caller's personal agent config. The "
+            "external agent then appears in orchestration."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "agent_type": {"type": "string", "description": "e.g. openclaw, a2a, custom"},
+                "endpoint": {"type": "string"},
+                "credentials_ref": {
+                    "type": "string",
+                    "description": "credential_id for this external agent",
+                },
+            },
+            "required": ["agent_id", "agent_type"],
+        },
+    },
+    {
+        "name": "promote_personal_workflow",
+        "description": (
+            "Promote a personal workflow to org scope so others in the "
+            "tenant can use it. Business+ (feature_pending — org-promotion "
+            "service not yet factored out)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "visibility": {
+                    "type": "string",
+                    "enum": ["org", "public"],
+                    "default": "org",
+                },
+            },
+            "required": ["workflow_id"],
+        },
+    },
+    # ==== Wave 7 B1.4 — Marketplace publishing + composition ====
+    # (all feature_pending — MarketplaceService lacks publish/compose/sync methods)
+    {
+        "name": "list_org_marketplace_items",
+        "description": (
+            "Browse the caller's org-scoped marketplace (templates + "
+            "workflows + adapters published within the tenant)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string"},
+                "limit": {"type": "integer", "default": 50, "maximum": 500},
+                "offset": {"type": "integer", "default": 0},
+            },
+        },
+    },
+    {
+        "name": "publish_to_org_marketplace",
+        "description": (
+            "Publish a template / workflow / adapter to the org marketplace. "
+            "Returns feature_pending — MarketplaceService.publish method is "
+            "not yet implemented (Feature #19 P4: Planned)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item_type": {
+                    "type": "string",
+                    "enum": ["template", "workflow", "adapter"],
+                },
+                "item_id": {"type": "string"},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "visibility": {
+                    "type": "string",
+                    "enum": ["org", "public"],
+                    "default": "org",
+                },
+            },
+            "required": ["item_type", "item_id"],
+        },
+    },
+    {
+        "name": "compose_marketplace_items",
+        "description": (
+            "Compose multiple marketplace items into a new composite "
+            "template. feature_pending — composition engine not yet shipped."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "item_ids": {"type": "array", "items": {"type": "string"}},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+            },
+            "required": ["item_ids", "name"],
+        },
+    },
+    {
+        "name": "sync_public_marketplace_updates",
+        "description": (
+            "Pull in any public marketplace updates. feature_pending — "
+            "public registry sync not yet shipped."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 ENTERPRISE_TOOLS = [
@@ -2011,6 +2177,18 @@ TOOL_SCOPES = {
     "delete_credential": ["write:credentials"],
     "rotate_credential": ["write:credentials"],
     "validate_credential": ["write:credentials"],
+    # Wave 7 B1.3: Personal Agent
+    "get_personal_agent_config": ["read:personal_agent"],
+    "update_personal_agent_config": ["write:personal_agent"],
+    "get_personal_agent_activity": ["read:personal_agent"],
+    "connect_external_agent": ["write:personal_agent"],
+    "create_personal_workflow": ["write:workflows"],
+    "promote_personal_workflow": ["write:workflows"],
+    # Wave 7 B1.4: Marketplace
+    "list_org_marketplace_items": ["read:marketplace"],
+    "publish_to_org_marketplace": ["write:marketplace"],
+    "compose_marketplace_items": ["write:marketplace"],
+    "sync_public_marketplace_updates": ["write:marketplace"],
 }
 
 

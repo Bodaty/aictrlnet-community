@@ -187,6 +187,18 @@ TOOL_MIN_PLAN: dict[str, str] = {
     "delete_credential": "business",
     "rotate_credential": "business",
     "validate_credential": "business",
+    # Wave 7 B1.3 — Personal Agent Hub
+    "get_personal_agent_config": "community",
+    "update_personal_agent_config": "business",
+    "get_personal_agent_activity": "business",
+    "connect_external_agent": "business",
+    "create_personal_workflow": "community",
+    "promote_personal_workflow": "business",
+    # Wave 7 B1.4 — Marketplace publishing + composition
+    "list_org_marketplace_items": "business",
+    "publish_to_org_marketplace": "business",
+    "compose_marketplace_items": "business",
+    "sync_public_marketplace_updates": "business",
 }
 
 # Tools that mutate the plan / subscription — executing one of these
