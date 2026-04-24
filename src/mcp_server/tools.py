@@ -3102,13 +3102,13 @@ def get_tools_for_edition() -> list:
     enterprise_flag = os.environ.get("MCP_ENABLE_ENTERPRISE_TOOLS", "true").lower() == "true"
     if enterprise_flag:
         try:
-            from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # noqa: F401
+            from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceManager  # noqa: F401
             tools.extend(ENTERPRISE_TOOLS)
         except ImportError:
             pass
     else:
         try:
-            from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # noqa: F401
+            from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceManager  # noqa: F401
             logger.warning(
                 "Enterprise edition code is importable but MCP_ENABLE_ENTERPRISE_TOOLS=false — "
                 "refusing to register Enterprise tools. Set the flag to 'true' to enable."
