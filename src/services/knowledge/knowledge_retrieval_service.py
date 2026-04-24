@@ -335,21 +335,37 @@ class KnowledgeRetrievalService:
 
     def _generate_feature_examples(self, feature_data: Dict) -> List[str]:
         """
-        Generate example commands for feature.
-        """
-        examples = []
+        Generate example commands for a feature.
 
-        capabilities = feature_data.get("capabilities") if isinstance(feature_data, dict) else None
+        The manifest feeds us two capability shapes:
+          - Flat bool flags: {"webhooks": True, "rest_api": True}
+            (the current system_manifest_service produces this)
+          - Nested objects with .examples: {"webhooks": {"examples": ["..."]}}
+            (hypothetical richer form)
+        Handle both — for flat flags, surface the enabled capability
+        names; for nested, pull the canned examples.
+        """
+        if not isinstance(feature_data, dict):
+            return ["Use this feature"]
+
+        description = feature_data.get("description", "this feature")
+        capabilities = feature_data.get("capabilities")
+
+        examples: List[str] = []
         if isinstance(capabilities, dict):
             for cap_name, cap_data in capabilities.items():
                 if isinstance(cap_data, dict) and isinstance(cap_data.get("examples"), list):
                     examples.extend(cap_data["examples"][:2])
+                elif cap_data is True:
+                    # Flat-flag form — turn the flag name into an actionable example
+                    pretty = cap_name.replace("_", " ")
+                    examples.append(f"Use {pretty}")
 
         if not examples:
-            description = feature_data.get("description", "this feature") if isinstance(feature_data, dict) else "this feature"
             examples = [f"Use {description}"]
 
-        return examples
+        # Cap the list so callers don't get overwhelmed
+        return examples[:6]
 
     def _edition_includes(self, user_edition: str, required_edition: str) -> bool:
         """
