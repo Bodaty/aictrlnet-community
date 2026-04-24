@@ -18,7 +18,7 @@ dict. The protocol layer wraps the result in MCP content format.
 
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -2768,60 +2768,143 @@ async def _handle_execute_agent(
 async def _handle_list_llm_models(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    """Union of (a) adapter-discovered live models via LLMRegistryService
+    and (b) the curated ai_models catalog in the DB. Adapter-discovered
+    models reflect what's actually routable *right now*; the DB catalog
+    is the list the org has approved/seeded, independent of adapter
+    health. Either source alone is useful; both together give Claude a
+    complete picture."""
     _ensure_business_sys_path()
+
+    all_models: List[Dict[str, Any]] = []
+    seen_keys: Set[str] = set()
+
+    # Source 1 — live adapter discovery
+    try:
+        from aictrlnet_business.services.llm_registry import LLMRegistryService  # type: ignore
+        svc = LLMRegistryService()
+        for m in await svc.get_available_models():
+            key = (m.get("provider") or "").lower() + "|" + (m.get("name") or m.get("id") or "").lower()
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            all_models.append({**m, "source": "adapter"})
+    except Exception as e:
+        logger.debug("LLM registry discovery skipped: %s", e)
+
+    # Source 2 — curated DB catalog
     try:
         from sqlalchemy import select
+        from aictrlnet_business.models.ai_governance_complete import AIModel  # type: ignore
+        rows = (await db.execute(select(AIModel))).scalars().all()
+        for r in rows:
+            key = (r.provider or "").lower() + "|" + (r.name or r.id or "").lower()
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            all_models.append({
+                "id": r.id,
+                "name": r.name,
+                "provider": r.provider,
+                "model_type": r.model_type,
+                "version": r.version,
+                "capabilities": r.capabilities or [],
+                "configuration": r.configuration or {},
+                "cost_per_token": r.cost_per_token,
+                "status": r.status,
+                "source": "catalog",
+            })
+    except Exception as e:
+        logger.debug("AIModel catalog query skipped: %s", e)
 
-        from aictrlnet_business.models.llm_registry import LLMModel  # type: ignore
-    except Exception:
-        return {"models": [], "available": False}
+    provider = arguments.get("provider")
+    enabled_only = arguments.get("enabled_only", True)
+    if provider:
+        all_models = [m for m in all_models if (m.get("provider") or "").lower() == provider.lower()]
+    if enabled_only:
+        all_models = [m for m in all_models if (m.get("status") or "active").lower() not in ("disabled", "inactive")]
 
-    query = select(LLMModel)
-    if arguments.get("provider"):
-        query = query.where(LLMModel.provider == arguments["provider"])
-    if arguments.get("enabled_only", True):
-        query = query.where(LLMModel.enabled == True)  # noqa: E712
-    rows = (await db.execute(query)).scalars().all()
-    return {
-        "models": [
-            {
-                "id": str(getattr(m, "id", "")),
-                "provider": getattr(m, "provider", None),
-                "model_name": getattr(m, "model_name", None),
-                "enabled": getattr(m, "enabled", True),
-                "capabilities": getattr(m, "capabilities", None),
-            }
-            for m in rows
-        ],
-        "count": len(rows),
-    }
+    return {"models": all_models, "count": len(all_models)}
 
 
 async def _handle_get_llm_recommendation(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    try:
-        from aictrlnet_business.services.llm_registry_service import LLMRegistryService  # type: ignore
-    except Exception:
-        return {"recommendation": None, "available": False}
+    task_type = arguments["task_type"]
+    models: List[Dict[str, Any]] = []
 
-    svc = LLMRegistryService(db)
-    method = (
-        getattr(svc, "recommend", None)
-        or getattr(svc, "get_recommendation", None)
-    )
-    if not method:
-        return {"recommendation": None, "available": False}
-    rec = await method(
-        task_type=arguments["task_type"],
-        constraints=arguments.get("constraints") or {},
-    )
-    if hasattr(rec, "model_dump"):
-        return rec.model_dump()
-    if hasattr(rec, "dict"):
-        return rec.dict()
-    return {"recommendation": rec}
+    # Try live adapter discovery first
+    try:
+        from aictrlnet_business.services.llm_registry import LLMRegistryService  # type: ignore
+        svc = LLMRegistryService()
+        models = await svc.get_models_by_capability(task_type) or await svc.get_available_models()
+    except Exception as e:
+        logger.debug("LLM registry skipped: %s", e)
+
+    # Fall back to curated DB catalog so recommendations still work even
+    # when no adapter is currently healthy
+    if not models:
+        try:
+            from sqlalchemy import select
+            from aictrlnet_business.models.ai_governance_complete import AIModel  # type: ignore
+            rows = (await db.execute(select(AIModel))).scalars().all()
+            for r in rows:
+                caps = r.capabilities or []
+                if task_type and caps and task_type not in caps:
+                    # Still include — downstream filter will narrow
+                    pass
+                models.append({
+                    "id": r.id,
+                    "name": r.name,
+                    "provider": r.provider,
+                    "capabilities": caps,
+                    "cost_per_token": r.cost_per_token,
+                    "model_type": r.model_type,
+                    "status": r.status,
+                })
+            # Prefer capability matches if any
+            matched = [m for m in models if task_type in (m.get("capabilities") or [])]
+            if matched:
+                models = matched
+        except Exception as e:
+            logger.debug("AIModel catalog fallback skipped: %s", e)
+
+    if not models:
+        return {
+            "recommendation": None,
+            "candidates": [],
+            "task_type": task_type,
+            "available": False,
+            "reason": "No LLM adapters healthy and ai_models catalog is empty",
+        }
+
+    constraints = arguments.get("constraints") or {}
+    max_cost = constraints.get("max_cost")
+    required_caps = set(constraints.get("required_capabilities") or [])
+
+    def _matches(model: Dict[str, Any]) -> bool:
+        cost = model.get("cost_per_token") or model.get("cost_per_1k_tokens")
+        if max_cost is not None and cost is not None and cost > max_cost:
+            return False
+        if required_caps:
+            caps = set(model.get("capabilities") or [])
+            if not required_caps.issubset(caps):
+                return False
+        return True
+
+    candidates = [m for m in models if _matches(m)] or models
+    top = candidates[0]
+    return {
+        "recommendation": {
+            "model_id": top.get("id"),
+            "provider": top.get("provider"),
+            "name": top.get("name") or top.get("model_name"),
+            "reason": f"Top adapter-registered model for task_type='{task_type}'",
+        },
+        "candidates": candidates[:5],
+        "task_type": task_type,
+    }
 
 
 # ---- Living Platform — Patterns ----
