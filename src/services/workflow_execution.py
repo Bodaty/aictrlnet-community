@@ -27,6 +27,7 @@ from nodes.executor import NodeExecutor
 from nodes.registry import node_registry
 from events.event_bus import event_bus
 from core.database import get_session_maker
+from core.tenant_context import get_current_tenant_id
 
 logger = logging.getLogger(__name__)
 
@@ -157,24 +158,50 @@ class WorkflowExecutionService:
         
         # If local execution (no agent), execute locally
         if not agent_id:
-            asyncio.create_task(self._execute_workflow_locally(execution_id))
+            # Capture tenant_id from the caller's session so the background
+            # task's session can override the engine-level DEFAULT_TENANT_ID
+            # RLS setting. Without this, connections from get_session_maker()
+            # are locked to "default-tenant" and can't see workflows under
+            # any other tenant — meaning the executor never actually runs
+            # them.
+            tenant_id_str = execution.tenant_id or get_current_tenant_id()
+            asyncio.create_task(
+                self._execute_workflow_locally(execution_id, tenant_id=tenant_id_str)
+            )
         else:
             # Send execution request to agent via IAM
             await self._send_execution_to_agent(execution_id, agent_id)
-        
+
         await self.db.refresh(execution)
         return WorkflowExecutionResponse.model_validate(execution)
-    
-    async def _execute_workflow_locally(self, execution_id: uuid.UUID):
+
+    async def _execute_workflow_locally(
+        self, execution_id: uuid.UUID, tenant_id: Optional[str] = None
+    ):
         """Execute workflow locally using a dedicated DB session.
 
         This runs as an asyncio.create_task background task, so it must use
         its own session — the caller's session may already be mid-operation.
+
+        tenant_id, if provided, is written to the PostgreSQL session variable
+        ``app.current_tenant_id`` so Row-Level Security policies can evaluate
+        correctly against the execution's actual tenant. Omitting it leaves
+        the engine-level DEFAULT_TENANT_ID in effect, which only exposes
+        default-tenant rows.
         """
         session_maker = get_session_maker()
         async with session_maker() as db:
             execution = None
             try:
+                # Scope this session to the execution's tenant for RLS. Must
+                # happen before any table query below — otherwise the
+                # workflow lookup is filtered out by the default-tenant
+                # policy.
+                if tenant_id:
+                    from sqlalchemy import text as _sql_text
+                    await db.execute(_sql_text(
+                        "SELECT set_config('app.current_tenant_id', :tid, false)"
+                    ), {"tid": tenant_id})
                 # Get execution with all node executions
                 result = await db.execute(
                     select(WorkflowExecution)
@@ -596,9 +623,13 @@ class WorkflowExecutionService:
         # Update status
         execution.status = WorkflowExecutionStatus.RESUMING
         await self.db.commit()
-        
-        # Resume execution
-        asyncio.create_task(self._execute_workflow_locally(execution_id))
+
+        # Resume execution — thread tenant_id so RLS resolves correctly in
+        # the background task's session (see _execute_workflow_locally).
+        tenant_id_str = execution.tenant_id or get_current_tenant_id()
+        asyncio.create_task(
+            self._execute_workflow_locally(execution_id, tenant_id=tenant_id_str)
+        )
         
         await self.db.refresh(execution)
         return WorkflowExecutionResponse.model_validate(execution)
