@@ -586,7 +586,9 @@ async def get_entity_status(
             )
             wf = wf_result.scalar_one_or_none()
             if wf is not None:
-                fresh_status = getattr(wf, "status", None) or "unknown"
+                # WorkflowDefinition stores liveness as `active: bool`;
+                # translate to a string status the chip-color map groks.
+                fresh_status = "active" if getattr(wf, "active", False) else "inactive"
                 fresh_summary = f"status: {fresh_status}"
         elif entity_type == "execution":
             from models.workflow_execution import WorkflowExecution  # type: ignore
