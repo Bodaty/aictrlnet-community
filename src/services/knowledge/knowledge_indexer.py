@@ -627,13 +627,20 @@ class KnowledgeIndexer:
         Calculate relevance score for search.
         """
         score = 0.0
+        if not search_terms:
+            return score
+
+        # Coerce non-string search terms (some indexed items have bool/int)
+        safe_terms = [t for t in search_terms if isinstance(t, str)]
+        if not safe_terms:
+            return score
 
         # Exact match
-        if query in search_terms:
+        if query in safe_terms:
             score += 10.0
 
         # Partial matches
-        for term in search_terms:
+        for term in safe_terms:
             if query in term:
                 score += 5.0
             elif term in query:

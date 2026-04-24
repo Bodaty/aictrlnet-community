@@ -166,17 +166,40 @@ class APIKeyService:
             )
         )
         api_key = result.scalar_one_or_none()
-        
+
         if not api_key:
             return False
-        
+
         api_key.is_active = False
         api_key.revoked_at = datetime.utcnow()
         api_key.revoked_reason = reason
-        
+
         await self.db.commit()
         return True
-    
+
+    async def delete_api_key(self, key_id: str) -> bool:
+        """Permanently delete an API key row.
+
+        Unlike revoke_api_key (which flips is_active and keeps the row for
+        audit), this hard-deletes. Endpoint does ownership check first.
+        Usage-log rows referencing the key are removed first to satisfy
+        the api_key_logs_api_key_id_fkey constraint.
+        """
+        from sqlalchemy import delete as sql_delete
+
+        result = await self.db.execute(
+            select(APIKey).where(APIKey.id == key_id)
+        )
+        api_key = result.scalar_one_or_none()
+        if not api_key:
+            return False
+        await self.db.execute(
+            sql_delete(APIKeyLog).where(APIKeyLog.api_key_id == key_id)
+        )
+        await self.db.delete(api_key)
+        await self.db.commit()
+        return True
+
     async def verify_api_key(
         self,
         provided_key: str,

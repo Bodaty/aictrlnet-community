@@ -4,12 +4,12 @@ Execution pipeline (see docs/architecture/MCP_SERVER_ARCHITECTURE_SPEC.md):
 
 1. Plan gate       — ``plan_gate.enforce_plan`` — raises ``PlanError``
 2. Scope check     — new-taxonomy + legacy compatibility expansion
-3. Compliance gate — Enterprise-only ``MCPComplianceService.enforce_compliance``
+3. Compliance gate — Enterprise-only ``MCPComplianceManager.enforce_compliance``
 4. Rate bucket     — Redis per-(principal, tool, window); raises ``RateError``
 5. With-metering   — idempotency lookup, atomic quota charge, timeout,
                      handler execution, refund on ``RefundableError``,
                      idempotency store
-6. Audit log       — Enterprise-only ``MCPComplianceService.audit_mcp_operation``
+6. Audit log       — Enterprise-only ``MCPComplianceManager.audit_mcp_operation``
 7. Metrics emit    — ``observability.record_invocation``
 
 Each handler receives ``(arguments, db, user_id)`` and returns a plain
@@ -195,7 +195,7 @@ async def execute_tool(
         await _audit_if_enterprise(
             tool_name,
             arguments,
-            None if status != "success" else "ok",
+            None if status != "success" else {"status": "ok"},
             user_id,
             tenant_id,
             duration * 1000,
@@ -226,13 +226,13 @@ async def _enforce_compliance_if_enterprise(
     graceful-degradation window.
     """
     try:
-        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # type: ignore
+        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceManager  # type: ignore
     except ImportError:
         return
     try:
-        svc = MCPComplianceService()
+        svc = MCPComplianceManager()
         compliant, reason = await svc.enforce_compliance(
-            server_id="aictrlnet-mcp-transport",
+            server_id=None,  # self-reporting; not an external MCP server registration
             tenant_id=tenant_id or "default",
             capability=tool_name,
             db=db,
@@ -289,17 +289,17 @@ async def _audit_if_enterprise(
     flag as A2.
     """
     try:
-        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService  # type: ignore
+        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceManager  # type: ignore
     except ImportError:
         return
     try:
-        svc = MCPComplianceService()
+        svc = MCPComplianceManager()
         await svc.audit_mcp_operation(
             tenant_id=tenant_id or "default",
             user_id=user_id,
             operation_type=f"mcp_tool:{tool_name}",
             operation_status=status,
-            server_id="aictrlnet-mcp-transport",
+            server_id=None,  # self-reporting; not an external MCP server registration
             request_data=request_data,
             response_data=response_data,
             duration_ms=duration_ms,
@@ -622,10 +622,10 @@ async def _handle_check_compliance(
     if "/workspace/editions/community/src" not in sys.path:
         sys.path.insert(0, "/workspace/editions/community/src")
 
-    from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceService
+    from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceManager
     from core.tenant_context import get_current_tenant_id
 
-    svc = MCPComplianceService()
+    svc = MCPComplianceManager()
     tenant_id = get_current_tenant_id()
     return await svc.check_server_compliance(
         server_id=arguments["server_id"],
@@ -951,6 +951,30 @@ def _ensure_business_sys_path() -> None:
         sys.path.insert(0, "/workspace/editions/community/src")
 
 
+def _load_industry_pack_loader():
+    """Load the Business `industry_pack_loader` module by absolute path.
+
+    Works around the community/business `services/` namespace collision —
+    `from services.industry_pack_loader import ...` resolves against the
+    first-loaded `services` package (usually Community's), which doesn't
+    have this file. `nlp_service.py` uses the same importlib trick.
+    """
+    import sys
+    import importlib.util
+
+    cached = sys.modules.get("industry_pack_loader")
+    if cached is not None:
+        return cached
+    path = "/workspace/editions/business/src/services/industry_pack_loader.py"
+    spec = importlib.util.spec_from_file_location("industry_pack_loader", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load spec for {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["industry_pack_loader"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 async def _handle_research_api(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
@@ -988,9 +1012,9 @@ async def _handle_generate_adapter(
 
     async def _run_generation():
         try:
-            from core.database import AsyncSessionLocal
+            from core.database import get_session_maker
 
-            async with AsyncSessionLocal() as bg_db:
+            async with get_session_maker()() as bg_db:
                 bg_svc = GeneratedAdapterService(bg_db)
                 await bg_svc.generate_adapter(
                     adapter_id=adapter_id,
@@ -1049,9 +1073,9 @@ async def _handle_self_extend(
 
     async def _run_generation():
         try:
-            from core.database import AsyncSessionLocal
+            from core.database import get_session_maker
 
-            async with AsyncSessionLocal() as bg_db:
+            async with get_session_maker()() as bg_db:
                 bg_svc = GeneratedAdapterService(bg_db)
                 await bg_svc.generate_adapter(
                     adapter_id=adapter_id,
@@ -1370,22 +1394,19 @@ async def _handle_list_api_keys(
     from services.api_key_service import APIKeyService
 
     svc = APIKeyService(db)
-    keys = await svc.list_user_api_keys(user_id=user_id)
+    response = await svc.list_user_api_keys(user_id=user_id)
+    keys = getattr(response, "keys", response)
+
+    def _dump(k):
+        if hasattr(k, "model_dump"):
+            return k.model_dump(mode="json")
+        if hasattr(k, "dict"):
+            return k.dict()
+        return k
+
     return {
-        "api_keys": [
-            k.to_dict() if hasattr(k, "to_dict") else {
-                "id": getattr(k, "id", None),
-                "name": getattr(k, "name", None),
-                "key_identifier": f"{getattr(k, 'key_prefix', '')}...{getattr(k, 'key_suffix', '')}",
-                "scopes": getattr(k, "scopes", []) or [],
-                "is_active": getattr(k, "is_active", True),
-                "expires_at": str(getattr(k, "expires_at", "") or ""),
-                "last_used_at": str(getattr(k, "last_used_at", "") or ""),
-                "usage_count": getattr(k, "usage_count", 0),
-            }
-            for k in keys
-        ],
-        "count": len(keys) if hasattr(keys, "__len__") else 0,
+        "api_keys": [_dump(k) for k in keys],
+        "count": getattr(response, "total", len(keys) if hasattr(keys, "__len__") else 0),
     }
 
 
@@ -1395,7 +1416,7 @@ async def _handle_get_api_key_usage(
     """Aggregate APIKeyLog rows for per-tool usage over a window.
 
     The MCP audit log entry we emit on every tool call (via
-    MCPComplianceService.audit_mcp_operation) keys by
+    MCPComplianceManager.audit_mcp_operation) keys by
     operation_type=f"mcp_tool:{tool_name}", which is where the per-tool
     grain lives for Enterprise. Community falls back to the api_key_logs
     table's endpoint column as a proxy for tool name.
@@ -1504,7 +1525,7 @@ async def _handle_list_ai_policies(
     _ensure_business_sys_path()
     from sqlalchemy import select
 
-    from aictrlnet_business.models.ai_governance import AIPolicy
+    from aictrlnet_business.models.ai_governance_complete import AIPolicy
     from core.tenant_context import get_current_tenant_id
 
     tenant_id = get_current_tenant_id() or "default-tenant"
@@ -1537,7 +1558,7 @@ async def _handle_create_policy(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.models.ai_governance import AIAuditLog, AIPolicy
+    from aictrlnet_business.models.ai_governance_complete import AIAuditLog, AIPolicy
     from core.tenant_context import get_current_tenant_id
 
     tenant_id = get_current_tenant_id() or "default-tenant"
@@ -1592,7 +1613,7 @@ async def _handle_get_ai_audit_logs(
 
     from sqlalchemy import select
 
-    from aictrlnet_business.models.ai_governance import AIAuditLog
+    from aictrlnet_business.models.ai_governance_complete import AIAuditLog
 
     query = select(AIAuditLog)
     if arguments.get("action"):
@@ -2296,18 +2317,35 @@ async def _handle_query_knowledge(
     from services.knowledge.knowledge_retrieval_service import KnowledgeRetrievalService
 
     svc = KnowledgeRetrievalService(db)
-    results = await svc.find_relevant_knowledge(
-        query=arguments["query"],
-        context=arguments.get("context"),
-        limit=min(int(arguments.get("limit", 5)), 20),
-    )
+    try:
+        results = await svc.find_relevant_knowledge(
+            query=arguments["query"],
+            context=arguments.get("context"),
+            limit=min(int(arguments.get("limit", 5)), 20),
+        )
+    except Exception as e:
+        logger.exception("query_knowledge failed")
+        return {"results": [], "count": 0, "error": str(e)}
+
+    def _to_dict(r):
+        if hasattr(r, "model_dump"):
+            return r.model_dump()
+        if hasattr(r, "dict"):
+            return r.dict()
+        if hasattr(r, "__dict__"):
+            d = {}
+            for k, v in r.__dict__.items():
+                try:
+                    import json as _j
+                    _j.dumps(v)
+                    d[k] = v
+                except Exception:
+                    d[k] = str(v)
+            return d
+        return {"content": str(r)}
+
     return {
-        "results": [
-            (r.model_dump() if hasattr(r, "model_dump")
-             else r.dict() if hasattr(r, "dict")
-             else {"content": str(r)})
-            for r in results
-        ],
+        "results": [_to_dict(r) for r in results],
         "count": len(results) if hasattr(results, "__len__") else 0,
     }
 
@@ -2417,7 +2455,7 @@ async def _handle_upload_file(
     from datetime import datetime
 
     try:
-        from models.community_complete import StagedFile
+        from models import StagedFile
     except ImportError:
         raise ToolExecutionError("StagedFile model unavailable")
 
@@ -2471,7 +2509,7 @@ async def _handle_list_staged_files(
     from sqlalchemy import desc, select
 
     try:
-        from models.community_complete import StagedFile
+        from models import StagedFile
     except ImportError:
         return {"files": [], "available": False}
 
@@ -2506,7 +2544,7 @@ async def _handle_get_staged_file(
     from sqlalchemy import select
 
     try:
-        from models.community_complete import StagedFile
+        from models import StagedFile
     except ImportError:
         raise ToolExecutionError("StagedFile model unavailable")
 
@@ -2800,27 +2838,26 @@ async def _handle_list_pattern_candidates(
     except Exception:
         return {"candidates": [], "available": False}
 
-    svc = LearningLoopService(db)
-    list_method = (
-        getattr(svc, "list_pattern_candidates", None)
-        or getattr(svc, "list_candidates", None)
+    svc = LearningLoopService()
+    min_conf = arguments.get("min_confidence")
+    min_success_rate = (
+        float(min_conf) if min_conf is not None else None
     )
-    if not list_method:
-        return {"candidates": [], "available": False}
-    candidates = await list_method(
-        status=arguments.get("status"),
-        min_confidence=arguments.get("min_confidence"),
-        limit=min(int(arguments.get("limit", 50)), 200),
-        offset=int(arguments.get("offset", 0)),
+    candidates = await svc.get_pattern_candidates(
+        db=db,
+        min_success_rate=min_success_rate,
     )
+    limit = min(int(arguments.get("limit", 50)), 200)
+    offset = int(arguments.get("offset", 0))
+    sliced = candidates[offset : offset + limit]
     return {
         "candidates": [
             (c.model_dump() if hasattr(c, "model_dump")
              else c.dict() if hasattr(c, "dict")
              else {"id": str(getattr(c, "id", c))})
-            for c in candidates
+            for c in sliced
         ],
-        "count": len(candidates) if hasattr(candidates, "__len__") else 0,
+        "count": len(candidates),
     }
 
 
@@ -2835,24 +2872,24 @@ async def _handle_promote_pattern_to_template(
     except Exception:
         raise ToolExecutionError("Learning loop service unavailable in this edition")
 
-    svc = LearningLoopService(db)
-    method = (
-        getattr(svc, "promote_to_template", None)
-        or getattr(svc, "convert_to_template", None)
-    )
-    if not method:
-        raise ToolExecutionError("Promotion method unavailable")
-    result = await method(
+    svc = LearningLoopService()
+    decision = await svc.record_learning_decision(
+        db=db,
         pattern_id=arguments["pattern_id"],
-        template_name=arguments.get("template_name"),
-        category=arguments.get("category"),
-        user_id=user_id,
+        evaluator_type="human",
+        evaluator_id=user_id,
+        decision="promote",
+        reasoning=arguments.get("template_name") or arguments.get("category"),
     )
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    return {"template_id": str(result) if result else None}
+    if hasattr(decision, "model_dump"):
+        return decision.model_dump()
+    if hasattr(decision, "dict"):
+        return decision.dict()
+    return {
+        "pattern_id": str(arguments["pattern_id"]),
+        "promoted": True,
+        "decision_id": str(getattr(decision, "id", "")),
+    }
 
 
 # ---- Living Platform — Org Discovery ----
@@ -3057,24 +3094,16 @@ async def _handle_list_industry_packs(
     plan."""
     _ensure_business_sys_path()
     try:
-        from services.industry_pack_loader import get_industry_pack_loader  # type: ignore
-    except Exception:
-        try:
-            from services.industry_pack_loader import IndustryPackLoader  # type: ignore
-            loader = IndustryPackLoader()
-        except Exception as e:
-            return {
-                "packs": [],
-                "available": False,
-                "message": f"Industry pack loader unavailable: {e}",
-            }
-    else:
-        loader = get_industry_pack_loader()
+        mod = _load_industry_pack_loader()
+        loader = mod.get_industry_pack_loader()
+    except Exception as e:
+        return {
+            "packs": [],
+            "available": False,
+            "message": f"Industry pack loader unavailable: {e}",
+        }
 
-    method = getattr(loader, "list_industries", None)
-    if method is None:
-        return {"packs": [], "available": False}
-    industries = method()
+    industries = loader.list_industries()
     return {
         "packs": industries,
         "count": len(industries) if hasattr(industries, "__len__") else 0,
@@ -3091,23 +3120,16 @@ async def _handle_detect_industry(
     generic template)."""
     _ensure_business_sys_path()
     try:
-        from services.industry_pack_loader import get_industry_pack_loader  # type: ignore
-    except Exception:
-        try:
-            from services.industry_pack_loader import IndustryPackLoader  # type: ignore
-            loader = IndustryPackLoader()
-        except Exception as e:
-            return {
-                "industry": None,
-                "available": False,
-                "message": f"Industry pack loader unavailable: {e}",
-            }
-    else:
-        loader = get_industry_pack_loader()
+        mod = _load_industry_pack_loader()
+        loader = mod.get_industry_pack_loader()
+    except Exception as e:
+        return {
+            "industry": None,
+            "available": False,
+            "message": f"Industry pack loader unavailable: {e}",
+        }
 
-    industry_id = loader.detect_industry(arguments["text"]) if hasattr(
-        loader, "detect_industry"
-    ) else None
+    industry_id = loader.detect_industry(arguments["text"])
     return {
         "industry": industry_id,
         "text_length": len(arguments["text"]),
@@ -3403,7 +3425,6 @@ async def _handle_get_audit_logs(
     except Exception:
         return _enterprise_pending("audit")
 
-    svc = AuditService(db)
     tenant_id = get_current_tenant_id() or "default"
 
     def _parse(d):
@@ -3414,7 +3435,8 @@ async def _handle_get_audit_logs(
         except ValueError:
             return None
 
-    result = await svc.get_audit_logs(
+    result = await AuditService.get_audit_logs(
+        db=db,
         resource_type=arguments.get("resource_type"),
         resource_id=arguments.get("resource_id"),
         action=arguments.get("action"),
@@ -3446,13 +3468,11 @@ async def _handle_get_audit_summary(
     except Exception:
         return _enterprise_pending("audit")
 
-    svc = AuditService(db)
     tenant_id = get_current_tenant_id() or "default"
     days = max(1, min(int(arguments.get("days", 7)), 90))
-    try:
-        result = await svc.get_audit_summary(days=days, tenant_id=tenant_id)
-    except TypeError:
-        result = await svc.get_audit_summary(days)
+    result = await AuditService.get_audit_summary(
+        db=db, tenant_id=tenant_id, days=days
+    )
     if hasattr(result, "model_dump"):
         return result.model_dump()
     if hasattr(result, "dict"):
@@ -3469,27 +3489,36 @@ async def _handle_run_compliance_check(
     _ensure_enterprise_sys_path()
     try:
         from aictrlnet_enterprise.services.compliance import ComplianceService
+        from schemas.compliance import ComplianceCheck
         from core.tenant_context import get_current_tenant_id
     except Exception:
         return _enterprise_pending("compliance")
 
     svc = ComplianceService(db)
     tenant_id = get_current_tenant_id() or "default"
-    try:
-        result = await svc.run_compliance_check(
-            standards=arguments.get("standards") or [],
-            scope=arguments.get("scope") or {},
+    standards = arguments.get("standards") or ["SOC2"]
+    scope = arguments.get("scope") or {}
+
+    reports = []
+    for standard_id in standards:
+        check_request = ComplianceCheck(
+            standard_id=standard_id,
+            scope=scope,
+        )
+        report = await svc.run_compliance_check(
+            check_request=check_request,
             tenant_id=tenant_id,
         )
-    except TypeError:
-        result = await svc.run_compliance_check(
-            arguments.get("standards") or [], arguments.get("scope") or {}
-        )
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    return {"result": result}
+        if hasattr(report, "model_dump"):
+            reports.append(report.model_dump())
+        elif hasattr(report, "dict"):
+            reports.append(report.dict())
+        else:
+            reports.append({"result": str(report)})
+
+    if len(reports) == 1:
+        return reports[0]
+    return {"reports": reports, "count": len(reports)}
 
 
 async def _handle_list_compliance_standards(
@@ -3727,30 +3756,25 @@ async def _handle_list_fleet_agents(
 ) -> Dict[str, Any]:
     _ensure_enterprise_sys_path()
     try:
-        from aictrlnet_enterprise.services.fleet_management import FleetManagementService  # type: ignore
+        from aictrlnet_enterprise.services.fleet_service import FleetService  # type: ignore
     except Exception:
         return _enterprise_pending("fleet_management")
 
-    svc = FleetManagementService(db)
-    method = (
-        getattr(svc, "list_runtimes", None)
-        or getattr(svc, "list_fleet_agents", None)
-        or getattr(svc, "list_agents", None)
+    svc = FleetService(db)
+    result = await svc.list_fleet_runtimes(
+        status=arguments.get("status"),
+        limit=min(int(arguments.get("limit", 100)), 500),
+        offset=int(arguments.get("offset", 0)),
     )
-    if not method:
-        return _enterprise_pending("fleet_management")
-    try:
-        result = await method(
-            status=arguments.get("status"),
-            limit=min(int(arguments.get("limit", 100)), 500),
-            offset=int(arguments.get("offset", 0)),
-        )
-    except TypeError:
-        result = await method()
     if hasattr(result, "model_dump"):
         return result.model_dump()
     if hasattr(result, "dict"):
         return result.dict()
+    if isinstance(result, dict):
+        return {
+            "fleet_agents": result.get("runtimes", []),
+            "count": result.get("total", 0),
+        }
     if isinstance(result, list):
         return {"fleet_agents": result, "count": len(result)}
     return {"fleet_agents": result}
@@ -3761,27 +3785,17 @@ async def _handle_get_fleet_autonomy_summary(
 ) -> Dict[str, Any]:
     _ensure_enterprise_sys_path()
     try:
-        from aictrlnet_enterprise.services.fleet_management import FleetManagementService  # type: ignore
+        from aictrlnet_enterprise.services.fleet_service import FleetService  # type: ignore
     except Exception:
         return _enterprise_pending("fleet_management")
 
-    svc = FleetManagementService(db)
-    method = (
-        getattr(svc, "get_fleet_summary", None)
-        or getattr(svc, "get_autonomy_summary", None)
-        or getattr(svc, "get_fleet_risk_overview", None)
-    )
-    if not method:
-        return _enterprise_pending("fleet_management")
-    try:
-        result = await method()
-    except TypeError:
-        result = await method(user_id=user_id)
+    svc = FleetService(db)
+    result = await svc.get_fleet_summary()
     if hasattr(result, "model_dump"):
         return result.model_dump()
     if hasattr(result, "dict"):
         return result.dict()
-    return {"summary": result}
+    return result if isinstance(result, dict) else {"summary": result}
 
 
 # ---- License Management ----

@@ -101,13 +101,15 @@ class KnowledgeRetrievalService:
     async def find_relevant_knowledge(
         self,
         query: str,
-        context: Dict,
+        context: Optional[Dict] = None,
         limit: int = 10
     ) -> List[KnowledgeItem]:
         """
         Find most relevant system knowledge for user query.
         Community Edition: Uses keyword-based search.
         """
+        if context is None:
+            context = {}
         if not self._initialized:
             await self.initialize()
 
@@ -185,13 +187,14 @@ class KnowledgeRetrievalService:
         """
         Match query against system features.
         """
-        if not self.manifest_service:
+        manifest = getattr(self.manifest_service, "manifest", None) if self.manifest_service else None
+        if not manifest:
             return {}
 
         query_lower = query.lower()
         matches = {}
 
-        for feature_name, feature_data in self.manifest_service.manifest["features"].items():
+        for feature_name, feature_data in manifest.get("features", {}).items():
             # Check if feature name or description matches
             if feature_name.lower() in query_lower or \
                query_lower in feature_data.get("description", "").lower():
@@ -336,13 +339,15 @@ class KnowledgeRetrievalService:
         """
         examples = []
 
-        if "capabilities" in feature_data:
-            for cap_name, cap_data in feature_data["capabilities"].items():
-                if "examples" in cap_data:
+        capabilities = feature_data.get("capabilities") if isinstance(feature_data, dict) else None
+        if isinstance(capabilities, dict):
+            for cap_name, cap_data in capabilities.items():
+                if isinstance(cap_data, dict) and isinstance(cap_data.get("examples"), list):
                     examples.extend(cap_data["examples"][:2])
 
         if not examples:
-            examples = [f"Use {feature_data.get('description', 'this feature')}"]
+            description = feature_data.get("description", "this feature") if isinstance(feature_data, dict) else "this feature"
+            examples = [f"Use {description}"]
 
         return examples
 
@@ -529,6 +534,9 @@ class KnowledgeRetrievalService:
         """
         Extract keywords from an item for indexing.
         """
+        if not isinstance(item, dict):
+            return []
+
         keywords = []
 
         # Extract from name
@@ -540,11 +548,11 @@ class KnowledgeRetrievalService:
             keywords.extend(self._tokenize(item["description"]))
 
         # Extract from tags
-        if "tags" in item:
+        if "tags" in item and isinstance(item["tags"], (list, tuple)):
             keywords.extend(item["tags"])
 
         # Extract from capabilities
-        if "capabilities" in item:
+        if "capabilities" in item and isinstance(item["capabilities"], (list, tuple)):
             for cap in item["capabilities"]:
                 if isinstance(cap, str):
                     keywords.extend(self._tokenize(cap))
