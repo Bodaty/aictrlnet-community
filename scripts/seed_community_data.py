@@ -483,6 +483,7 @@ async def seed_subscription_plans(session):
         {
             "id": "community-free",
             "name": "community",
+            "edition": "community",
             "display_name": "Community Edition",
             "description": "Open source edition for individuals and small projects",
             "price_monthly": 0.0,
@@ -515,6 +516,7 @@ async def seed_subscription_plans(session):
         {
             "id": "community-cloud",
             "name": "community_cloud",
+            "edition": "community",
             "display_name": "Community Cloud",
             "description": "Hosted Community Edition with HitLai UI",
             "price_monthly": 49.0,
