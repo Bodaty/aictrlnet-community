@@ -145,6 +145,27 @@ async def _initialize_default_adapters(settings):
         except Exception as e:
             logger.warning(f"Failed to initialize OpenAI adapter: {str(e)}")
     
+    # vLLM adapter — eager init when VLLM_URL is set so the adapter shows up in
+    # discovery without waiting for the first request. Lazy init via
+    # _AdapterProvider.get also works.
+    import os as _os
+    if _os.environ.get("VLLM_URL") or _os.environ.get("VLLM_BASE_URL"):
+        try:
+            await AdapterFactory.create_and_register_adapter(
+                "vllm",
+                {
+                    "base_url": _os.environ.get("VLLM_BASE_URL") or _os.environ.get(
+                        "VLLM_URL", "http://host.docker.internal:8000"
+                    ),
+                    "api_key": _os.environ.get("VLLM_API_KEY"),
+                    "version": "1.0.0",
+                    "required_edition": "community",
+                }
+            )
+            logger.info("vLLM adapter initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize vLLM adapter: {str(e)}")
+
     # Claude adapter
     if hasattr(settings, 'ANTHROPIC_API_KEY') and settings.ANTHROPIC_API_KEY:
         try:

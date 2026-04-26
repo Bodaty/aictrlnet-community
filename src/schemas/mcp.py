@@ -168,7 +168,7 @@ class MCPServerDiscoveryResponse(BaseModel):
 class MCPInfo(BaseModel):
     """MCP system information."""
     version: str = "1.0.0"
-    supported_providers: List[str] = ["openai", "anthropic", "google", "cohere", "mistral"]
+    supported_providers: List[str] = ["openai", "anthropic", "google", "cohere", "mistral", "ollama", "vllm"]
     features: List[str] = ["context-management", "token-optimization", "multi-provider", "streaming"]
     status: str = "active"
 

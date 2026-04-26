@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # HuggingFace does not — always uses text-based fallback.
 # DeepSeek and DashScope also use text-based fallback (no adapter yet).
 _NATIVE_TOOL_PROVIDER_NAMES = {
-    "ollama", "anthropic", "openai", "azure_openai", "gemini",
+    "ollama", "vllm", "anthropic", "openai", "azure_openai", "gemini",
     "vertex_ai", "bedrock", "cohere",
 }
 
@@ -86,6 +86,21 @@ class _AdapterProvider:
                     base_url=os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
                     credentials={},
                     timeout_seconds=300.0,
+                ))
+            elif provider == ModelProvider.VLLM:
+                from adapters.implementations.ai.vllm_adapter import VLLMAdapter
+                base_url = os.environ.get("VLLM_BASE_URL") or os.environ.get(
+                    "VLLM_URL", "http://host.docker.internal:8000"
+                )
+                api_key = os.environ.get("VLLM_API_KEY")
+                return VLLMAdapter(AdapterConfig(
+                    name="vllm-tools",
+                    version="1.0.0",
+                    category=AdapterCategory.AI,
+                    base_url=base_url,
+                    api_key=api_key,
+                    credentials={"api_key": api_key} if api_key else {},
+                    timeout_seconds=120.0,
                 ))
             elif provider == ModelProvider.ANTHROPIC:
                 from adapters.implementations.ai.claude_adapter import ClaudeAdapter

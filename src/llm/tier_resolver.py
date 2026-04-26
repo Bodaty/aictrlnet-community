@@ -42,9 +42,11 @@ def get_environment_default_provider() -> str:
         Provider string: 'ollama' locally, 'vertex_ai' on GCP, etc.
     """
     model = get_environment_default_model()
+    model_lower = model.lower()
+    if model_lower.startswith("vllm:"):
+        return "vllm"
     if is_ollama_model(model):
         return "ollama"
-    model_lower = model.lower()
     if "vertex" in model_lower:
         return "vertex_ai"
     if "gemini" in model_lower:
@@ -79,6 +81,10 @@ def is_ollama_model(model: str) -> bool:
         return False
 
     model_lower = model.lower()
+
+    # vLLM is self-hosted but has its own routing prefix — treat as non-Ollama.
+    if model_lower.startswith("vllm:"):
+        return False
 
     # API model prefixes/patterns
     api_patterns = [

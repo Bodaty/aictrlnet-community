@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .plan_gate import PlanService, TOOL_MIN_PLAN
 from .tool_executor import (
+    AGPBlockedError,
     ComplianceError,
     PlanError,
     QuotaError,
@@ -201,10 +202,10 @@ class MCPProtocolHandler:
         known_names = {t["name"] for t in self.tools_registry}
 
         if tool_name not in known_names:
-            return _jsonrpc_error(msg_id, -32602, f"Unknown tool: {tool_name}")
+            return _jsonrpc_error(msg_id, -32601, f"Unknown tool: {tool_name}")
         if required is not None and _TIER_RANK.get(required, 0) > current_rank:
             # Same wire shape as "unknown tool" — prevents tier-taxonomy leak
-            return _jsonrpc_error(msg_id, -32602, f"Unknown tool: {tool_name}")
+            return _jsonrpc_error(msg_id, -32601, f"Unknown tool: {tool_name}")
 
         try:
             result = await execute_tool(
@@ -239,6 +240,11 @@ class MCPProtocolHandler:
             )
 
         except QuotaError as e:
+            return _structured_tool_error(
+                msg_id, e.to_payload(), str(e)
+            )
+
+        except AGPBlockedError as e:
             return _structured_tool_error(
                 msg_id, e.to_payload(), str(e)
             )

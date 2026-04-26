@@ -1,4 +1,14 @@
-"""Service layer for business logic."""
+"""Service layer for business logic.
+
+This package is extended by the Business and Enterprise editions via
+``pkgutil.extend_path`` so that submodules defined in
+``editions/business/src/services/`` and ``editions/enterprise/src/services/``
+are importable as ``services.X`` alongside the Community submodules, regardless
+of PYTHONPATH ordering.
+"""
+
+from pkgutil import extend_path
+__path__ = extend_path(__path__, __name__)
 
 from .task import TaskService
 from .workflow import WorkflowService

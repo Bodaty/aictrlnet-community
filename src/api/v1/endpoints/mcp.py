@@ -120,7 +120,7 @@ async def get_mcp_info():
     """Get MCP system information"""
     return MCPInfo(
         version="1.0.0",
-        supported_providers=["openai", "anthropic", "google", "cohere", "huggingface", "local", "custom"],
+        supported_providers=["openai", "anthropic", "google", "cohere", "huggingface", "ollama", "vllm", "local", "custom"],
         features=["context-management", "token-optimization", "multi-provider", "task-routing"],
         status="active"
     )

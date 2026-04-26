@@ -297,6 +297,18 @@ async def get_model_provider_status(
     - status_message: Human-readable status message
     """
     try:
+        # vLLM is routed via the vllm: prefix; any model name with that prefix
+        # is served by a self-hosted vLLM instance regardless of the underlying model.
+        if model_name.startswith("vllm:"):
+            return {
+                "provider": "vLLM (Self-Hosted)",
+                "adapter_type": "vllm",
+                "configured": True,
+                "local": True,
+                "status_message": "✅ vLLM model (self-hosted)",
+                "configuration_url": None,
+            }
+
         # Map model names to provider information
         model_provider_map = {
             # Gemini models - Direct API (Google AI Studio)

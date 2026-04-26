@@ -54,8 +54,54 @@ class ComplianceError(Exception):
     pass
 
 
+class AGPBlockedError(Exception):
+    """Raised when an outbound MCP tool call is blocked by an AGP policy.
+
+    Carries structured data so the transport layer can surface a
+    machine-readable `policy_blocked` payload (mirrors QuotaError.to_payload).
+    """
+
+    def __init__(
+        self,
+        policy_id: str,
+        policy_name: str,
+        rule_id: str,
+        severity: str,
+        reason: str,
+    ) -> None:
+        self.policy_id = policy_id
+        self.policy_name = policy_name
+        self.rule_id = rule_id
+        self.severity = severity
+        self.reason = reason
+        super().__init__(
+            f"Blocked by policy '{policy_name}' rule '{rule_id}': {reason}"
+        )
+
+    def to_payload(self) -> dict:
+        return {
+            "error": "policy_blocked",
+            "policy_id": self.policy_id,
+            "policy_name": self.policy_name,
+            "rule_id": self.rule_id,
+            "severity": self.severity,
+            "reason": self.reason,
+        }
+
+
+# Outbound MCP tools whose user-controllable string args must be evaluated
+# against active AGP policies before the call runs. Each entry maps the tool
+# name to the tuple of argument keys whose string values to scan. Phase 1
+# scope: messaging tools only — the immediate Claim 7 governance gap.
+MCP_AGP_GATED_TOOLS: Dict[str, tuple] = {
+    "send_channel_message": ("message",),
+    "send_message":         ("message",),
+}
+
+
 # Re-export pipeline errors for the protocol layer
 __all__ = [
+    "AGPBlockedError",
     "ComplianceError",
     "PlanError",
     "QuotaError",
@@ -119,7 +165,23 @@ async def execute_tool(
         # 3. Enterprise compliance check
         await _enforce_compliance_if_enterprise(tool_name, tenant_id, db, plan_tier=plan_tier)
 
-        # 4. Per-tool rate bucket (Redis / in-memory fallback)
+        # 4. AGP outbound-content gate (Phase 1: messaging tools only)
+        try:
+            await _enforce_agp_gate(
+                tool_name, arguments, tenant_id, db, plan_tier=plan_tier
+            )
+        except AGPBlockedError as e:
+            observability.record_policy_blocked(
+                tool=tool_name,
+                policy_id=e.policy_id,
+                rule_id=e.rule_id,
+                severity=e.severity,
+                tenant_id=tenant_id,
+            )
+            status = "policy_blocked"
+            raise
+
+        # 5. Per-tool rate bucket (Redis / in-memory fallback)
         try:
             await check_rate(
                 tool_name=tool_name,
@@ -137,7 +199,7 @@ async def execute_tool(
             status = "rate_limited"
             raise
 
-        # 5. With-metering (idempotency + atomic quota + timeout + refund)
+        # 6. With-metering (idempotency + atomic quota + timeout + refund)
         handler = TOOL_HANDLERS.get(tool_name)
         if not handler:
             raise ToolExecutionError(f"Unknown tool: {tool_name}")
@@ -263,6 +325,80 @@ async def _enforce_compliance_if_enterprise(
                 f"Enterprise compliance service unavailable: {e}"
             ) from e
         logger.warning("Compliance check errored for %s: %s", tool_name, e)
+
+
+async def _enforce_agp_gate(
+    tool_name: str,
+    arguments: Dict[str, Any],
+    tenant_id: Optional[str],
+    db: AsyncSession,
+    plan_tier: str = "community",
+) -> None:
+    """Enforce AGP policies on outbound MCP tools (e.g. send_channel_message).
+
+    For each tool in MCP_AGP_GATED_TOOLS, scan its user-controllable string
+    args against active AGP policies for the tenant. First hard-block
+    violation raises AGPBlockedError; the executor catches it, records
+    `policy_blocked` audit + observability, and the transport returns a
+    structured tool error to the caller.
+
+    Degradation:
+      - Community-only deploys (Business edition not importable) → fail-open;
+        AGP isn't part of the product surface there.
+      - Business / Enterprise where the AGP service errors mid-evaluation
+        → fail-secure (mirrors the compliance-gate pattern). Operators can
+        flip to fail-open with MCP_AGP_REQUIRED_FOR_BUSINESS=false during a
+        graceful-degradation window.
+    """
+    content_keys = MCP_AGP_GATED_TOOLS.get(tool_name)
+    if not content_keys or not tenant_id:
+        return
+
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.agp_evaluation import (  # type: ignore
+            AGPEvaluationService,
+        )
+    except ImportError:
+        # Community-only deploy; no AGP service shipped → fail-open.
+        return
+
+    try:
+        svc = AGPEvaluationService(db)
+        for key in content_keys:
+            content = arguments.get(key)
+            if not isinstance(content, str) or not content:
+                continue
+            result = await svc.evaluate_outbound_content(
+                content=content, tenant_id=tenant_id
+            )
+            if not result.get("compliant", True):
+                blocked = result.get("blocked_by")
+                raise AGPBlockedError(
+                    policy_id=getattr(blocked, "id", "unknown"),
+                    policy_name=getattr(blocked, "name", "unknown"),
+                    rule_id=result.get("rule_id", ""),
+                    severity=result.get("severity", "medium"),
+                    reason=result.get("reason", "Policy violation"),
+                )
+    except AGPBlockedError:
+        raise
+    except Exception as e:
+        import os
+        fail_secure = (
+            plan_tier in ("business", "enterprise")
+            and os.environ.get("MCP_AGP_REQUIRED_FOR_BUSINESS", "true").lower()
+            == "true"
+        )
+        if fail_secure:
+            raise AGPBlockedError(
+                policy_id="agp_service_unavailable",
+                policy_name="agp_service_unavailable",
+                rule_id="-",
+                severity="high",
+                reason=f"AGP evaluation service unavailable: {e}",
+            ) from e
+        logger.warning("AGP gate degraded for %s: %s; allowing", tool_name, e)
 
 
 async def _audit_if_enterprise(
@@ -511,7 +647,6 @@ async def _handle_send_message(
 async def _handle_evaluate_policy(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    import re
     import sys
     import time as _time
 
@@ -520,7 +655,12 @@ async def _handle_evaluate_policy(
     if "/workspace/editions/community/src" not in sys.path:
         sys.path.insert(0, "/workspace/editions/community/src")
 
-    from aictrlnet_business.services.agp_evaluation import AGPEvaluationService
+    try:
+        from aictrlnet_business.services.agp_evaluation import AGPEvaluationService
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
     from core.tenant_context import get_current_tenant_id
 
     svc = AGPEvaluationService(db)
@@ -534,39 +674,9 @@ async def _handle_evaluate_policy(
     rules = rules_raw if isinstance(rules_raw, list) else [rules_raw] if rules_raw else []
 
     start = _time.time()
-    violations = []
-    for rule in rules:
-        if not rule.get("enabled", True):
-            continue
-        conditions = rule.get("conditions", {})
-        cond_type = conditions.get("type", "")
-        cond_value = conditions.get("value", "")
-        pattern = conditions.get("criteria", {}).get("pattern", "")
-        matched = False
-
-        if cond_type == "contains":
-            targets = cond_value if isinstance(cond_value, list) else [cond_value]
-            matched = any(t.lower() in content.lower() for t in targets if t)
-        elif cond_type == "regex":
-            try:
-                matched = bool(re.search(cond_value, content))
-            except re.error:
-                pass
-        elif cond_type == "content" and pattern:
-            try:
-                matched = bool(re.search(pattern, content))
-            except re.error:
-                pass
-
-        if matched:
-            action_info = rule.get("actions", {})
-            violations.append({
-                "rule_id": rule.get("id", "unknown"),
-                "rule_name": action_info.get("params", {}).get("reason", "Unnamed rule"),
-                "severity": rule.get("metadata", {}).get("severity", "medium"),
-                "action": action_info.get("type", "block"),
-            })
-
+    violations = AGPEvaluationService.evaluate_rules_against_content(
+        policy.rules, content
+    )
     elapsed = (_time.time() - start) * 1000
     return {
         "passed": len(violations) == 0,
@@ -589,7 +699,12 @@ async def _handle_list_policies(
     if "/workspace/editions/community/src" not in sys.path:
         sys.path.insert(0, "/workspace/editions/community/src")
 
-    from aictrlnet_business.services.agp_evaluation import AGPEvaluationService
+    try:
+        from aictrlnet_business.services.agp_evaluation import AGPEvaluationService
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
     from core.tenant_context import get_current_tenant_id
 
     svc = AGPEvaluationService(db)
@@ -622,7 +737,12 @@ async def _handle_check_compliance(
     if "/workspace/editions/community/src" not in sys.path:
         sys.path.insert(0, "/workspace/editions/community/src")
 
-    from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceManager
+    try:
+        from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceManager
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Enterprise edition or higher"
+        ) from exc
     from core.tenant_context import get_current_tenant_id
 
     svc = MCPComplianceManager()
@@ -1018,7 +1138,12 @@ async def _handle_research_api(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.api_research_service import APIResearchService
+    try:
+        from aictrlnet_business.services.api_research_service import APIResearchService
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = APIResearchService()
     spec = await svc.research_api(
@@ -1035,9 +1160,14 @@ async def _handle_generate_adapter(
     _ensure_business_sys_path()
     import asyncio as _asyncio
 
-    from aictrlnet_business.services.generated_adapter_service import (
-        GeneratedAdapterService,
-    )
+    try:
+        from aictrlnet_business.services.generated_adapter_service import (
+            GeneratedAdapterService,
+        )
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = GeneratedAdapterService(db)
     record = await svc.create_generated_adapter(
@@ -1087,10 +1217,20 @@ async def _handle_self_extend(
     _ensure_business_sys_path()
     import asyncio as _asyncio
 
-    from aictrlnet_business.services.api_research_service import APIResearchService
-    from aictrlnet_business.services.generated_adapter_service import (
-        GeneratedAdapterService,
-    )
+    try:
+        from aictrlnet_business.services.api_research_service import APIResearchService
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
+    try:
+        from aictrlnet_business.services.generated_adapter_service import (
+            GeneratedAdapterService,
+        )
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     research_svc = APIResearchService()
     spec = await research_svc.research_api(
@@ -1149,9 +1289,14 @@ async def _handle_list_generated_adapters(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.generated_adapter_service import (
-        GeneratedAdapterService,
-    )
+    try:
+        from aictrlnet_business.services.generated_adapter_service import (
+            GeneratedAdapterService,
+        )
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = GeneratedAdapterService(db)
     records = await svc.list_generated_adapters(
@@ -1167,9 +1312,14 @@ async def _handle_get_generated_adapter_status(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.generated_adapter_service import (
-        GeneratedAdapterService,
-    )
+    try:
+        from aictrlnet_business.services.generated_adapter_service import (
+            GeneratedAdapterService,
+        )
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = GeneratedAdapterService(db)
     record = await svc.get_by_id(arguments["adapter_id"], include_code=False)
@@ -1195,9 +1345,14 @@ async def _handle_get_generated_adapter_source(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.generated_adapter_service import (
-        GeneratedAdapterService,
-    )
+    try:
+        from aictrlnet_business.services.generated_adapter_service import (
+            GeneratedAdapterService,
+        )
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = GeneratedAdapterService(db)
     record = await svc.get_by_id(arguments["adapter_id"], include_code=True)
@@ -1218,9 +1373,14 @@ async def _handle_approve_adapter(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.generated_adapter_service import (
-        GeneratedAdapterService,
-    )
+    try:
+        from aictrlnet_business.services.generated_adapter_service import (
+            GeneratedAdapterService,
+        )
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = GeneratedAdapterService(db)
     result = await svc.approve_adapter(arguments["adapter_id"], approved_by=user_id)
@@ -1237,9 +1397,14 @@ async def _handle_reject_adapter(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.generated_adapter_service import (
-        GeneratedAdapterService,
-    )
+    try:
+        from aictrlnet_business.services.generated_adapter_service import (
+            GeneratedAdapterService,
+        )
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = GeneratedAdapterService(db)
     result = await svc.reject_adapter(
@@ -1260,9 +1425,14 @@ async def _handle_activate_adapter(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.generated_adapter_service import (
-        GeneratedAdapterService,
-    )
+    try:
+        from aictrlnet_business.services.generated_adapter_service import (
+            GeneratedAdapterService,
+        )
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = GeneratedAdapterService(db)
     try:
@@ -1330,7 +1500,12 @@ async def _handle_list_pending_approvals(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.approval import ApprovalService
+    try:
+        from aictrlnet_business.services.approval import ApprovalService
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = ApprovalService(db)
     requests = await svc.list_requests(
@@ -1364,7 +1539,12 @@ async def _handle_get_approval(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.approval import ApprovalService
+    try:
+        from aictrlnet_business.services.approval import ApprovalService
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = ApprovalService(db)
     req = await svc.get_request(arguments["request_id"])
@@ -1390,7 +1570,12 @@ async def _handle_approve_request(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.approval import ApprovalService
+    try:
+        from aictrlnet_business.services.approval import ApprovalService
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = ApprovalService(db)
     try:
@@ -1408,7 +1593,12 @@ async def _handle_reject_request(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.approval import ApprovalService
+    try:
+        from aictrlnet_business.services.approval import ApprovalService
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     svc = ApprovalService(db)
     try:
@@ -1564,7 +1754,12 @@ async def _handle_list_ai_policies(
     _ensure_business_sys_path()
     from sqlalchemy import select
 
-    from aictrlnet_business.models.ai_governance_complete import AIPolicy
+    try:
+        from aictrlnet_business.models.ai_governance_complete import AIPolicy
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
     from core.tenant_context import get_current_tenant_id
 
     tenant_id = get_current_tenant_id() or "default-tenant"
@@ -1597,7 +1792,12 @@ async def _handle_create_policy(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.models.ai_governance_complete import AIAuditLog, AIPolicy
+    try:
+        from aictrlnet_business.models.ai_governance_complete import AIAuditLog, AIPolicy
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
     from core.tenant_context import get_current_tenant_id
 
     tenant_id = get_current_tenant_id() or "default-tenant"
@@ -1652,7 +1852,12 @@ async def _handle_get_ai_audit_logs(
 
     from sqlalchemy import select
 
-    from aictrlnet_business.models.ai_governance_complete import AIAuditLog
+    try:
+        from aictrlnet_business.models.ai_governance_complete import AIAuditLog
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
 
     query = select(AIAuditLog)
     if arguments.get("action"):
@@ -1704,7 +1909,12 @@ async def _handle_list_violations(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
-    from aictrlnet_business.services.governance_service import GovernanceService
+    try:
+        from aictrlnet_business.services.governance import GovernanceService
+    except ImportError as exc:
+        raise ToolExecutionError(
+            "This tool requires the Business edition or higher"
+        ) from exc
     from core.tenant_context import get_current_tenant_id
 
     svc = GovernanceService(db)

@@ -1,6 +1,7 @@
 """LLM generation engine that uses existing adapters."""
 
 import logging
+import os
 import httpx
 from typing import List, Dict, Any, Optional, Tuple, Union
 from datetime import datetime
@@ -55,6 +56,10 @@ class LLMGenerationEngine:
         self.ollama_url = "http://host.docker.internal:11434"
         self._available_models_cache = None
         self._models_cache_time = 0
+        self.vllm_url = os.environ.get("VLLM_URL", "http://host.docker.internal:8000")
+        self.vllm_api_key = os.environ.get("VLLM_API_KEY")
+        self._vllm_models_cache = None
+        self._vllm_models_cache_time = 0
         self._adapters = {}
         # Use enhanced selector for sophisticated routing
         self.enhanced_selector = get_enhanced_selector()
@@ -140,7 +145,7 @@ class LLMGenerationEngine:
             logger.error(f"Generation failed with {provider.value}: {e}")
             # On Cloud Run, Ollama is NOT available (no localhost:11434)
             # Only fallback to Ollama if we're NOT on GCP and NOT already using Ollama
-            if provider != ModelProvider.OLLAMA and not self._is_cloud_environment():
+            if provider not in (ModelProvider.OLLAMA, ModelProvider.VLLM) and not self._is_cloud_environment():
                 logger.info("Falling back to Ollama (local development)")
                 try:
                     response = await self._generate_with_ollama(request, "llama3.2:3b")
@@ -538,34 +543,131 @@ Return ONLY the JSON array, no other text or explanation."""
                     metadata={"steps": [s.to_dict() for s in steps] if steps else []}
                 )
             else:
-                # Use adapter with workflow-specific prompt for non-Ollama providers
+                # Use adapter with workflow-specific prompt for non-Ollama providers.
+                # Each branch builds an AdapterConfig from the appropriate environment
+                # variables, mirroring the pattern in llm/service.py::_AdapterProvider.
+                # If a required key/credential is missing, return None and let the
+                # caller fall back to text-based generation.
+                import os
+                from adapters.models import AdapterConfig, AdapterCategory
+
                 adapter = None
                 try:
-                    # Import the appropriate adapter based on provider
                     if provider == ModelProvider.ANTHROPIC:
+                        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+                        if not api_key:
+                            raise RuntimeError("ANTHROPIC_API_KEY not configured")
                         from adapters.implementations.ai.claude_adapter import ClaudeAdapter
-                        adapter = ClaudeAdapter()
+                        adapter = ClaudeAdapter(AdapterConfig(
+                            name="claude-workflow",
+                            version="1.0.0",
+                            category=AdapterCategory.AI,
+                            api_key=api_key,
+                            credentials={"api_key": api_key},
+                            timeout_seconds=120.0,
+                        ))
                     elif provider == ModelProvider.OPENAI:
+                        api_key = os.environ.get("OPENAI_API_KEY", "")
+                        if not api_key:
+                            raise RuntimeError("OPENAI_API_KEY not configured")
                         from adapters.implementations.ai.openai_adapter import OpenAIAdapter
-                        adapter = OpenAIAdapter()
+                        adapter = OpenAIAdapter(AdapterConfig(
+                            name="openai-workflow",
+                            version="1.0.0",
+                            category=AdapterCategory.AI,
+                            api_key=api_key,
+                            credentials={"api_key": api_key},
+                            timeout_seconds=120.0,
+                        ))
                     elif provider in (ModelProvider.GEMINI, ModelProvider.VERTEX_AI):
-                        from business_adapters.implementations.ai.gemini_adapter import GeminiAdapter
+                        try:
+                            from business_adapters.implementations.ai.gemini_adapter import GeminiAdapter
+                        except ImportError as exc:
+                            raise RuntimeError("Gemini/Vertex requires Business edition") from exc
                         if provider == ModelProvider.VERTEX_AI:
                             adapter = GeminiAdapter(system_mode=True)
                         else:
-                            adapter = GeminiAdapter()
+                            api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+                            if not api_key:
+                                raise RuntimeError("GOOGLE_API_KEY/GEMINI_API_KEY not configured")
+                            adapter = GeminiAdapter(AdapterConfig(
+                                name="gemini-workflow",
+                                version="1.0.0",
+                                category=AdapterCategory.AI,
+                                api_key=api_key,
+                                credentials={"api_key": api_key},
+                                timeout_seconds=120.0,
+                            ))
                     elif provider == ModelProvider.COHERE:
-                        from adapters.implementations.ai.cohere_adapter import CohereAdapter
-                        adapter = CohereAdapter()
+                        api_key = os.environ.get("COHERE_API_KEY", "")
+                        if not api_key:
+                            raise RuntimeError("COHERE_API_KEY not configured")
+                        try:
+                            from business_adapters.implementations.ai.cohere_adapter import CohereAdapter
+                        except ImportError as exc:
+                            raise RuntimeError("Cohere requires Business edition") from exc
+                        adapter = CohereAdapter(AdapterConfig(
+                            name="cohere-workflow",
+                            version="1.0.0",
+                            category=AdapterCategory.AI,
+                            api_key=api_key,
+                            credentials={"api_key": api_key},
+                            timeout_seconds=120.0,
+                        ))
                     elif provider == ModelProvider.HUGGINGFACE:
+                        api_key = os.environ.get("HUGGINGFACE_API_KEY") or os.environ.get("HF_TOKEN", "")
                         from adapters.implementations.ai.huggingface_adapter import HuggingFaceAdapter
-                        adapter = HuggingFaceAdapter()
+                        adapter = HuggingFaceAdapter(AdapterConfig(
+                            name="huggingface-workflow",
+                            version="1.0.0",
+                            category=AdapterCategory.AI,
+                            api_key=api_key or None,
+                            credentials={"api_key": api_key} if api_key else {},
+                            timeout_seconds=120.0,
+                        ))
                     elif provider == ModelProvider.BEDROCK:
-                        from adapters.implementations.ai.bedrock_adapter import BedrockAdapter
-                        adapter = BedrockAdapter()
+                        try:
+                            from business_adapters.implementations.ai.aws_bedrock_adapter import AWSBedrockAdapter
+                        except ImportError as exc:
+                            raise RuntimeError("Bedrock requires Business edition") from exc
+                        adapter = AWSBedrockAdapter(AdapterConfig(
+                            name="bedrock-workflow",
+                            version="1.0.0",
+                            category=AdapterCategory.AI,
+                            credentials={},
+                            timeout_seconds=120.0,
+                        ))
                     elif provider == ModelProvider.AZURE_OPENAI:
-                        from adapters.implementations.ai.azure_openai_adapter import AzureOpenAIAdapter
-                        adapter = AzureOpenAIAdapter()
+                        api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
+                        endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+                        if not api_key or not endpoint:
+                            raise RuntimeError("AZURE_OPENAI_API_KEY/AZURE_OPENAI_ENDPOINT not configured")
+                        try:
+                            from business_adapters.implementations.ai.azure_openai_adapter import AzureOpenAIAdapter
+                        except ImportError as exc:
+                            raise RuntimeError("Azure OpenAI requires Business edition") from exc
+                        adapter = AzureOpenAIAdapter(AdapterConfig(
+                            name="azure-openai-workflow",
+                            version="1.0.0",
+                            category=AdapterCategory.AI,
+                            api_key=api_key,
+                            base_url=endpoint,
+                            credentials={"api_key": api_key, "endpoint": endpoint},
+                            timeout_seconds=120.0,
+                        ))
+                    elif provider == ModelProvider.VLLM:
+                        from adapters.implementations.ai.vllm_adapter import VLLMAdapter
+                        adapter = VLLMAdapter(AdapterConfig(
+                            name="vllm-workflow",
+                            version="1.0.0",
+                            category=AdapterCategory.AI,
+                            base_url=os.environ.get("VLLM_BASE_URL") or os.environ.get(
+                                "VLLM_URL", "http://host.docker.internal:8000"
+                            ),
+                            api_key=os.environ.get("VLLM_API_KEY"),
+                            credentials={},
+                            timeout_seconds=120.0,
+                        ))
                     else:
                         raise ValueError(f"Unknown provider: {provider}")
 
@@ -1024,6 +1126,23 @@ Return ONLY the JSON array, no other text or explanation."""
                 parameter_size=f"{size}B" if size else None,
             ))
 
+        # Get vLLM models (auto-discover from running vLLM server at VLLM_URL)
+        # Names are emitted with the vllm: prefix so selection routes through VLLMAdapter.
+        vllm_models = await self._get_vllm_models()
+        for model_name in vllm_models:
+            size = _estimate_model_size_billions(model_name)
+            models.append(ModelInfo(
+                name=f"vllm:{model_name}",
+                provider=ModelProvider.VLLM,
+                tier=classify_model_tier(model_name),
+                cost_per_1k_tokens=0.0,
+                supports_streaming=True,
+                supports_json_mode=True,
+                description=f"Local vLLM model: {model_name}",
+                local=True,
+                parameter_size=f"{size}B" if size else None,
+            ))
+
         # Add known API models (shown in dropdown for all editions)
         # Users will be prompted for API keys when they select these models
         api_models = [
@@ -1071,7 +1190,7 @@ Return ONLY the JSON array, no other text or explanation."""
                     tier=classify_model_tier(model_name),
                     cost_per_1k_tokens=self.pricing.get(model_name, 0.0),
                     supports_streaming=True,
-                    supports_json_mode=provider in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC, ModelProvider.DEEPSEEK, ModelProvider.DASHSCOPE],
+                    supports_json_mode=provider in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC, ModelProvider.DEEPSEEK, ModelProvider.DASHSCOPE, ModelProvider.VLLM],
                     description=f"{provider.value} model: {model_name}",
                     local=False,
                 ))
@@ -1119,7 +1238,34 @@ Return ONLY the JSON array, no other text or explanation."""
         # Use short TTL (30s) for failures so recovery is fast
         self._models_cache_time = now - 270
         return self._available_models_cache
-    
+
+    async def _get_vllm_models(self) -> List[str]:
+        """Get available vLLM models (5-minute TTL cache)."""
+        import time
+        now = time.time()
+        if self._vllm_models_cache is not None and (now - self._vllm_models_cache_time) < 300:
+            return self._vllm_models_cache
+
+        try:
+            base = self.vllm_url.rstrip("/")
+            if not base.endswith("/v1"):
+                base = f"{base}/v1"
+            headers = {"Authorization": f"Bearer {self.vllm_api_key}"} if self.vllm_api_key else {}
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{base}/models", headers=headers)
+                if response.status_code == 200:
+                    data = response.json()
+                    self._vllm_models_cache = [m["id"] for m in data.get("data", []) if m.get("id")]
+                    self._vllm_models_cache_time = now
+                    logger.info(f"Available vLLM models: {self._vllm_models_cache}")
+                    return self._vllm_models_cache
+        except Exception as e:
+            logger.warning(f"Failed to get vLLM models: {e}")
+
+        self._vllm_models_cache = []
+        self._vllm_models_cache_time = now - 270
+        return self._vllm_models_cache
+
     def _is_api_model(self, model: str) -> bool:
         """Check if model requires API access."""
         return any(x in model.lower() for x in [

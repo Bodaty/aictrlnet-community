@@ -55,6 +55,11 @@ try:
         "Compliance-gate denials",
         ["tool"],
     )
+    POLICY_BLOCKED = Counter(
+        "mcp_policy_blocked_total",
+        "AGP policy-gate denials on outbound MCP tools",
+        ["tool", "policy_id"],
+    )
     TOOL_DURATION = Histogram(
         "mcp_tool_duration_seconds",
         "MCP tool handler duration",
@@ -81,6 +86,7 @@ except Exception:  # prometheus_client not installed
     RATE_DENIED = _NoopMetric()  # type: ignore
     QUOTA_DENIED = _NoopMetric()  # type: ignore
     COMPLIANCE_DENIED = _NoopMetric()  # type: ignore
+    POLICY_BLOCKED = _NoopMetric()  # type: ignore
     TOOL_DURATION = _NoopMetric()  # type: ignore
 
 
@@ -191,6 +197,26 @@ def record_compliance_denied(
     )
 
 
+def record_policy_blocked(
+    tool: str,
+    policy_id: str,
+    rule_id: str,
+    severity: str,
+    tenant_id: Optional[str] = None,
+) -> None:
+    POLICY_BLOCKED.labels(tool=tool, policy_id=policy_id).inc()
+    logger.info(
+        "mcp_policy_blocked",
+        extra={
+            "tool": tool,
+            "policy_id": policy_id,
+            "rule_id": rule_id,
+            "severity": severity,
+            "tenant_id": tenant_id,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Timing context manager
 # ---------------------------------------------------------------------------
@@ -220,6 +246,7 @@ __all__ = [
     "record_compliance_denied",
     "record_invocation",
     "record_plan_denied",
+    "record_policy_blocked",
     "record_quota_denied",
     "record_rate_denied",
     "record_scope_denied",

@@ -9,6 +9,7 @@ from datetime import datetime
 class ModelProvider(str, Enum):
     """LLM model providers."""
     OLLAMA = "ollama"
+    VLLM = "vllm"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     GEMINI = "gemini"

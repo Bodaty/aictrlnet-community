@@ -62,14 +62,16 @@ class EnhancedModelSelector:
             "llm-service": 0.85,
             "huggingface": 0.8,
             "ollama": 0.75,
+            "vllm": 0.75,
             "mcp-client": 0.7,
             "custom": 0.6
         }
-        
+
         # Cascade order for failover
         self.cascade_order = [
             "llm-service",      # Priority 1: Internal (cheapest, fastest)
             "ollama",           # Priority 2: Local models (free, moderate speed)
+            "vllm",             # Priority 2.5: Self-hosted OpenAI-compatible (free, GPU-friendly)
             "huggingface",      # Priority 3: Model registry (varied cost/speed)
             "openai",           # Priority 4: Cloud providers (expensive, high quality)
             "claude",
@@ -189,7 +191,19 @@ class EnhancedModelSelector:
                 "cost_per_1k_tokens": 0.025,
                 "adapter": adapter_name
             }
-        
+
+        elif adapter_name == "vllm":
+            # vLLM serves whatever model the operator loaded; expose a generic placeholder.
+            # Real model list comes from VLLMAdapter.list_models() at runtime.
+            models[f"{adapter_name}-llama"] = {
+                "name": "vLLM-served model",
+                "provider": adapter_name,
+                "capabilities": ["text-generation", "chat", "function-calling"],
+                "max_tokens": 8192,
+                "cost_per_1k_tokens": 0.0,
+                "adapter": adapter_name
+            }
+
         # Add more adapters as needed
         
         return models
@@ -571,6 +585,12 @@ def get_model_config(model: str) -> Dict[str, Any]:
 def get_provider_from_model(model: str) -> ModelProvider:
     """Get provider from model name."""
     model_lower = model.lower()
+
+    # vLLM uses an explicit prefix because served-model-name is often a
+    # HuggingFace repo path (e.g. meta-llama/Llama-3.1-8B-Instruct) which
+    # would otherwise fall through to the OLLAMA default. Match this first.
+    if model_lower.startswith("vllm:"):
+        return ModelProvider.VLLM
 
     # Check for Vertex AI models FIRST - models with "-vertex" suffix use GCP Vertex AI API
     # (These require GCP credentials and use different API than Google AI Studio)

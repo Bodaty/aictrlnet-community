@@ -176,14 +176,17 @@ async def charge_atomic(
     qty: int,
     limit: int,
     db: AsyncSession,
-) -> tuple[bool, int, Optional[datetime]]:
+) -> tuple[bool, int, Optional[datetime], int]:
     """Atomically increment the meter if headroom exists.
 
     Implementation: single SQL ``UPDATE ... WHERE new_value <= limit
-    RETURNING counter, period_end``. Relies on row-level locking in
-    Postgres for concurrency safety — no TOCTOU window.
+    RETURNING counter, period_end, effective_limit``. Relies on row-level
+    locking in Postgres for concurrency safety — no TOCTOU window.
 
-    Returns ``(allowed, used_after, period_end)``.
+    Returns ``(allowed, used_after, period_end, effective_limit)`` where
+    ``effective_limit`` is ``COALESCE(mcp_meters.limit_override, default)``
+    so callers can surface the actual gating value to the user (not just
+    the edition default).
     """
     # The mcp_meters table is created by the scope+idempotency migration;
     # schema: (tenant_id, meter, counter, limit_override, period_start,
@@ -207,7 +210,8 @@ async def charge_atomic(
             updated_at = now()
         WHERE mcp_meters.counter + :qty <= COALESCE(mcp_meters.limit_override, :default_limit)
            OR :default_limit = 0
-        RETURNING counter, period_end;
+        RETURNING counter, period_end,
+                  COALESCE(limit_override, :default_limit) AS effective_limit;
         """
     )
     try:
@@ -230,24 +234,27 @@ async def charge_atomic(
             await db.rollback()
         except Exception:
             pass
-        return True, 0, None
+        return True, 0, None, limit
 
     if row is None:
         # The ON CONFLICT WHERE clause failed (over limit) and no row
         # was returned. Query the current value for the error payload.
-        used, period_end = await _current_counter(db, tenant_id, meter)
-        return False, used, period_end
+        used, period_end, effective_limit = await _current_counter(
+            db, tenant_id, meter, limit
+        )
+        return False, used, period_end, effective_limit
 
-    counter, period_end = row
-    return True, int(counter), period_end
+    counter, period_end, effective_limit = row
+    return True, int(counter), period_end, int(effective_limit)
 
 
 async def _current_counter(
-    db: AsyncSession, tenant_id: str, meter: str
-) -> tuple[int, Optional[datetime]]:
+    db: AsyncSession, tenant_id: str, meter: str, default_limit: int
+) -> tuple[int, Optional[datetime], int]:
     sql = text(
         """
-        SELECT counter, period_end
+        SELECT counter, period_end,
+               COALESCE(limit_override, :default_limit) AS effective_limit
         FROM mcp_meters
         WHERE tenant_id = :tenant_id
           AND meter = :meter
@@ -256,12 +263,16 @@ async def _current_counter(
         """
     )
     try:
-        row = (await db.execute(sql, {"tenant_id": tenant_id, "meter": meter})).first()
+        row = (await db.execute(sql, {
+            "tenant_id": tenant_id,
+            "meter": meter,
+            "default_limit": default_limit,
+        })).first()
         if row:
-            return int(row[0]), row[1]
+            return int(row[0]), row[1], int(row[2])
     except Exception:
         pass
-    return 0, None
+    return 0, None, default_limit
 
 
 async def refund(
@@ -430,12 +441,12 @@ async def with_metering(
         qty = resolve_quantity(qty_expr, args)
         if qty > 0 and tenant_id:
             limit = get_default_limit(edition, meter)
-            allowed, used, period_end = await charge_atomic(
+            allowed, used, period_end, effective_limit = await charge_atomic(
                 tenant_id=tenant_id, meter=meter, qty=qty, limit=limit, db=db
             )
             if not allowed:
                 raise QuotaError(
-                    meter=meter, limit=limit, used=used, reset_at=period_end
+                    meter=meter, limit=effective_limit, used=used, reset_at=period_end
                 )
 
     # 3. Execute with timeout

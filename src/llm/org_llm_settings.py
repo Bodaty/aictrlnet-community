@@ -24,7 +24,7 @@ class OrgLLMSettings(BaseModel):
     # Provider & model preferences
     preferred_provider: Optional[str] = Field(
         None,
-        description="Default LLM provider (ollama, openai, anthropic, vertex_ai, gemini, deepseek)"
+        description="Default LLM provider (ollama, vllm, openai, anthropic, vertex_ai, gemini, deepseek)"
     )
     preferred_model: Optional[str] = Field(
         None,

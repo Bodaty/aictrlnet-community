@@ -18,7 +18,7 @@ class AgentConfigService:
     """Basic agent configuration for Community Edition."""
     
     MAX_AGENTS = 3  # Community limit
-    ALLOWED_PROVIDERS = ["ollama", "openai"]  # Single provider at a time
+    ALLOWED_PROVIDERS = ["ollama", "vllm", "openai", "anthropic"]  # Single provider at a time
     ALLOWED_AGENTS = ["basic_nlp", "basic_workflow", "basic_assistant"]
     
     async def get_user_agent_config(

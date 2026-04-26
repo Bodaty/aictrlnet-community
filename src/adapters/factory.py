@@ -23,6 +23,7 @@ class AdapterFactory:
         "claude": "adapters.implementations.ai.claude_adapter.ClaudeAdapter",
         "anthropic": "adapters.implementations.ai.claude_adapter.ClaudeAdapter",  # Alias
         "ollama": "adapters.implementations.ai.ollama_adapter.OllamaAdapter",
+        "vllm": "adapters.implementations.ai.vllm_adapter.VLLMAdapter",
         "huggingface": "adapters.implementations.ai.huggingface_adapter.HuggingFaceAdapter",
         "hf": "adapters.implementations.ai.huggingface_adapter.HuggingFaceAdapter",  # Alias
         "deepseek": "adapters.implementations.ai.deepseek_adapter.DeepSeekAdapter",
@@ -182,7 +183,7 @@ class AdapterFactory:
             return AdapterCategory(config["category"])
         
         # Determine from adapter type
-        ai_adapters = ["openai", "claude", "anthropic", "ollama", "huggingface", "hf", "deepseek"]
+        ai_adapters = ["openai", "claude", "anthropic", "ollama", "vllm", "huggingface", "hf", "deepseek"]
         communication_adapters = ["slack", "email", "webhook", "discord", "telegram", "whatsapp", "twilio", "sms"]
         human_adapters = ["upwork", "fiverr", "taskrabbit", "mechanical_turk", "scale"]
         payment_adapters = ["stripe", "paypal", "square"]
