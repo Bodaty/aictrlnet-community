@@ -188,7 +188,9 @@ class Settings(BaseSettings):
     DATA_PATH: str = Field(default="/tmp/aictrlnet", env="DATA_PATH")
     
     # Performance
-    MAX_CONNECTIONS_COUNT: int = Field(default=10)
+    # Sized for 100 concurrent autonomy-gated approvals + steady-state app load.
+    # See docs/architecture/APPROVALS_SPEC.md §13.3 for derivation.
+    MAX_CONNECTIONS_COUNT: int = Field(default=50)
     MIN_CONNECTIONS_COUNT: int = Field(default=10)
 
 

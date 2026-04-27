@@ -33,10 +33,10 @@ def get_engine():
             echo=False,
             future=True,
             pool_size=settings.MAX_CONNECTIONS_COUNT,
-            max_overflow=10,
+            max_overflow=20,
             pool_pre_ping=True,
             pool_recycle=300,
-            pool_timeout=10,
+            pool_timeout=30,
             connect_args={
                 "server_settings": {
                     # Set default tenant for RLS on every new connection.

@@ -12,11 +12,16 @@ logger = logging.getLogger(__name__)
 class EventBus:
     """Simple event bus for publishing and subscribing to events."""
     
-    def __init__(self):
+    # Bound the queue so a runaway publisher (approval thrash, broken
+    # subscriber) can't grow it unboundedly in RAM. See APPROVALS_SPEC.md §9.1.
+    _MAX_QUEUE_SIZE = 10_000
+
+    def __init__(self, maxsize: int = _MAX_QUEUE_SIZE):
         self._subscribers: Dict[str, List[Callable]] = {}
-        self._event_queue: asyncio.Queue = asyncio.Queue()
+        self._event_queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._dropped_event_count = 0
     
     async def start(self):
         """Start the event bus processor."""
@@ -115,12 +120,21 @@ class EventBus:
             "data": data,
             "timestamp": datetime.utcnow().isoformat()
         }
-        
-        # Add to queue for async processing
-        await self._event_queue.put(event)
-        
-        # Log event
-        logger.debug(f"Published event: {event_name}")
+
+        # Drop on overflow rather than blocking the publisher. A blocked
+        # publisher cascades into request-handler timeouts; a dropped event
+        # surfaces as a divergence metric we can alert on.
+        try:
+            self._event_queue.put_nowait(event)
+            logger.debug(f"Published event: {event_name}")
+        except asyncio.QueueFull:
+            self._dropped_event_count += 1
+            logger.warning(
+                "Event bus queue full (%d capacity); dropped %s. Total dropped: %d",
+                self._event_queue.maxsize,
+                event_name,
+                self._dropped_event_count,
+            )
     
     async def emit(self, event_name: str, data: Any, **kwargs):
         """Alias for publish() — used by state_manager and other node modules."""
