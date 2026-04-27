@@ -144,14 +144,19 @@ class LLMGenerationEngine:
         except Exception as e:
             logger.error(f"Generation failed with {provider.value}: {e}")
             # On Cloud Run, Ollama is NOT available (no localhost:11434)
-            # Only fallback to Ollama if we're NOT on GCP and NOT already using Ollama
+            # Only fallback to Ollama if we're NOT on GCP and NOT already using Ollama/vLLM
             if provider not in (ModelProvider.OLLAMA, ModelProvider.VLLM) and not self._is_cloud_environment():
-                logger.info("Falling back to Ollama (local development)")
-                try:
-                    response = await self._generate_with_ollama(request, "llama3.2:3b")
-                except Exception as ollama_error:
-                    logger.error(f"Ollama fallback also failed: {ollama_error}")
-                    raise e  # Re-raise the original error
+                fallback_model = await self._pick_fallback_ollama_model()
+                if fallback_model:
+                    logger.info(f"Falling back to Ollama with {fallback_model}")
+                    try:
+                        response = await self._generate_with_ollama(request, fallback_model)
+                    except Exception as ollama_error:
+                        logger.error(f"Ollama fallback ({fallback_model}) also failed: {ollama_error}")
+                        raise e  # Re-raise the original error
+                else:
+                    logger.error(f"No Ollama models pulled — cannot fall back from {provider.value} failure")
+                    raise e
             else:
                 # On Cloud Run, don't try Ollama - just propagate the error
                 logger.error(f"No fallback available in cloud environment. Original error: {e}")
@@ -1266,9 +1271,31 @@ Return ONLY the JSON array, no other text or explanation."""
         self._vllm_models_cache_time = now - 270
         return self._vllm_models_cache
 
+    async def _pick_fallback_ollama_model(self) -> Optional[str]:
+        """Pick a fallback Ollama model.
+
+        Tries DEFAULT_LLM_MODEL (per LLM_FALLBACK_AND_ORG_SETTINGS_SPEC) first,
+        then any pulled Ollama model as graceful degradation. Returns None if
+        Ollama has nothing available.
+        """
+        from llm.tier_resolver import get_environment_default_model, is_ollama_model
+
+        available = await self._get_ollama_models()
+        if not available:
+            return None
+
+        configured = get_environment_default_model()
+        if configured and is_ollama_model(configured) and configured in available:
+            return configured
+
+        return available[0]
+
     def _is_api_model(self, model: str) -> bool:
-        """Check if model requires API access."""
-        return any(x in model.lower() for x in [
+        """Check if model requires API access (cloud or self-hosted)."""
+        model_lower = model.lower()
+        if model_lower.startswith("vllm:"):
+            return True
+        return any(x in model_lower for x in [
             "claude", "gpt", "gemini", "command",
             "deepseek-chat", "deepseek-reasoner",
             "qwen-turbo", "qwen-plus", "qwen-max", "qwen-long",
