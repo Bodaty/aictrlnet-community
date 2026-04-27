@@ -193,6 +193,12 @@ class Settings(BaseSettings):
     MAX_CONNECTIONS_COUNT: int = Field(default=50)
     MIN_CONNECTIONS_COUNT: int = Field(default=10)
 
+    # Approvals feature flags (PR 1 of approvals workstream).
+    # Default false during rollout; flipped to true after stabilization
+    # window (see APPROVALS_SPEC.md and the rollout plan).
+    APPROVALS_STRICT_LOCKING: bool = Field(default=False, env="APPROVALS_STRICT_LOCKING")
+    APPROVALS_FAIL_CLOSED: bool = Field(default=False, env="APPROVALS_FAIL_CLOSED")
+
 
 def get_settings() -> Settings:
     """Get settings instance."""
