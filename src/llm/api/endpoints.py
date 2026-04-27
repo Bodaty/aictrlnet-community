@@ -281,7 +281,7 @@ async def get_status() -> Dict[str, Any]:
     return await health_check()
 
 
-@router.get("/models/{model_name}/provider-status")
+@router.get("/models/{model_name:path}/provider-status")
 async def get_model_provider_status(
     model_name: str,
     current_user: User = Depends(get_current_user)
