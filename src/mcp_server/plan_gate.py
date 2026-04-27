@@ -396,6 +396,11 @@ class PlanService:
             import os
             from datetime import datetime, timedelta, timezone
 
+            # A tenant may have multiple active subscriptions when several users share
+            # the tenant_id (common in self-hosted "default-tenant" deployments where
+            # each seeded user ends up with their own row). Pull all active rows and
+            # pick the highest tier — any user paying for a higher tier should give
+            # the tenant access to that tier's tools.
             stmt = (
                 select(
                     SubscriptionPlan.edition,
@@ -411,27 +416,34 @@ class PlanService:
                         SubscriptionStatus.PAST_DUE,
                     ]),
                 )
-                .limit(1)
             )
-            row = (await self.db.execute(stmt)).first()
-            if row and row[0]:
-                edition, status, period_end = row[0], row[1], row[2]
-                # A4: PAST_DUE beyond grace → fall back to community
+            rows = (await self.db.execute(stmt)).all()
+            best_tier: Optional[str] = None
+            best_rank = -1
+            grace_days = int(os.environ.get("MCP_PAST_DUE_GRACE_DAYS", "3"))
+            now = datetime.now(timezone.utc)
+            for edition, status, period_end in rows:
+                if not edition:
+                    continue
+                # A4: PAST_DUE beyond grace doesn't count toward tier
                 if status == SubscriptionStatus.PAST_DUE and period_end is not None:
-                    grace_days = int(os.environ.get("MCP_PAST_DUE_GRACE_DAYS", "3"))
                     cutoff = period_end + timedelta(days=grace_days)
-                    now = datetime.now(timezone.utc)
-                    # Handle naive datetime from DB
                     if cutoff.tzinfo is None:
                         cutoff = cutoff.replace(tzinfo=timezone.utc)
                     if now > cutoff:
                         logger.info(
                             "Tenant %s PAST_DUE beyond %d-day grace (period_end=%s) — "
-                            "falling back to community",
+                            "ignoring this subscription for tier resolution",
                             tenant_id, grace_days, period_end,
                         )
-                        return "community"
-                return normalize_edition(edition)
+                        continue
+                tier = normalize_edition(edition)
+                rank = _TIER_RANK.get(tier, 0)
+                if rank > best_rank:
+                    best_rank = rank
+                    best_tier = tier
+            if best_tier:
+                return best_tier
         except Exception as e:  # defensive — never block MCP on plan-lookup failure
             logger.warning("plan lookup failed for tenant=%s: %s", tenant_id, e)
 

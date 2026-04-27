@@ -748,7 +748,14 @@ async def main():
             # Seed subscription plans
             plan_count = await seed_subscription_plans(session)
             logger.info(f"✅ Created {plan_count} subscription plans")
-            
+
+            # Ensure seeded test users have a real Subscription matching their edition
+            # (otherwise /subscription/current falls back to community-free and tier
+            # filters treat dev/admin as Community even if user.edition says otherwise).
+            from seed_test_user_subscriptions import ensure_test_user_subscriptions
+            sub_changes = await ensure_test_user_subscriptions(session)
+            logger.info(f"✅ Synced {sub_changes} test-user subscription(s)")
+
             # Seed usage limits
             limit_count = await seed_usage_limits(session)
             logger.info(f"✅ Created {limit_count} usage limits")
