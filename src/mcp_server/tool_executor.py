@@ -1496,16 +1496,51 @@ async def _handle_browser_execute(
     }
 
 
-async def _handle_list_pending_approvals(
-    arguments: Dict[str, Any], db: AsyncSession, user_id: str
-) -> Dict[str, Any]:
+def _import_approval_service():
+    """Resolve ApprovalService + typed exceptions in one place.
+
+    The community MCP layer doesn't ship the Business edition, so the import
+    is lazy and guarded. Returning the exception classes from the same call
+    keeps the handlers below from re-importing them per call.
+    """
     _ensure_business_sys_path()
     try:
         from aictrlnet_business.services.approval import ApprovalService
+        from aictrlnet_business.services.approval_exceptions import (
+            RequestNotFound,
+            ApprovalStateError,
+            IdentityError,
+            Forbidden,
+            TenantMismatchError,
+        )
     except ImportError as exc:
         raise ToolExecutionError(
             "This tool requires the Business edition or higher"
         ) from exc
+    return (
+        ApprovalService,
+        (RequestNotFound, ApprovalStateError, IdentityError, Forbidden, TenantMismatchError),
+    )
+
+
+def _agent_tenant_id() -> str:
+    """Resolve the calling agent's tenant from the request-scoped contextvar.
+
+    Per APPROVALS_SPEC §6.1, every approval MCP handler must explicitly assert
+    tenant scope. The community MCP runtime sets the tenant contextvar from
+    JWT/API-key auth before dispatching the tool, so reading it here gives
+    us the authoritative tenant id without trusting handler kwargs.
+    """
+    from core.tenant_context import get_current_tenant_id
+
+    return get_current_tenant_id()
+
+
+async def _handle_list_pending_approvals(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    ApprovalService, _approval_exc = _import_approval_service()
+    tenant_id = _agent_tenant_id()
 
     svc = ApprovalService(db)
     requests = await svc.list_requests(
@@ -1514,6 +1549,7 @@ async def _handle_list_pending_approvals(
         status="pending",
         workflow_id=arguments.get("workflow_id"),
         user_id=user_id if arguments.get("mine_only") else None,
+        tenant_id=tenant_id,
         resource_type=arguments.get("resource_type"),
     )
     return {
@@ -1538,16 +1574,13 @@ async def _handle_list_pending_approvals(
 async def _handle_get_approval(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    _ensure_business_sys_path()
-    try:
-        from aictrlnet_business.services.approval import ApprovalService
-    except ImportError as exc:
-        raise ToolExecutionError(
-            "This tool requires the Business edition or higher"
-        ) from exc
+    ApprovalService, _approval_exc = _import_approval_service()
+    tenant_id = _agent_tenant_id()
 
     svc = ApprovalService(db)
-    req = await svc.get_request(arguments["request_id"])
+    # Tenant-scoped lookup. A cross-tenant id surfaces as None (not as the
+    # other tenant's row), which we then 404 — same shape as REST.
+    req = await svc.get_request(arguments["request_id"], tenant_id=tenant_id)
     if not req:
         raise ToolExecutionError(
             f"Approval request {arguments['request_id']} not found"
@@ -1569,13 +1602,8 @@ async def _handle_get_approval(
 async def _handle_approve_request(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    _ensure_business_sys_path()
-    try:
-        from aictrlnet_business.services.approval import ApprovalService
-    except ImportError as exc:
-        raise ToolExecutionError(
-            "This tool requires the Business edition or higher"
-        ) from exc
+    ApprovalService, approval_exc = _import_approval_service()
+    tenant_id = _agent_tenant_id()
 
     svc = ApprovalService(db)
     try:
@@ -1583,8 +1611,16 @@ async def _handle_approve_request(
             request_id=arguments["request_id"],
             approver_id=user_id,
             comments=arguments.get("comments"),
+            tenant_id=tenant_id,
         )
+    except approval_exc as e:
+        # Maps RequestNotFound / ApprovalStateError / IdentityError / Forbidden /
+        # TenantMismatchError to a single ToolExecutionError surface; the
+        # message preserves the typed-exception class so MCP clients can
+        # distinguish 404/409/403 cases by inspecting the wrapped error.
+        raise ToolExecutionError(f"{type(e).__name__}: {e}") from e
     except ValueError as e:
+        # Legacy path (APPROVALS_STRICT_LOCKING off) still raises ValueError.
         raise ToolExecutionError(str(e)) from e
     return result
 
@@ -1592,13 +1628,8 @@ async def _handle_approve_request(
 async def _handle_reject_request(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    _ensure_business_sys_path()
-    try:
-        from aictrlnet_business.services.approval import ApprovalService
-    except ImportError as exc:
-        raise ToolExecutionError(
-            "This tool requires the Business edition or higher"
-        ) from exc
+    ApprovalService, approval_exc = _import_approval_service()
+    tenant_id = _agent_tenant_id()
 
     svc = ApprovalService(db)
     try:
@@ -1606,7 +1637,10 @@ async def _handle_reject_request(
             request_id=arguments["request_id"],
             approver_id=user_id,
             reason=arguments["reason"],
+            tenant_id=tenant_id,
         )
+    except approval_exc as e:
+        raise ToolExecutionError(f"{type(e).__name__}: {e}") from e
     except ValueError as e:
         raise ToolExecutionError(str(e)) from e
     return result

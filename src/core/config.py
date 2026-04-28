@@ -194,10 +194,13 @@ class Settings(BaseSettings):
     MIN_CONNECTIONS_COUNT: int = Field(default=10)
 
     # Approvals feature flags (PR 1 of approvals workstream).
-    # Default false during rollout; flipped to true after stabilization
-    # window (see APPROVALS_SPEC.md and the rollout plan).
-    APPROVALS_STRICT_LOCKING: bool = Field(default=False, env="APPROVALS_STRICT_LOCKING")
-    APPROVALS_FAIL_CLOSED: bool = Field(default=False, env="APPROVALS_FAIL_CLOSED")
+    # Defaulted to true post-PR-2: pre-customer state means "bake in
+    # production" yields no signal, so we make the strict path the
+    # default and exercise it on every dev/CI run. Flag-checking
+    # branches survive for one more PR cycle (cheap insurance) and
+    # are removed in the stabilization PR after PR 4 lands.
+    APPROVALS_STRICT_LOCKING: bool = Field(default=True, env="APPROVALS_STRICT_LOCKING")
+    APPROVALS_FAIL_CLOSED: bool = Field(default=True, env="APPROVALS_FAIL_CLOSED")
 
 
 def get_settings() -> Settings:
