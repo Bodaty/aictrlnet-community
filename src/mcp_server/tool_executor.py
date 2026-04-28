@@ -2694,6 +2694,7 @@ async def _handle_instantiate_template(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     from services.workflow_template_service import create_workflow_template_service
+    from schemas.workflow_templates import InstantiateTemplateRequest
 
     svc = create_workflow_template_service()
     # instantiate_template on the service creates a workflow from the template;
@@ -2704,19 +2705,35 @@ async def _handle_instantiate_template(
     )
     if not method:
         raise ToolExecutionError("Template instantiation not available in this edition")
-    workflow = await method(
-        db=db,
-        user_id=user_id,
-        template_id=arguments["template_id"],
-        name=arguments.get("name"),
+
+    template_id = arguments["template_id"]
+    # InstantiateTemplateRequest.name is required (min_length=1). Synthesize a
+    # readable fallback when the MCP caller didn't supply one — avoids a DB
+    # round-trip just to fetch the template's display name.
+    resolved_name = arguments.get("name") or f"Template instance {str(template_id)[:8]}"
+    request = InstantiateTemplateRequest(
+        name=resolved_name,
+        description=arguments.get("description"),
         parameters=arguments.get("parameters") or {},
     )
+    workflow = await method(
+        db=db,
+        template_id=template_id,
+        user_id=user_id,
+        request=request,
+    )
+    # Service returns a dict with keys workflow_id/workflow_name; ORM
+    # objects from older code paths use .id/.name. Handle both shapes.
+    if isinstance(workflow, dict):
+        wf_id = workflow.get("workflow_id") or workflow.get("id")
+        wf_name = workflow.get("workflow_name") or workflow.get("name")
+    else:
+        wf_id = getattr(workflow, "id", None)
+        wf_name = getattr(workflow, "name", None)
     return {
-        "workflow_id": str(getattr(workflow, "id", "") or
-                           (workflow.get("id") if isinstance(workflow, dict) else "")),
-        "name": getattr(workflow, "name", None) or
-                (workflow.get("name") if isinstance(workflow, dict) else None),
-        "template_id": arguments["template_id"],
+        "workflow_id": str(wf_id) if wf_id is not None else None,
+        "name": wf_name,
+        "template_id": template_id,
     }
 
 

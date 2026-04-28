@@ -165,6 +165,82 @@ class NodeExecutor:
             
             raise
     
+    async def _persist_node_execution_status(
+        self,
+        node_instance: NodeInstance,
+        *,
+        status: str,
+        started_at: Optional[datetime] = None,
+        completed_at: Optional[datetime] = None,
+        inputs: Optional[Dict[str, Any]] = None,
+        outputs: Optional[Dict[str, Any]] = None,
+        error_details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist NodeExecution row updates from inside the in-memory executor.
+
+        Opens its own session via get_session_maker() because asyncio.gather
+        runs nodes in parallel and SQLAlchemy AsyncSession is not safe to
+        share across coroutines. Failures are logged and swallowed so the
+        in-memory executor never blocks on a DB write.
+
+        Status string is written to the row's enum column directly;
+        NodeExecutionStatus accepts the string values 'running'/'completed'/
+        'failed' that we use here.
+        """
+        execution_id = node_instance.context.get("workflow_instance_id")
+        tenant_id = node_instance.context.get("tenant_id")
+        if not execution_id:
+            return
+        try:
+            from core.database import get_session_maker
+            from models.workflow_execution import NodeExecution
+            from sqlalchemy import select, text as _sql_text
+            session_maker = get_session_maker()
+            async with session_maker() as db:
+                if tenant_id:
+                    await db.execute(
+                        _sql_text(
+                            "SELECT set_config('app.current_tenant_id', :tid, false)"
+                        ),
+                        {"tid": tenant_id},
+                    )
+                row = (await db.execute(
+                    select(NodeExecution).where(
+                        NodeExecution.execution_id == execution_id,
+                        NodeExecution.node_id == node_instance.id,
+                    )
+                )).scalar_one_or_none()
+                if not row:
+                    return
+                from models.workflow_execution import NodeExecutionStatus
+                try:
+                    row.status = NodeExecutionStatus(status)
+                except ValueError:
+                    # Unknown executor status — fall back to FAILED so the row
+                    # never sits in a half-updated state with a bogus enum.
+                    row.status = NodeExecutionStatus.FAILED
+                if started_at is not None:
+                    row.started_at = started_at
+                if completed_at is not None:
+                    row.completed_at = completed_at
+                    if row.started_at:
+                        row.duration_ms = int(
+                            (completed_at - row.started_at).total_seconds() * 1000
+                        )
+                if inputs is not None:
+                    row.inputs = inputs
+                if outputs is not None:
+                    row.outputs = outputs
+                if error_details is not None:
+                    row.error_details = error_details
+                await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "NodeExecution persistence failed for %s: %s",
+                node_instance.id,
+                exc,
+            )
+
     async def execute_node(
         self,
         node_instance: NodeInstance,
@@ -181,9 +257,9 @@ class NodeExecutor:
                         status=NodeStatus.RUNNING,
                         error="Node is already running"
                     )
-                
+
                 self._running_nodes.add(node_instance.id)
-            
+
             try:
                 # Load previous node state if exists
                 previous_state = await self.state_manager.load_node_state(
@@ -192,11 +268,21 @@ class NodeExecutor:
                 if previous_state and node_instance.status == NodeStatus.PENDING:
                     logger.info(f"Loading previous state for node {node_instance.id}")
                     node_instance.state_data = previous_state
-                
+
                 # Update node status
                 node_instance.status = NodeStatus.RUNNING
                 node_instance.started_at = datetime.utcnow()
-                
+
+                # Persist RUNNING state to the NodeExecution DB row so callers
+                # querying execution status see real progression instead of a
+                # row stuck at PENDING for the lifetime of the run.
+                await self._persist_node_execution_status(
+                    node_instance,
+                    status="running",
+                    started_at=node_instance.started_at,
+                    inputs=node_instance.input_data,
+                )
+
                 # Save node running state
                 await self.state_manager.save_node_state(
                     node_instance,
@@ -238,6 +324,12 @@ class NodeExecutor:
                         node_instance.id,
                         gate_error,
                     )
+                    await self._persist_node_execution_status(
+                        node_instance,
+                        status="failed",
+                        completed_at=datetime.utcnow(),
+                        error_details={"error": str(gate_error), "source": "autonomy_gate"},
+                    )
                     return await self.error_handler.handle_node_error(
                         gate_error, node_instance, workflow_instance
                     )
@@ -256,7 +348,7 @@ class NodeExecutor:
                     result = await self.error_handler.handle_node_error(
                         node_error, node_instance, workflow_instance
                     )
-                
+
                 # Save node completion state
                 await self.state_manager.save_node_state(
                     node_instance,
@@ -268,7 +360,32 @@ class NodeExecutor:
                     },
                     workflow_instance.id
                 )
-                
+
+                # Persist terminal-or-retry state to the NodeExecution DB row.
+                # Mirrors the logical status of the in-memory NodeInstance so
+                # callers querying the row don't see PENDING after the node
+                # actually ran. Retry case (PENDING return) leaves the row
+                # status unchanged so the next attempt can flip it back to
+                # 'running'; everything else is recorded.
+                final_status_obj = getattr(result, "status", None)
+                final_status_str = (
+                    final_status_obj.value
+                    if hasattr(final_status_obj, "value")
+                    else str(final_status_obj or "")
+                ).lower()
+                if final_status_str and final_status_str != "pending":
+                    persist_kwargs = {
+                        "status": final_status_str,
+                        "completed_at": datetime.utcnow(),
+                        "outputs": node_instance.output_data,
+                    }
+                    err = getattr(result, "error", None)
+                    if err:
+                        persist_kwargs["error_details"] = {"error": str(err)}
+                    await self._persist_node_execution_status(
+                        node_instance, **persist_kwargs
+                    )
+
                 # Update workflow variables if needed
                 if hasattr(node_instance, 'config') and hasattr(node_instance.config, 'outputs'):
                     for output_var in node_instance.config.outputs:
@@ -276,12 +393,18 @@ class NodeExecutor:
                             workflow_instance.variables[output_var] = (
                                 node_instance.output_data[output_var]
                             )
-                
+
                 return result
-                
+
             except Exception as e:
                 # Handle unexpected errors
                 logger.error(f"Unexpected error in node {node_instance.id}: {e}")
+                await self._persist_node_execution_status(
+                    node_instance,
+                    status="failed",
+                    completed_at=datetime.utcnow(),
+                    error_details={"error": str(e), "source": "executor_unexpected"},
+                )
                 return await self.error_handler.handle_node_error(
                     e, node_instance, workflow_instance
                 )

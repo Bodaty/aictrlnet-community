@@ -30,8 +30,20 @@ class DataSourceNode(BaseNode):
     
     async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the data source node. Returns output dict for BaseNode.run() to wrap."""
-        # Get source configuration
-        source_type = self.config.parameters.get("source_type", "static")
+        # Get source configuration. When source_type isn't explicitly set,
+        # auto-route based on the available signals so industry-pack templates
+        # that author nodes with `format: csv` + upstream csv_data don't fall
+        # into the static-source path and fail demanding an inline `data`
+        # parameter that doesn't apply to user-uploaded inputs.
+        source_type = self.config.parameters.get("source_type")
+        if not source_type:
+            if (
+                self.config.parameters.get("format") == "csv"
+                and isinstance(input_data.get("csv_data"), str)
+            ):
+                source_type = "csv_input"
+            else:
+                source_type = "static"
 
         # Load data based on source type
         if source_type == "file":
@@ -44,6 +56,8 @@ class DataSourceNode(BaseNode):
             output_data = await self._load_static_data()
         elif source_type == "input":
             output_data = await self._load_from_input(input_data)
+        elif source_type == "csv_input":
+            output_data = self._parse_csv_string(input_data["csv_data"])
         else:
             raise ValueError(f"Unsupported source type: {source_type}")
 
@@ -257,6 +271,29 @@ class DataSourceNode(BaseNode):
         else:
             return {"data": {"value": data}}
     
+    def _parse_csv_string(self, csv_text: str) -> Dict[str, Any]:
+        """Parse a CSV string from upstream into the standard {data: rows} shape.
+
+        Used when a dataSource node is configured with `format: csv` and the
+        upstream node provides csv_data as a string (typical of user-upload
+        flows like the CFO budget variance demo).
+        """
+        delimiter = self.config.parameters.get("delimiter", ",")
+        has_header = self.config.parameters.get("has_header", True)
+        lines = [ln for ln in csv_text.strip().split("\n") if ln.strip()]
+        reader = csv.reader(lines, delimiter=delimiter)
+        rows: List[Dict[str, Any]] = []
+        if has_header:
+            headers = next(reader, [])
+            for row in reader:
+                if row:
+                    rows.append(dict(zip(headers, row)))
+        else:
+            for row in reader:
+                if row:
+                    rows.append(row)
+        return {"data": rows}
+
     async def _load_from_input(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Load data from node input."""
         # Get field from input data

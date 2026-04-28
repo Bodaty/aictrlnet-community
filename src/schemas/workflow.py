@@ -9,6 +9,9 @@ from .common import TimestampSchema, PaginationResponse
 
 class NodeSchema(BaseModel):
     """Workflow node schema."""
+
+    model_config = ConfigDict(extra="ignore")
+
     id: str
     type: str
     name: Optional[str] = None
@@ -19,6 +22,16 @@ class NodeSchema(BaseModel):
     agent_id: Optional[str] = None  # UUID of the assigned AI agent
     agent_name: Optional[str] = None  # Display name of the AI agent (with "AI " prefix)
     metadata: Optional[Dict[str, Any]] = None  # Rich metadata for the node
+
+    @model_validator(mode="before")
+    @classmethod
+    def _promote_config_to_data(cls, values):
+        # Industry-pack templates and the demo workflow.json author nodes with a
+        # `config` block; the canonical storage is `data`. Promote on input so
+        # POST bodies using `config` aren't silently dropped.
+        if isinstance(values, dict) and not values.get("data") and values.get("config"):
+            values = {**values, "data": values["config"]}
+        return values
 
 
 class EdgeSchema(BaseModel):

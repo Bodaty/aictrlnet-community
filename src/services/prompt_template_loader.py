@@ -24,6 +24,9 @@ _ALLOWED_VARIABLES = frozenset({
     "current_chapter",
     "chapter_title",
     "next_question_text",
+    # Used by narrative_with_numbers.md — JSON blob of upstream computed
+    # values that the LLM is told to copy verbatim.
+    "precomputed_numbers",
 })
 
 # Resolve prompts directory relative to this file.

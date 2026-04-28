@@ -31,6 +31,11 @@ from core.tenant_context import get_current_tenant_id
 
 logger = logging.getLogger(__name__)
 
+# Strong references to background workflow tasks. asyncio.create_task returns a
+# Task that the event loop only weakly references; without this set, the task
+# can be GC'd before completion. add_done_callback removes the entry once done.
+_background_tasks: set = set()
+
 
 class WorkflowExecutionService:
     """Service for managing workflow execution."""
@@ -135,12 +140,23 @@ class WorkflowExecutionService:
         nodes = workflow_def.get("nodes", [])
         
         for node in nodes:
+            # Industry-pack templates store node settings under `config`; the demo
+            # workflow.json uses `config` too. Fall through so the row's seed
+            # context isn't empty just because the author chose `config` over
+            # `data`. The runtime executor at _execute_workflow_locally already
+            # follows this same precedence.
+            seed_context = (
+                node.get("parameters")
+                or node.get("config")
+                or node.get("data")
+                or {}
+            )
             node_execution = NodeExecution(
                 execution_id=execution_id,
                 node_id=node["id"],
                 node_type=node["type"],
                 status=NodeExecutionStatus.PENDING,
-                execution_context=node.get("data", {})
+                execution_context=seed_context,
             )
             self.db.add(node_execution)
         
@@ -165,9 +181,11 @@ class WorkflowExecutionService:
             # any other tenant — meaning the executor never actually runs
             # them.
             tenant_id_str = execution.tenant_id or get_current_tenant_id()
-            asyncio.create_task(
+            _task = asyncio.create_task(
                 self._execute_workflow_locally(execution_id, tenant_id=tenant_id_str)
             )
+            _background_tasks.add(_task)
+            _task.add_done_callback(_background_tasks.discard)
         else:
             # Send execution request to agent via IAM
             await self._send_execution_to_agent(execution_id, agent_id)

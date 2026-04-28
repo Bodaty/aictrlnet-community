@@ -15,6 +15,85 @@ from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest, Adap
 logger = logging.getLogger(__name__)
 
 
+# --- Narrative-style routing -------------------------------------------------
+# Small Ollama models (1-3B) drift on dollar amounts inside prose even when the
+# numbers are provided verbatim. For nodes whose prompt or name signals
+# narrative work, we (a) prepend a verbatim-copy guardrail rendered from a
+# shared template and (b) for Ollama-family adapters, upgrade the model to
+# the QUALITY tier default (currently llama3.1:8b-instruct-q4_K_M).
+
+# Narrative-task signals: prose-writing intent, not output-shape mentions.
+# We deliberately exclude bare "summary"/"report" because templates often
+# reference them as JSON output keys (e.g. {"summary": {...}}) without
+# intending narrative work. "executive_summary" is specific to the CFO
+# pattern; bare "summary" is not. We do NOT negate on "JSON only" because
+# narrative-in-JSON is the normal case (executive_summary is a JSON string
+# field that happens to contain prose) — drift hits the prose content, not
+# the JSON structure.
+_NARRATIVE_KEYWORDS = (
+    "narrative",
+    "commentary",
+    "executive_summary",
+    "executive summary",
+)
+_SMALL_OLLAMA_MODELS = frozenset({"llama3.2:1b", "llama3.2:3b"})
+_OLLAMA_ADAPTER_IDS = frozenset({"ollama"})
+
+# Module-level singleton — PromptTemplateLoader walks the prompts dir on init,
+# so we instantiate once instead of per LLM call.
+_prompt_loader = None
+
+
+def _get_prompt_loader():
+    global _prompt_loader
+    if _prompt_loader is None:
+        from services.prompt_template_loader import PromptTemplateLoader
+        _prompt_loader = PromptTemplateLoader()
+    return _prompt_loader
+
+
+def _normalize_response_text(response) -> None:
+    """In-place: ensure response.data['text'] holds the LLM content.
+
+    Different providers return content under different keys:
+      - Ollama /api/generate → data['response']
+      - Ollama /api/chat     → data['message']['content']
+      - OpenAI / Claude chat → data['choices'][0]['message']['content']
+      - Anthropic blocks     → data['content'] = [{'type': 'text', 'text': ...}]
+    Callers read response.data['text'] regardless.
+    """
+    if not getattr(response, "data", None):
+        return
+    if response.data.get("text"):
+        return
+    text_value: Any = ""
+    # Ollama generate
+    if not text_value:
+        text_value = response.data.get("response", "")
+    # Ollama chat: nested message.content
+    if not text_value:
+        msg = response.data.get("message")
+        if isinstance(msg, dict):
+            text_value = msg.get("content", "")
+    # OpenAI / Claude chat: choices[0].message.content
+    if not text_value and isinstance(response.data.get("choices"), list):
+        choices = response.data["choices"]
+        if choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                text_value = (first.get("message") or {}).get("content", "")
+    # Anthropic content blocks (list form)
+    if not text_value:
+        content_field = response.data.get("content")
+        if isinstance(content_field, list):
+            text_value = "".join(
+                b.get("text", "") for b in content_field if isinstance(b, dict)
+            )
+        elif isinstance(content_field, str):
+            text_value = content_field
+    response.data["text"] = text_value or ""
+
+
 class AIProcessNode(BaseNode):
     """Node for AI/ML processing tasks.
     
@@ -51,6 +130,11 @@ class AIProcessNode(BaseNode):
 
         # Trial restriction: override node-specific adapter to system default
         adapter_id = await self._enforce_trial_restriction(adapter_id)
+
+        # Stash so _process_* methods can decide whether narrative routing
+        # (model upgrade) applies. Only Ollama-family adapters get upgraded —
+        # see _maybe_upgrade_model_for_narrative.
+        self._current_adapter_id = adapter_id
 
         # Check LLM usage limits before calling (Business+ only)
         await self._check_llm_limits()
@@ -372,6 +456,7 @@ class AIProcessNode(BaseNode):
         try:
             response = await adapter.execute(request)
             if response.status != "error":
+                _normalize_response_text(response)
                 return response
         except Exception:
             pass
@@ -389,20 +474,83 @@ class AIProcessNode(BaseNode):
             }
         )
         response = await adapter.execute(chat_request)
-        # Normalise chat response so callers can read response.data["text"]
-        if response.status != "error" and "text" not in response.data:
-            content = response.data.get("content", "")
-            # Extract from OpenAI-compatible choices format (used by Claude adapter)
-            if not content and "choices" in response.data:
-                choices = response.data["choices"]
-                if choices and isinstance(choices, list):
-                    content = choices[0].get("message", {}).get("content", "")
-            if isinstance(content, list):
-                content = "".join(
-                    b.get("text", "") for b in content if isinstance(b, dict)
-                )
-            response.data["text"] = content
+        if response.status != "error":
+            _normalize_response_text(response)
         return response
+
+    def _is_narrative_node(self, prompt: str) -> bool:
+        """Detect narrative-style aiProcess nodes by keyword in prompt or name.
+
+        Narrative nodes are where small-model arithmetic drift hits hardest —
+        they receive precomputed numbers and just have to re-state them in
+        prose. Triggering on these keywords applies the verbatim-copy
+        guardrail and (for Ollama) upgrades the model to QUALITY tier.
+
+        Keywords are specific to prose-writing intent; bare "summary"/
+        "report" are excluded because they appear as JSON output keys in
+        non-narrative templates.
+        """
+        haystack = (str(prompt or "") + " " + str(self.config.name or "")).lower()
+        return any(k in haystack for k in _NARRATIVE_KEYWORDS)
+
+    def _apply_narrative_guardrail(self, prompt: str, input_data: Dict[str, Any]) -> str:
+        """Prepend a verbatim-copy guardrail block to a narrative prompt.
+
+        Reads narrative_with_numbers.md via the shared PromptTemplateLoader
+        and injects the upstream input dict as the precomputed_numbers block.
+        Caps the JSON blob at 4000 chars to avoid blowing the context window
+        on unexpectedly large upstream outputs.
+        """
+        try:
+            import json as _json
+            numbers_blob = _json.dumps(input_data, default=str, indent=2)[:4000]
+            guardrail = _get_prompt_loader().get_section(
+                "narrative_with_numbers",
+                {"precomputed_numbers": numbers_blob},
+            )
+        except Exception as exc:
+            logger.warning("Narrative guardrail render failed: %s", exc)
+            return prompt
+        if not guardrail:
+            return prompt
+        return f"{guardrail}\n\n{prompt}"
+
+    def _maybe_upgrade_model_for_narrative(
+        self, prompt: str, parameters: Dict[str, Any]
+    ) -> None:
+        """In-place: route narrative nodes to QUALITY tier when no model is set.
+
+        Triggers ONLY when:
+          - The resolved adapter is Ollama-family (avoids injecting an Ollama
+            model tag into an OpenAI/Claude request, which would 400-error).
+          - The node prompt looks narrative.
+          - The user has NOT explicitly chosen a model. Per the "by default"
+            spec, an explicit `model` in node config wins; we don't second-
+            guess production deployments that pin a small model for cost or
+            speed reasons.
+        """
+        adapter_id = getattr(self, "_current_adapter_id", None)
+        if adapter_id not in _OLLAMA_ADAPTER_IDS:
+            return
+        if not self._is_narrative_node(prompt):
+            return
+        if parameters.get("model"):
+            # Explicit pin — leave as-is.
+            return
+        try:
+            from llm.tier_resolver import ModelTier, get_system_default_for_tier
+            upgraded = get_system_default_for_tier(ModelTier.QUALITY)
+        except Exception as exc:
+            logger.warning("Tier-resolver lookup failed; using default: %s", exc)
+            return
+        if not upgraded:
+            return
+        logger.info(
+            "Narrative node %s — defaulting Ollama model to QUALITY tier (%s)",
+            self.config.id,
+            upgraded,
+        )
+        parameters["model"] = upgraded
 
     async def _process_generation(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process text generation task."""
@@ -430,13 +578,26 @@ class AIProcessNode(BaseNode):
                 parts.append(f"Input data: {str(input_data)[:500]}")
             prompt = " ".join(parts) if parts else f"Process node: {self.config.name or self.config.id}"
 
-        response = await self._call_adapter(adapter, "generate", {
+        # Narrative-style nodes (executive_summary, by-fund commentary, board
+        # narrative, etc.) get a verbatim-copy guardrail block prepended so
+        # the LLM is told NOT to recompute or invent numbers. The numbers
+        # come from upstream deterministic compute.
+        if self._is_narrative_node(prompt):
+            prompt = self._apply_narrative_guardrail(prompt, input_data)
+
+        call_params = {
             "prompt": prompt,
             "max_tokens": self.config.parameters.get("max_tokens", 1000),
             "temperature": self.config.parameters.get("temperature", 0.7),
             "top_p": self.config.parameters.get("top_p", 1.0),
             "model": self.config.parameters.get("model"),
-        })
+        }
+        # For Ollama-family adapters, narrative prompts run on QUALITY tier
+        # (llama3.1:8b-instruct-q4_K_M) instead of the small balanced
+        # defaults that drift on dollar amounts.
+        self._maybe_upgrade_model_for_narrative(prompt, call_params)
+
+        response = await self._call_adapter(adapter, "generate", call_params)
 
         if response.status == "error":
             raise Exception(f"Generation failed: {response.error}")
