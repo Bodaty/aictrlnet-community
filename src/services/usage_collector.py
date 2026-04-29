@@ -55,7 +55,7 @@ class UsageCollectorService:
             self.tracker = await get_usage_tracker(db)
         return self.tracker
     
-    async def _on_workflow_created(self, event_data: Dict[str, Any]):
+    async def _on_workflow_created(self, event_name: str, event_data: Dict[str, Any]):
         """Track workflow creation."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -69,7 +69,7 @@ class UsageCollectorService:
                 metadata={"workflow_id": event_data.get("workflow_id")}
             )
     
-    async def _on_workflow_executed(self, event_data: Dict[str, Any]):
+    async def _on_workflow_executed(self, event_name: str, event_data: Dict[str, Any]):
         """Track workflow execution."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -87,7 +87,7 @@ class UsageCollectorService:
                 }
             )
     
-    async def _on_workflow_deleted(self, event_data: Dict[str, Any]):
+    async def _on_workflow_deleted(self, event_name: str, event_data: Dict[str, Any]):
         """Track workflow deletion."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -101,7 +101,7 @@ class UsageCollectorService:
                 metadata={"workflow_id": event_data.get("workflow_id")}
             )
     
-    async def _on_task_created(self, event_data: Dict[str, Any]):
+    async def _on_task_created(self, event_name: str, event_data: Dict[str, Any]):
         """Track task creation."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -115,7 +115,7 @@ class UsageCollectorService:
                 metadata={"task_id": event_data.get("task_id")}
             )
     
-    async def _on_task_executed(self, event_data: Dict[str, Any]):
+    async def _on_task_executed(self, event_name: str, event_data: Dict[str, Any]):
         """Track task execution."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -145,7 +145,7 @@ class UsageCollectorService:
                     metadata={"task_id": event_data.get("task_id")}
                 )
     
-    async def _on_api_call(self, event_data: Dict[str, Any]):
+    async def _on_api_call(self, event_name: str, event_data: Dict[str, Any]):
         """Track API calls."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -163,7 +163,7 @@ class UsageCollectorService:
                 }
             )
     
-    async def _on_user_created(self, event_data: Dict[str, Any]):
+    async def _on_user_created(self, event_name: str, event_data: Dict[str, Any]):
         """Track user creation."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -177,7 +177,7 @@ class UsageCollectorService:
                 metadata={"user_id": event_data.get("user_id")}
             )
     
-    async def _on_user_login(self, event_data: Dict[str, Any]):
+    async def _on_user_login(self, event_name: str, event_data: Dict[str, Any]):
         """Track user login."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -194,7 +194,7 @@ class UsageCollectorService:
                 }
             )
     
-    async def _on_adapter_created(self, event_data: Dict[str, Any]):
+    async def _on_adapter_created(self, event_name: str, event_data: Dict[str, Any]):
         """Track adapter creation."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -211,7 +211,7 @@ class UsageCollectorService:
                 }
             )
     
-    async def _on_adapter_executed(self, event_data: Dict[str, Any]):
+    async def _on_adapter_executed(self, event_name: str, event_data: Dict[str, Any]):
         """Track adapter execution."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -229,7 +229,7 @@ class UsageCollectorService:
                 }
             )
     
-    async def _on_platform_credential_created(self, event_data: Dict[str, Any]):
+    async def _on_platform_credential_created(self, event_name: str, event_data: Dict[str, Any]):
         """Track platform credential creation."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
@@ -246,7 +246,7 @@ class UsageCollectorService:
                 }
             )
     
-    async def _on_platform_execution(self, event_data: Dict[str, Any]):
+    async def _on_platform_execution(self, event_name: str, event_data: Dict[str, Any]):
         """Track platform execution."""
         tenant_id = event_data.get("tenant_id") or get_current_tenant_id()
         db = event_data.get("db")
