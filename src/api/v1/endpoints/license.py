@@ -145,7 +145,7 @@ async def upgrade_license(
         # Return mock response if Stripe not configured
         return LicenseUpgradeResponse(
             subscription={
-                "id": f"sub_upgraded",
+                "id": "sub_upgraded",
                 "plan": request.target_plan,
                 "status": "pending_payment",
                 "current_period_start": datetime.utcnow().isoformat(),

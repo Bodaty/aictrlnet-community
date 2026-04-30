@@ -1958,13 +1958,13 @@ async def get_budget_status(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required"
         )
-    
+
     cost_optimizer = PlatformCostOptimizer(db)
-    status = await cost_optimizer.check_budget_status(
+    budget_status = await cost_optimizer.check_budget_status(
         user_id=current_user.get("id")
     )
-    
-    return status
+
+    return budget_status
 
 
 @router.get("/cost/optimization-opportunities")

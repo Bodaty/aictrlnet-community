@@ -261,7 +261,7 @@ class FlaskToFastAPIMigrator:
             if edition in ['all', 'enterprise']:
                 await self.migrate_enterprise_edition()
             
-            logger.info(f"\nMigration Summary:")
+            logger.info("\nMigration Summary:")
             logger.info(f"Successfully migrated: {len(self.migrated_tables)} tables")
             logger.info(f"Failed migrations: {len(self.failed_tables)} tables")
             

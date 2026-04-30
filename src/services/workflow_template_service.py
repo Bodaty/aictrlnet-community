@@ -542,7 +542,7 @@ class WorkflowTemplateService:
             enhanced_metadata = {}
         
         # First, we need to create a WorkflowDefinition
-        from models.community_complete import WorkflowDefinition, WorkflowInstance, WorkflowStatus
+        from models.community_complete import WorkflowDefinition, WorkflowStatus
         from core.tenant_context import get_current_tenant_id
         from datetime import datetime
         
@@ -1422,7 +1422,7 @@ class WorkflowTemplateService:
             await db.commit()
         
         # Summary logging
-        logger.info(f"Community template initialization complete:")
+        logger.info("Community template initialization complete:")
         logger.info(f"  - Loaded: {count} templates")
         logger.info(f"  - Skipped (already exist): {skipped} templates")
         if errors:

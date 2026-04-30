@@ -478,6 +478,70 @@ class AIProcessNode(BaseNode):
             _normalize_response_text(response)
         return response
 
+    async def _build_agent_persona_block(self) -> Optional[str]:
+        """Return a persona-context block when this node references an agent.
+
+        Looks at NodeConfig.parameters for agent_id (UUID) or agent (name string).
+        Returns a short structured block built from EnhancedAgent.identity +
+        behavioral_rules, or None if no agent is referenced or Business models
+        aren't available.
+        """
+        params = self.config.parameters or {}
+        agent_id = params.get("agent_id")
+        agent_name = params.get("agent")
+        if not agent_id and not agent_name:
+            return None
+
+        # Cross-edition import — Business model. Silently skip if unavailable.
+        try:
+            import sys
+            if '/workspace/editions/business/src' not in sys.path:
+                sys.path.insert(0, '/workspace/editions/business/src')
+            from aictrlnet_business.models.enhanced_agent import EnhancedAgent
+            from core.database import get_db
+            from sqlalchemy import select as _select
+        except Exception:
+            return None
+
+        try:
+            async for db in get_db():
+                stmt = _select(EnhancedAgent)
+                if agent_id:
+                    stmt = stmt.where(EnhancedAgent.id == agent_id)
+                else:
+                    stmt = stmt.where(EnhancedAgent.name == agent_name)
+                result = await db.execute(stmt)
+                agent = result.unique().scalar_one_or_none()
+                break
+        except Exception as e:
+            logger.debug(f"Persona lookup failed for node {self.config.id}: {e}")
+            return None
+
+        if not agent:
+            return None
+
+        identity = agent.identity if isinstance(agent.identity, dict) else {}
+        rules = agent.behavioral_rules if isinstance(agent.behavioral_rules, dict) else {}
+        if not identity and not rules:
+            return None
+
+        lines = [f"## Active Agent: {agent.name}"]
+        if identity.get("personality"):
+            lines.append(f"- Personality: {identity['personality']}")
+        if identity.get("voice"):
+            lines.append(f"- Voice: {identity['voice']}")
+        if identity.get("expertise_domain"):
+            lines.append(f"- Expertise: {identity['expertise_domain']}")
+        if identity.get("communication_style"):
+            lines.append(f"- Communication style: {identity['communication_style']}")
+        if rules.get("confirmation_required"):
+            actions = ", ".join(str(a) for a in rules["confirmation_required"][:5])
+            lines.append(f"- Requires confirmation for: {actions}")
+        if rules.get("autonomous_actions"):
+            actions = ", ".join(str(a) for a in rules["autonomous_actions"][:5])
+            lines.append(f"- Can act autonomously on: {actions}")
+        return "\n".join(lines) if len(lines) > 1 else None
+
     def _is_narrative_node(self, prompt: str) -> bool:
         """Detect narrative-style aiProcess nodes by keyword in prompt or name.
 
@@ -577,6 +641,13 @@ class AIProcessNode(BaseNode):
             if input_data:
                 parts.append(f"Input data: {str(input_data)[:500]}")
             prompt = " ".join(parts) if parts else f"Process node: {self.config.name or self.config.id}"
+
+        # If this node references a named agent, prepend its persona block so the
+        # LLM call carries the agent's identity. Best-effort: silently skips when
+        # Business edition is not present or no matching agent is registered.
+        persona_block = await self._build_agent_persona_block()
+        if persona_block:
+            prompt = f"{persona_block}\n\n{prompt}"
 
         # Narrative-style nodes (executive_summary, by-fund commentary, board
         # narrative, etc.) get a verbatim-copy guardrail block prepended so

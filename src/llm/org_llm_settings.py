@@ -111,7 +111,22 @@ async def save_org_llm_settings(
         raise ValueError(f"Tenant {tenant_id} not found")
 
     current_settings = dict(tenant.settings or {})
-    current_settings[SETTINGS_KEY] = llm_settings.model_dump()
+
+    # Reset semantics: if the incoming settings match the default OrgLLMSettings()
+    # exactly (all overrides None, trial_mode default), drop the persisted blob
+    # entirely so subsequent GETs return defaults rather than a payload of nulls.
+    incoming = llm_settings.model_dump()
+    if incoming == OrgLLMSettings().model_dump():
+        current_settings.pop(SETTINGS_KEY, None)
+        tenant.settings = current_settings
+        await db.flush()
+        logger.info(f"Reset LLM settings for tenant {tenant_id}")
+        return OrgLLMSettings()
+
+    # Don't persist explicit-None fields — they cause confusion on reload
+    # (a stored {preferred_provider: None} round-trips back as None even
+    # though the *intent* of writing it as None was reset, not "force null").
+    current_settings[SETTINGS_KEY] = llm_settings.model_dump(exclude_none=True)
     tenant.settings = current_settings
 
     await db.flush()

@@ -1195,7 +1195,7 @@ Return ONLY a single number (the index). Example: 5
                         'enhancements_applied': workflow.definition.get('metadata', {}).get('enhancements_applied', [])
                     }
                 )
-                logger.info(f"✅ Tracked workflow creation in learning loop")
+                logger.info("✅ Tracked workflow creation in learning loop")
             except Exception as e:
                 logger.warning(f"Could not track in learning loop (non-critical): {e}")
                 try:

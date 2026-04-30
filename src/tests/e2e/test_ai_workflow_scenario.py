@@ -568,9 +568,9 @@ class TestCustomerSupportE2E:
                 elif node_type == NodeType.NOTIFICATION:
                     metrics["notifications_sent"] += 1
         
-        # Subscribe to events
-        await event_bus.subscribe("workflow.*", metrics_handler)
-        await event_bus.subscribe("node.*", metrics_handler)
+        # Subscribe to events (sync — don't await).
+        event_bus.subscribe("workflow.*", metrics_handler)
+        event_bus.subscribe("node.*", metrics_handler)
         
         # Mock successful flow
         with patch('adapters.implementations.ai.openai_adapter.OpenAIAdapter.execute') as mock_openai:

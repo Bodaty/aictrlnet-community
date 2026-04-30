@@ -1287,6 +1287,55 @@ BUSINESS_TOOLS = [
             "required": ["agent_id", "prompt"],
         },
     },
+    {
+        "name": "configure_agent_identity",
+        "description": (
+            "Update an agent's identity (personality, voice, expertise_domain, "
+            "communication_style), behavioral_rules (confirmation_required, "
+            "autonomous_actions), and proactive_triggers (checks). User-submitted "
+            "identity text is sanitized via PromptContentValidator before "
+            "persistence to block prompt-injection attempts."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "identity": {
+                    "type": "object",
+                    "properties": {
+                        "personality": {"type": "string"},
+                        "voice": {"type": "string"},
+                        "expertise_domain": {"type": "string"},
+                        "communication_style": {"type": "string"},
+                    },
+                },
+                "behavioral_rules": {
+                    "type": "object",
+                    "properties": {
+                        "confirmation_required": {"type": "array", "items": {"type": "string"}},
+                        "autonomous_actions": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+                "proactive_triggers": {
+                    "type": "object",
+                    "properties": {
+                        "checks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "type": {"type": "string"},
+                                    "schedule": {"type": "string"},
+                                    "conditions": {"type": "object"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+            "required": ["agent_id"],
+        },
+    },
     # ---- Wave 4: LLM Registry ----
     {
         "name": "list_llm_models",
@@ -2902,6 +2951,7 @@ TOOL_SCOPES = {
     "get_agent_capabilities": ["read:agents"],
     "set_agent_autonomy": ["write:agents"],
     "execute_agent": ["write:agents"],
+    "configure_agent_identity": ["write:agents"],
     "list_llm_models": ["read:llm"],
     "get_llm_recommendation": ["read:llm"],
     # Wave 4: Living Platform

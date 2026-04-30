@@ -254,8 +254,8 @@ class TestAdapterPerformance:
             nonlocal received_count
             received_count += 1
         
-        # Subscribe to events
-        await event_bus.subscribe("perf.test.*", event_handler)
+        # Subscribe to events (sync — don't await).
+        event_bus.subscribe("perf.test.*", event_handler)
         
         # Test different event sizes
         event_sizes = [100, 1000, 10000]  # bytes
@@ -411,7 +411,7 @@ class TestAdapterPerformance:
         after_creation = process.memory_info().rss / 1024 / 1024  # MB
         memory_per_adapter = (after_creation - initial_memory) / 1000
         
-        print(f"\nMemory Efficiency:")
+        print("\nMemory Efficiency:")
         print(f"  Initial memory: {initial_memory:.2f} MB")
         print(f"  After 1000 adapters: {after_creation:.2f} MB")
         print(f"  Memory per adapter: {memory_per_adapter:.3f} MB")

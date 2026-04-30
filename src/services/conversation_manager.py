@@ -429,7 +429,7 @@ class ConversationManagerService:
         # Pattern 1: Company automation - "automate my [company/business/firm/agency/...]"
         company_automation_pattern = r'automate\s+(my|our|the)\s+(\w+\s+)*(company|business|firm|agency|startup|organization|enterprise|shop|store|practice|clinic|studio|restaurant|hotel|salon)'
         if re.search(company_automation_pattern, content_lower):
-            logger.info(f"[ConversationManager] Pattern match: company_automation (bypassing LLM)")
+            logger.info("[ConversationManager] Pattern match: company_automation (bypassing LLM)")
             nlp_result = {'action': 'company_automation', 'confidence': 0.95, 'entities': {}}
             session.context['_ml_enhanced'] = False  # Pattern match, not ML
             return IntentDetectionResponse(
@@ -443,7 +443,7 @@ class ConversationManagerService:
 
         # Pattern 2: Company automation with industry mention
         if 'automate' in content_lower and 'industry' in content_lower:
-            logger.info(f"[ConversationManager] Pattern match: company_automation (industry mention, bypassing LLM)")
+            logger.info("[ConversationManager] Pattern match: company_automation (industry mention, bypassing LLM)")
             return IntentDetectionResponse(
                 intent='company_automation',
                 confidence=0.9,
@@ -668,7 +668,7 @@ CRITICAL: Respond with ONLY valid JSON, no explanation text before or after.
             if intent_result.intent:
                 if intent_result.missing_params:
                     response = f"I understand you want to {intent_result.intent}. "
-                    response += f"Let me gather some information first. "
+                    response += "Let me gather some information first. "
                     response += self._get_clarification_question(
                         intent_result.missing_params[0]
                     )

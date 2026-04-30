@@ -82,7 +82,6 @@ class MLServiceAdapter(BaseAdapter):
             await self.initialize()
         
         import uuid
-        from datetime import datetime
         start_time = datetime.utcnow()
         request_id = str(uuid.uuid4())
         

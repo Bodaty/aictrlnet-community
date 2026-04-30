@@ -2406,7 +2406,7 @@ class ToolDispatcher:
             if not description_val.strip():
                 if not name_val.strip() or name_val.lower().strip() == context_workflow_name.lower().strip():
                     needs_user_input = True
-                    logger.info(f"[v4] update_workflow: no description and name unchanged, asking for user input")
+                    logger.info("[v4] update_workflow: no description and name unchanged, asking for user input")
 
             # Case 2: Description is auto-generated (generic workflow terms)
             if description_val:
@@ -2425,7 +2425,7 @@ class ToolDispatcher:
             # Case 3: Description just echoes the name
             if description_val and name_val and description_val.lower().strip() == name_val.lower().strip():
                 needs_user_input = True
-                logger.info(f"[v4] update_workflow: description just echoes name, asking for user input")
+                logger.info("[v4] update_workflow: description just echoes name, asking for user input")
 
             # If we need actual user input, ask for clarification
             if needs_user_input:

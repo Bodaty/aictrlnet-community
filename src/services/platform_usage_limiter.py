@@ -315,7 +315,7 @@ class PlatformUsageLimiter:
         """Record execution start for limit tracking"""
         # Update last execution time for rate limiting
         await self.db.execute(
-            f"""
+            """
             UPDATE platform_credentials 
             SET last_used_at = NOW() 
             WHERE user_id = %s AND platform = %s
@@ -325,7 +325,7 @@ class PlatformUsageLimiter:
         
         # Log for monitoring
         logger.info(
-            f"Platform execution started",
+            "Platform execution started",
             extra={
                 "user_id": user_id,
                 "platform": platform.value,

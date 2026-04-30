@@ -149,7 +149,7 @@ def test_templates(edition: str, base_url: str):
                 headers=AUTH_HEADER
             )
             if response.status_code == 201:
-                print(f"   ✅ Created workflow from template")
+                print("   ✅ Created workflow from template")
             else:
                 print(f"   ❌ Failed to create workflow: {response.status_code}")
     else:
@@ -183,7 +183,7 @@ def compare_performance():
         improvement = ((flask_time - fastapi_time) / flask_time) * 100
         print(f"   ✅ FastAPI is {improvement:.1f}% faster!")
     else:
-        print(f"   ⚠️  Flask was faster in this test")
+        print("   ⚠️  Flask was faster in this test")
 
 
 def main():

@@ -1222,7 +1222,7 @@ OUTPUT FORMAT for each step:
             from json_repair import repair_json
             repaired = repair_json(text, return_objects=True)
             if isinstance(repaired, dict):
-                logger.debug(f"json_repair successfully parsed structured output")
+                logger.debug("json_repair successfully parsed structured output")
                 return repaired
         except ImportError:
             logger.debug("json_repair library not available")

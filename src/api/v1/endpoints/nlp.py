@@ -87,7 +87,7 @@ async def process_natural_language(
             return jsonable_encoder(result)
         else:
             # This is a workflow object, wrap it for backward compatibility
-            logger.info(f"Returning backward compatibility response, validating as WorkflowResponse")
+            logger.info("Returning backward compatibility response, validating as WorkflowResponse")
             workflow_response = WorkflowResponse.model_validate(result)
             return {
                 "plan": jsonable_encoder(workflow_response)

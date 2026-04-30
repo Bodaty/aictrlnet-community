@@ -866,7 +866,7 @@ Return ONLY the JSON array, no other text or explanation."""
         try:
             from json_repair import repair_json
             repaired = repair_json(json_str, return_objects=False)
-            logger.debug(f"json_repair successfully repaired JSON")
+            logger.debug("json_repair successfully repaired JSON")
             return repaired
         except ImportError:
             logger.warning("json_repair library not available, using manual cleanup")
@@ -946,7 +946,7 @@ Return ONLY the JSON array, no other text or explanation."""
                         result = json.loads(cleaned_json)
                         if isinstance(result, list) and len(result) > 0:
                             if isinstance(result[0], dict):
-                                logger.info(f"Bracket matching succeeded after JSON cleanup")
+                                logger.info("Bracket matching succeeded after JSON cleanup")
                                 candidates.append(result)
                     except json.JSONDecodeError as e:
                         last_error = str(e)

@@ -150,6 +150,10 @@ class ConversationMessageCreate(BaseModel):
     role: Optional[MessageRoleType] = "user"
     message_config: Optional[Dict[str, Any]] = Field(default_factory=dict)
     file_id: Optional[str] = Field(None, description="ID of an uploaded file to attach to this message")
+    active_agent_id: Optional[str] = Field(
+        None,
+        description="When set, scopes this turn to a specific EnhancedAgent so its identity/behavioral_rules render in the system prompt."
+    )
 
 
 class ConversationActionExecute(BaseModel):

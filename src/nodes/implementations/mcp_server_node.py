@@ -148,8 +148,8 @@ class MCPServerNode(BaseNode):
             if not request_future.done():
                 request_future.set_result(event_data)
         
-        # Subscribe to request events
-        await event_bus.subscribe(request_event, handle_request)
+        # event_bus.subscribe is sync — don't await.
+        event_bus.subscribe(request_event, handle_request)
         
         try:
             # Wait for request with timeout
@@ -193,8 +193,9 @@ class MCPServerNode(BaseNode):
             """Handle incoming MCP request."""
             await self._request_queue.put(event_data)
         
-        await event_bus.subscribe(request_event, handle_request)
-        
+        # event_bus.subscribe is sync — don't await.
+        event_bus.subscribe(request_event, handle_request)
+
         try:
             # Process requests until timeout or max reached
             end_time = datetime.utcnow().timestamp() + timeout

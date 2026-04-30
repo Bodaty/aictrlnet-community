@@ -134,7 +134,7 @@ class EnhancedConversationService(ConversationManagerService):
         # CRITICAL: Ensure context is loaded properly
         if session.context is None:
             session.context = {}
-            logger.warning(f"[Phase 2] Session context was None, initialized to empty dict")
+            logger.warning("[Phase 2] Session context was None, initialized to empty dict")
 
         logger.info(f"[Phase 2] Processing message - State: {session.state}, Context keys: {list(session.context.keys())}")
 
@@ -155,7 +155,7 @@ class EnhancedConversationService(ConversationManagerService):
                     session.context['action_confirmed'] = True
                     logger.info(f"[Phase 2] User confirmed action with plan: {len(session.context['pending_action_plan'].get('steps', []))} steps")
                 else:
-                    logger.warning(f"[Phase 2] No action plan in context during confirmation!")
+                    logger.warning("[Phase 2] No action plan in context during confirmation!")
                     # Try to recreate the action plan if we have intent
                     if session.primary_intent:
                         logger.info(f"[Phase 2] Recreating action plan for: {session.primary_intent}")
@@ -173,26 +173,26 @@ class EnhancedConversationService(ConversationManagerService):
                         action_plan = await self._create_action_plan(session, intent_result, original_query)
                         if action_plan:
                             session.context['action_confirmed'] = True
-                            logger.info(f"[Phase 2] Recreated action plan successfully")
+                            logger.info("[Phase 2] Recreated action plan successfully")
                     else:
-                        logger.error(f"[Phase 2] Cannot confirm - no action plan and no intent!")
+                        logger.error("[Phase 2] Cannot confirm - no action plan and no intent!")
 
                 # Mark context as modified for SQLAlchemy
                 from sqlalchemy.orm import attributes
                 attributes.flag_modified(session, 'context')
                 await self.db.commit()
                 await self.db.refresh(session)
-                logger.info(f"[Phase 2] Confirmation processed")
+                logger.info("[Phase 2] Confirmation processed")
             elif any(phrase in content_lower for phrase in ['no', 'cancel', 'stop', 'abort', 'wait']):
                 session.context['action_confirmed'] = False
                 session.context['pending_action_plan'] = None  # Clear the plan
                 await self.db.commit()  # Persist the cancellation
-                logger.info(f"[Phase 2] User cancelled action")
+                logger.info("[Phase 2] User cancelled action")
 
         # FIX: If action was just confirmed, execute it and return appropriate response
         # This must happen BEFORE generating response from "yes" query
         if session.state == "confirming_action" and session.context.get('action_confirmed'):
-            logger.info(f"[Phase 2] Action confirmed - executing immediately before response generation")
+            logger.info("[Phase 2] Action confirmed - executing immediately before response generation")
 
             # Execute the confirmed action
             await self._trigger_action(session)
@@ -206,11 +206,11 @@ class EnhancedConversationService(ConversationManagerService):
             # Generate response from automation_result instead of template search
             if automation_result:
                 response_content = await self._format_automation_result_response(automation_result)
-                logger.info(f"[Phase 2] Generated response from automation_result")
+                logger.info("[Phase 2] Generated response from automation_result")
             else:
                 # Fallback: action executed but no automation_result
                 response_content = "Action completed successfully."
-                logger.warning(f"[Phase 2] No automation_result found after action execution")
+                logger.warning("[Phase 2] No automation_result found after action execution")
 
             # Store the message with proper response
             assistant_message = await self._store_message(
@@ -300,7 +300,7 @@ class EnhancedConversationService(ConversationManagerService):
                 response_content = await self._format_action_plan_response(action_plan, content)
                 logger.info(f"[Phase 2] Action plan created with {len(action_plan.steps)} steps")
         elif next_state == "confirming_action":
-            logger.warning(f"[Phase 2] Confirming state but no primary_intent set!")
+            logger.warning("[Phase 2] Confirming state but no primary_intent set!")
 
         # Store assistant response with potentially updated content
         assistant_message = await self._store_message(
@@ -331,7 +331,7 @@ class EnhancedConversationService(ConversationManagerService):
             except Exception as e:
                 logger.warning(f"Pattern analysis failed: {e}")
         elif next_state == "executing_action":
-            logger.warning(f"[Phase 2] Execution state but no primary_intent!")
+            logger.warning("[Phase 2] Execution state but no primary_intent!")
 
         # Check if we should show proactive suggestions (with timeout to prevent blocking)
         suggestions = None
@@ -495,7 +495,7 @@ class EnhancedConversationService(ConversationManagerService):
                 response += f"- **{template.name}**: {template.data.get('description', '')}\n"
             response += "\nWould you like to use one of these templates, or create from scratch?"
         elif agents:
-            response += f"I can help you create an agent. Here are some options:\n\n"
+            response += "I can help you create an agent. Here are some options:\n\n"
             for agent in agents[:3]:
                 response += f"- **{agent.name}** ({agent.data.get('type', 'ai')}): "
                 response += f"{', '.join(agent.data.get('capabilities', [])[:2])}\n"
@@ -510,7 +510,7 @@ class EnhancedConversationService(ConversationManagerService):
         capabilities = await self.knowledge_service.get_capabilities_summary()
 
         response = "**System Status**:\n\n"
-        response += f"✅ System ready with:\n"
+        response += "✅ System ready with:\n"
         response += f"- {capabilities['templates']} workflow templates\n"
         response += f"- {capabilities['agents']} pre-configured agents\n"
         response += f"- {capabilities['adapters']} integrations\n"
@@ -808,7 +808,7 @@ class EnhancedConversationService(ConversationManagerService):
                         # Also check for legacy type='company_automation'
                         elif result.output.get('type') == 'company_automation':
                             automation_result = result.output
-                            logger.info(f"[Phase 2] Company automation result extracted (legacy)")
+                            logger.info("[Phase 2] Company automation result extracted (legacy)")
                         # Fallback to company_automation sub-dict for backward compatibility
                         elif 'company_automation' in result.output:
                             automation_result = result.output['company_automation']
@@ -1022,7 +1022,7 @@ class EnhancedConversationService(ConversationManagerService):
             if 'pending_action_plan' in session.context:
                 logger.info(f"[Phase 2] Successfully persisted action plan for {intent} with {len(action_plan.steps)} steps")
             else:
-                logger.error(f"[Phase 2] Failed to persist action plan!")
+                logger.error("[Phase 2] Failed to persist action plan!")
             return action_plan
 
         except Exception as e:
@@ -1036,7 +1036,7 @@ class EnhancedConversationService(ConversationManagerService):
         Format the action plan for user confirmation.
         Adds preview of what will be done.
         """
-        confirmation = f"\n\n**📋 Action Plan Ready**\n"
+        confirmation = "\n\n**📋 Action Plan Ready**\n"
         confirmation += f"Name: {action_plan.name}\n"
         if action_plan.description:
             confirmation += f"Description: {action_plan.description}\n"
@@ -1048,7 +1048,7 @@ class EnhancedConversationService(ConversationManagerService):
         if hasattr(action_plan, 'estimated_time_seconds') and action_plan.estimated_time_seconds:
             confirmation += f"\nEstimated time: {action_plan.estimated_time_seconds} seconds\n"
 
-        confirmation += f"\n**Confirm to proceed?** (yes/no)"
+        confirmation += "\n**Confirm to proceed?** (yes/no)"
 
         return current_response + confirmation
 
@@ -1072,45 +1072,45 @@ class EnhancedConversationService(ConversationManagerService):
                 if step.type == 'CREATE_RESOURCE':
                     if 'customer' in user_query.lower() or 'service' in user_query.lower():
                         response += f"**Step {i}:** Set up Customer Service System\n"
-                        response += f"   • Create support ticket routing workflow\n"
-                        response += f"   • Configure auto-response templates\n"
-                        response += f"   • Set up escalation rules\n\n"
+                        response += "   • Create support ticket routing workflow\n"
+                        response += "   • Configure auto-response templates\n"
+                        response += "   • Set up escalation rules\n\n"
                     else:
                         response += f"**Step {i}:** {step_name}\n"
-                        response += f"   • Initialize workflow components\n\n"
+                        response += "   • Initialize workflow components\n\n"
                 elif step.type == 'CONFIGURE':
                     response += f"**Step {i}:** Configure Integrations\n"
                     if 'email' in user_query.lower():
-                        response += f"   • Connect email service provider\n"
+                        response += "   • Connect email service provider\n"
                     if 'slack' in user_query.lower():
-                        response += f"   • Set up Slack workspace connection\n"
-                        response += f"   • Configure notification channels\n"
+                        response += "   • Set up Slack workspace connection\n"
+                        response += "   • Configure notification channels\n"
                     response += "\n"
                 elif step.type == 'CONNECT':
                     response += f"**Step {i}:** Connect Services\n"
-                    response += f"   • Establish API connections\n"
-                    response += f"   • Verify authentication\n\n"
+                    response += "   • Establish API connections\n"
+                    response += "   • Verify authentication\n\n"
                 elif step.type == 'ENABLE_FEATURE':
                     response += f"**Step {i}:** Enable Features\n"
-                    response += f"   • Activate automation rules\n"
-                    response += f"   • Start monitoring\n\n"
+                    response += "   • Activate automation rules\n"
+                    response += "   • Start monitoring\n\n"
                 elif step.type == 'VALIDATE':
                     response += f"**Step {i}:** Validate Setup\n"
-                    response += f"   • Test connections\n"
-                    response += f"   • Verify workflow triggers\n\n"
+                    response += "   • Test connections\n"
+                    response += "   • Verify workflow triggers\n\n"
                 else:
                     response += f"**Step {i}:** {step_name}\n"
                     if step.description:
                         response += f"   • {step.description}\n\n"
                     else:
-                        response += f"   • Configure and initialize\n\n"
+                        response += "   • Configure and initialize\n\n"
             else:
                 # Fallback for simple steps
                 if 'workflow' in step_name.lower():
                     response += f"**Step {i}:** Create Customer Service Workflow\n"
-                    response += f"   • Design workflow structure\n"
-                    response += f"   • Set up triggers and actions\n"
-                    response += f"   • Configure routing rules\n\n"
+                    response += "   • Design workflow structure\n"
+                    response += "   • Set up triggers and actions\n"
+                    response += "   • Configure routing rules\n\n"
                 else:
                     response += f"**Step {i}:** {step_name}\n\n"
 
@@ -1637,7 +1637,7 @@ Response (just the sentence, no quotes):"""
                 },
                 "actions": [
                     {"label": "View run", "verb": "open", "primary": True, "destructive": False,
-                     "target": f"/runs"}
+                     "target": "/runs"}
                 ],
                 "entity_ref": {"type": "execution", "id": execution_id} if execution_id else None,
             }]

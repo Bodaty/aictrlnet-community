@@ -521,7 +521,6 @@ Return ONLY the JSON object, no explanations."""
         """
         Parse LLM response into ActionPlan structure.
         """
-        import json
 
         plan = ActionPlan(
             name=parameters.get("name", "AI-Generated Plan"),
@@ -669,7 +668,7 @@ Return ONLY the JSON object, no explanations."""
             # Special handling for workflow creation intents
             if 'workflow' in intent.lower() or intent.lower() in ['create', 'setup', 'build']:
                 step = ActionStep(
-                    name=f"Create Workflow",
+                    name="Create Workflow",
                     type=StepType.CREATE_RESOURCE,
                     duration_seconds=30,
                     params={
@@ -817,9 +816,9 @@ Return ONLY the JSON object, no explanations."""
         """Define rollback action for a step."""
         rollback_actions = {
             StepType.CREATE_RESOURCE: f"delete_{step.params.get('type', 'resource')}",
-            StepType.CONFIGURE: f"reset_configuration",
-            StepType.CONNECT: f"disconnect",
-            StepType.ENABLE_FEATURE: f"disable_feature"
+            StepType.CONFIGURE: "reset_configuration",
+            StepType.CONNECT: "disconnect",
+            StepType.ENABLE_FEATURE: "disable_feature"
         }
         return rollback_actions.get(step.type)
 
@@ -1109,7 +1108,6 @@ Return ONLY the JSON object, no explanations."""
             >>> print(result.company_size)  # "small"
         """
         # Start performance monitoring
-        from datetime import datetime
         start_time = datetime.now()
 
         try:

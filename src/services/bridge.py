@@ -153,7 +153,7 @@ class BridgeService:
             
             return {
                 "success": True,
-                "message": f"Sync completed successfully",
+                "message": "Sync completed successfully",
                 "sync_id": sync_record.id,
                 "items_processed": result["items_processed"],
                 "items_created": result["items_created"],

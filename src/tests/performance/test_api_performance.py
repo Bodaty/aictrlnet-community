@@ -56,7 +56,7 @@ class TestAPIPerformance:
         p95_time = statistics.quantiles(response_times, n=20)[18]  # 95th percentile
         max_time = max(response_times)
         
-        print(f"\nAdapter Discovery Performance:")
+        print("\nAdapter Discovery Performance:")
         print(f"  Average response time: {avg_time:.2f}ms")
         print(f"  95th percentile: {p95_time:.2f}ms")
         print(f"  Max response time: {max_time:.2f}ms")
@@ -157,8 +157,8 @@ class TestAPIPerformance:
             
             assert response.status_code == 200
             
-            print(f"\nLarge Payload Performance:")
-            print(f"  Workflow nodes: 100")
+            print("\nLarge Payload Performance:")
+            print("  Workflow nodes: 100")
             print(f"  Creation time: {creation_time:.2f}ms")
             print(f"  Payload size: ~{len(str(large_workflow))/1024:.1f}KB")
             

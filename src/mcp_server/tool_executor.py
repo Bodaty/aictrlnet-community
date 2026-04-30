@@ -3062,6 +3062,122 @@ async def _handle_execute_agent(
     return {"result": str(result)}
 
 
+async def _handle_configure_agent_identity(
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+) -> Dict[str, Any]:
+    """Update an agent's identity / behavioral_rules / proactive_triggers.
+
+    Sanitizes user-submitted identity text via PromptContentValidator before
+    persistence (per PROMPT_TEMPLATE_ARCHITECTURE_SPEC §6.2). Writes a
+    PromptAuditLog row on Enterprise editions.
+    """
+    _ensure_business_sys_path()
+    from sqlalchemy import select as _select
+    try:
+        from aictrlnet_business.models.enhanced_agent import EnhancedAgent  # type: ignore
+        from aictrlnet_business.services.prompt_content_validator import PromptContentValidator  # type: ignore
+    except Exception as e:
+        raise ToolExecutionError(f"Agent identity configuration unavailable: {e}")
+
+    agent_id = arguments.get("agent_id")
+    if not agent_id:
+        raise ToolExecutionError("agent_id is required")
+
+    result = await db.execute(_select(EnhancedAgent).where(EnhancedAgent.id == agent_id))
+    agent = result.unique().scalar_one_or_none()
+    if not agent:
+        raise ToolExecutionError(f"Agent {agent_id} not found")
+
+    # Capture old values for the audit trail
+    old_identity = dict(agent.identity or {})
+    old_rules = dict(agent.behavioral_rules or {})
+    old_triggers = dict(agent.proactive_triggers or {})
+
+    validator = PromptContentValidator()
+
+    # Shallow-merge: only payload keys are touched; inner None means delete.
+    if "identity" in arguments and arguments["identity"] is not None:
+        ident = dict(agent.identity or {})
+        prose_fields = ("personality", "voice", "expertise_domain", "communication_style")
+        for key, value in arguments["identity"].items():
+            if value is None:
+                ident.pop(key, None)
+                continue
+            if key in prose_fields and value:
+                result = validator.validate(str(value), field_type="personality", max_length=500)
+                if not result.valid:
+                    raise ToolExecutionError(
+                        f"identity.{key} rejected: {list(result.warnings or [])}"
+                    )
+                ident[key] = result.sanitized_text
+            else:
+                ident[key] = value
+        agent.identity = ident
+
+    if "behavioral_rules" in arguments and arguments["behavioral_rules"] is not None:
+        rules = dict(agent.behavioral_rules or {})
+        for key, value in arguments["behavioral_rules"].items():
+            if value is None:
+                rules.pop(key, None)
+                continue
+            if key in ("confirmation_required", "autonomous_actions") and not isinstance(value, list):
+                raise ToolExecutionError(f"behavioral_rules.{key} must be a list")
+            rules[key] = value
+        agent.behavioral_rules = rules
+
+    if "proactive_triggers" in arguments and arguments["proactive_triggers"] is not None:
+        trig = dict(agent.proactive_triggers or {})
+        for key, value in arguments["proactive_triggers"].items():
+            if value is None:
+                trig.pop(key, None)
+                continue
+            if key == "checks" and not isinstance(value, list):
+                raise ToolExecutionError("proactive_triggers.checks must be a list")
+            trig[key] = value
+        agent.proactive_triggers = trig
+
+    from datetime import datetime as _dt
+    agent.updated_at = _dt.utcnow()
+    await db.commit()
+
+    # Enterprise audit — best-effort
+    try:
+        from aictrlnet_enterprise.models.prompt_governance import PromptAuditLog  # type: ignore
+        tenant_id = agent.organization_id
+        if tenant_id:
+            entry = PromptAuditLog(
+                tenant_id=str(tenant_id),
+                user_id=str(user_id),
+                change_type="agent_identity",
+                target=str(agent_id),
+                old_value={
+                    "identity": old_identity,
+                    "behavioral_rules": old_rules,
+                    "proactive_triggers": old_triggers,
+                },
+                new_value={
+                    "identity": dict(agent.identity or {}),
+                    "behavioral_rules": dict(agent.behavioral_rules or {}),
+                    "proactive_triggers": dict(agent.proactive_triggers or {}),
+                },
+                created_at=_dt.utcnow(),
+            )
+            db.add(entry)
+            await db.commit()
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning(f"PromptAuditLog write failed for agent {agent_id}: {e}")
+
+    return {
+        "agent_id": str(agent.id),
+        "name": agent.name,
+        "identity": dict(agent.identity or {}),
+        "behavioral_rules": dict(agent.behavioral_rules or {}),
+        "proactive_triggers": dict(agent.proactive_triggers or {}),
+    }
+
+
 # ---- LLM Registry ----
 
 
@@ -5553,7 +5669,7 @@ async def _handle_get_sla_metrics(
     interval = interval_map.get(period, "30 days")
     try:
         total = (await db.execute(
-            text(f"SELECT COUNT(*) FROM mcp_slas WHERE tenant_id = :t"),
+            text("SELECT COUNT(*) FROM mcp_slas WHERE tenant_id = :t"),
             {"t": tenant_id},
         )).first()
         breaches = (await db.execute(
@@ -6339,6 +6455,7 @@ TOOL_HANDLERS = {
     "get_agent_capabilities": _handle_get_agent_capabilities,
     "set_agent_autonomy": _handle_set_agent_autonomy,
     "execute_agent": _handle_execute_agent,
+    "configure_agent_identity": _handle_configure_agent_identity,
     # Wave 4: LLM Registry
     "list_llm_models": _handle_list_llm_models,
     "get_llm_recommendation": _handle_get_llm_recommendation,

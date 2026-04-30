@@ -54,7 +54,7 @@ class WorkflowMCPService:
             # Add to endpoint index
             if cache_service._redis_client:
                 await cache_service._redis_client.sadd(
-                    f"mcp:workflow:endpoints:index",
+                    "mcp:workflow:endpoints:index",
                     endpoint_id
                 )
             

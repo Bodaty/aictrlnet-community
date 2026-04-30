@@ -591,7 +591,7 @@ async def seed_usage_limits(session):
         usage_limit = UsageLimit(**limits_data)
         session.add(usage_limit)
         created_count = 1
-        logger.info(f"Created usage limits for Community edition")
+        logger.info("Created usage limits for Community edition")
         logger.info(f"  - Workflows: {limits_data['max_workflows']}")
         logger.info(f"  - Adapters: {limits_data['max_adapters']}")
         logger.info(f"  - Users: {limits_data['max_users']}")
