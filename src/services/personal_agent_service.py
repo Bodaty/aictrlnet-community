@@ -139,13 +139,26 @@ class PersonalAgentService:
 
         update_dict = updates.model_dump(exclude_unset=True)
 
-        # Validate agent_name if being updated
+        # Validate agent_name if being updated. Surface failures as 422 at
+        # the API boundary instead of silently dropping the field — past
+        # behavior returned 200 with an unchanged name and no signal to
+        # the client (gate-25a-3, gate-26b-2, gate-6 all caught the
+        # silent drop). See _is_valid_agent_name in
+        # system_prompt_assembler.py for the exact rejection rules.
         if "agent_name" in update_dict and update_dict["agent_name"] is not None:
+            from fastapi import HTTPException
             from services.system_prompt_assembler import SystemPromptAssembler
             raw_name = update_dict["agent_name"]
             if not SystemPromptAssembler._is_valid_agent_name(raw_name):
                 logger.warning("Rejected invalid agent_name: %s", raw_name)
-                del update_dict["agent_name"]
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"agent_name {raw_name!r} rejected: must be 1-50 chars, "
+                        "contain no digits, and not start with reserved prefixes "
+                        "(test, api, smoke, verify, debug, tmp)."
+                    ),
+                )
 
         # Serialise nested Pydantic models to plain dicts for JSON columns
         if "personality" in update_dict and update_dict["personality"] is not None:
