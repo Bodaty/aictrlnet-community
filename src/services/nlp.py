@@ -79,8 +79,8 @@ class NLPService:
             pass
             
     async def process_natural_language(
-        self, 
-        prompt: str, 
+        self,
+        prompt: str,
         context: Optional[Dict[str, Any]] = None,
         return_transparency: bool = True,
         user_id: Optional[str] = None
@@ -92,7 +92,12 @@ class NLPService:
         generation_method = "fallback"
         confidence_score = 0.5
         ai_model_used = None
-        
+        # Capture is_edit_mode up front so the outer exception handler can
+        # still pass it through to _build_transparency_response — caller's
+        # contract ('mode == edit' → response stamps edit_mode) holds even
+        # when something blows up before the main edit-mode block.
+        is_edit_mode = context.get('mode') == 'edit' if context else False
+
         # Security validation
         if user_id is None:
             user_id = context.get('user_id', 'anonymous') if context else 'anonymous'
@@ -121,8 +126,7 @@ class NLPService:
                 } if return_transparency else None
             }
 
-        # Check for edit mode
-        is_edit_mode = context.get('mode') == 'edit' if context else False
+        # Check for edit mode (is_edit_mode already set at function entry).
         current_workflow = context.get('current_workflow') if context else None
         edit_intent = None
 
@@ -354,7 +358,8 @@ class NLPService:
                         response = await self._build_transparency_response(
                             workflow, generation_method, templates_used,
                             extracted_parameters, intent_analysis, confidence_score,
-                            processing_steps, ai_model_used, prompt, edit_intent
+                            processing_steps, ai_model_used, prompt, edit_intent,
+                            is_edit_mode=is_edit_mode,
                         )
                         response.update(extra_metadata)
                         return response
@@ -402,7 +407,8 @@ class NLPService:
                             return await self._build_transparency_response(
                                 workflow, generation_method, templates_used,
                                 extracted_parameters, intent_analysis, confidence_score,
-                                processing_steps, ai_model_used, prompt, edit_intent
+                                processing_steps, ai_model_used, prompt, edit_intent,
+                                is_edit_mode=is_edit_mode,
                             )
                         return workflow
             
@@ -449,7 +455,8 @@ class NLPService:
                     return await self._build_transparency_response(
                         workflow, generation_method, templates_used,
                         extracted_parameters, intent_analysis, confidence_score,
-                        processing_steps, ai_model_used, prompt, edit_intent
+                        processing_steps, ai_model_used, prompt, edit_intent,
+                        is_edit_mode=is_edit_mode,
                     )
                 return workflow
 
@@ -463,7 +470,8 @@ class NLPService:
                 transparency_response = await self._build_transparency_response(
                     workflow, generation_method, templates_used,
                     extracted_parameters, intent_analysis, confidence_score,
-                    processing_steps, ai_model_used, prompt, edit_intent
+                    processing_steps, ai_model_used, prompt, edit_intent,
+                    is_edit_mode=is_edit_mode,
                 )
                 logger.info(f"Transparency response type: {type(transparency_response)}, is_dict: {isinstance(transparency_response, dict)}")
                 if isinstance(transparency_response, dict):
@@ -478,7 +486,8 @@ class NLPService:
             if return_transparency:
                 return await self._build_transparency_response(
                     workflow, "error_fallback", [], [], {},
-                    0.3, processing_steps, None, prompt, edit_intent
+                    0.3, processing_steps, None, prompt, edit_intent,
+                    is_edit_mode=is_edit_mode,
                 )
             return workflow
     
@@ -2432,9 +2441,19 @@ Return ONLY a single number (the index). Example: 5
         processing_steps: List[Dict[str, Any]],
         ai_model_used: Optional[str],
         original_prompt: str,
-        edit_intent: Optional[Dict[str, Any]] = None
+        edit_intent: Optional[Dict[str, Any]] = None,
+        is_edit_mode: bool = False,
     ) -> Dict[str, Any]:
-        """Build the complete transparency response."""
+        """Build the complete transparency response.
+
+        ``is_edit_mode`` is stamped unconditionally on the returned dict so
+        every response path honors the contract: if the caller asked for
+        edit mode (``context.mode == 'edit'``), the response tells them
+        whether it was honored. Without this, the AI-complete + template
+        + fallback paths went through this helper and lost the flag,
+        making gate-25b-3 flaky depending on which internal branch the
+        LLM happened to land in.
+        """
         # Analyze edition requirements
         edition_requirements = await self._analyze_edition_requirements(workflow)
         
@@ -2480,6 +2499,10 @@ Return ONLY a single number (the index). Example: 5
         # Add edit_intent if provided (for edit mode)
         if edit_intent:
             response['edit_intent'] = edit_intent
+
+        # Always stamp edit_mode so the contract is enforced regardless of
+        # which internal path produced this response.
+        response['edit_mode'] = bool(is_edit_mode)
 
         return response
     
