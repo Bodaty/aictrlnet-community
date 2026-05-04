@@ -3423,6 +3423,25 @@ async def _handle_org_discovery_scan(
     return {"scan": result}
 
 
+async def _resolve_user_org_id(db: AsyncSession, user_id: str) -> Optional[str]:
+    """Resolve a user_id to their organization_id, or None if no org exists.
+
+    Org-discovery service methods are keyed by organization_id (one org per
+    user in Business edition); the MCP handlers carry user_id, so we bridge
+    here. Returns None if the user has no organization, which the callers
+    map to ``available: False`` rather than crashing.
+    """
+    _ensure_business_sys_path()
+    try:
+        from aictrlnet_business.services.organization_service import (  # type: ignore
+            OrganizationService,
+        )
+    except Exception:
+        return None
+    org = await OrganizationService().get_user_organization(db, user_id)
+    return str(org.id) if org else None
+
+
 async def _handle_get_org_landscape(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
@@ -3434,6 +3453,10 @@ async def _handle_get_org_landscape(
     except Exception:
         return {"landscape": None, "available": False}
 
+    organization_id = await _resolve_user_org_id(db, user_id)
+    if not organization_id:
+        return {"landscape": None, "available": False}
+
     svc = OrgDiscoveryService(db)
     method = (
         getattr(svc, "get_landscape", None)
@@ -3441,7 +3464,7 @@ async def _handle_get_org_landscape(
     )
     if not method:
         return {"landscape": None, "available": False}
-    landscape = await method(user_id=user_id)
+    landscape = await method(organization_id=organization_id)
     if hasattr(landscape, "model_dump"):
         return landscape.model_dump()
     if hasattr(landscape, "dict"):
@@ -3460,6 +3483,10 @@ async def _handle_get_org_recommendations(
     except Exception:
         return {"recommendations": [], "available": False}
 
+    organization_id = await _resolve_user_org_id(db, user_id)
+    if not organization_id:
+        return {"recommendations": [], "available": False}
+
     svc = OrgDiscoveryService(db)
     method = (
         getattr(svc, "get_recommendations", None)
@@ -3467,15 +3494,29 @@ async def _handle_get_org_recommendations(
     )
     if not method:
         return {"recommendations": [], "available": False}
-    recs = await method(user_id=user_id, focus=arguments.get("focus"))
-    return {
-        "recommendations": [
-            (r.model_dump() if hasattr(r, "model_dump")
-             else r.dict() if hasattr(r, "dict")
-             else r)
-            for r in (recs if isinstance(recs, list) else [recs])
-        ]
-    }
+    recs = await method(organization_id=organization_id)
+    if hasattr(recs, "model_dump"):
+        recs = recs.model_dump()
+    elif hasattr(recs, "dict"):
+        recs = recs.dict()
+    # The service returns RecommendationsResponse with a 'recommendations' list;
+    # legacy code expected a bare list. Tolerate either shape so the response
+    # always carries a list.
+    if isinstance(recs, dict) and "recommendations" in recs:
+        return {
+            "recommendations": recs["recommendations"],
+            "total": recs.get("total", len(recs["recommendations"])),
+        }
+    if isinstance(recs, list):
+        return {
+            "recommendations": [
+                (r.model_dump() if hasattr(r, "model_dump")
+                 else r.dict() if hasattr(r, "dict")
+                 else r)
+                for r in recs
+            ]
+        }
+    return {"recommendations": [recs] if recs else []}
 
 
 # ---- Living Platform — Company Automation ----
