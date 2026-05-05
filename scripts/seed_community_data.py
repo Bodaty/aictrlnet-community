@@ -549,22 +549,37 @@ async def seed_subscription_plans(session):
         }
     ]
     
-    created_count = 0
+    # Upsert authoritative fields when a plan exists rather than skip,
+    # so a stale row's edition can be corrected on re-seed. See May 5
+    # 2026 trace: enterprise plan rows persisted across deploys with
+    # edition='community', which cascaded into demoting dev@ from
+    # enterprise back to community via seed_test_user_subscriptions.
+    created = updated = 0
+    AUTHORITATIVE_FIELDS = ("edition", "display_name", "is_active")
     for plan_data in plans_data:
-        # Check if plan exists
         result = await session.execute(
             select(SubscriptionPlan).where(SubscriptionPlan.id == plan_data["id"])
         )
-        if not result.scalar_one_or_none():
-            plan = SubscriptionPlan(**plan_data)
-            session.add(plan)
-            created_count += 1
+        row = result.scalar_one_or_none()
+        if row is None:
+            session.add(SubscriptionPlan(**plan_data))
+            created += 1
             logger.info(f"Created subscription plan: {plan_data['display_name']}")
-    
-    if created_count > 0:
-        await session.commit()
-    
-    return created_count
+        else:
+            for field in AUTHORITATIVE_FIELDS:
+                new_value = plan_data.get(field)
+                if new_value is not None and getattr(row, field) != new_value:
+                    logger.info(
+                        "Updating plan %s.%s: %r → %r",
+                        plan_data["id"], field, getattr(row, field), new_value,
+                    )
+                    setattr(row, field, new_value)
+                    updated += 1
+
+    await session.commit()
+    if updated:
+        logger.info(f"Reconciled {updated} stale subscription_plans field(s) on existing rows")
+    return created
 
 
 async def seed_usage_limits(session):
