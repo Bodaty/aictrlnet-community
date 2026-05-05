@@ -21,10 +21,13 @@ from models import User
 logger = logging.getLogger(__name__)
 
 
-# Plan to Stripe Price ID mapping (monthly)
+# Plan to Stripe Price ID mapping (monthly). Plan names match the seed
+# (business_starter / business_growth / business_scale / enterprise) — previously
+# this map said 'business_pro' but the seed creates 'business_growth', so any
+# real call resolved to a missing price ID.
 PLAN_PRICE_MAP = {
     "business_starter": "STRIPE_PRICE_BUSINESS_STARTER",
-    "business_pro": "STRIPE_PRICE_BUSINESS_PRO",
+    "business_growth": "STRIPE_PRICE_BUSINESS_GROWTH",
     "business_scale": "STRIPE_PRICE_BUSINESS_SCALE",
     "enterprise": "STRIPE_PRICE_ENTERPRISE",
 }
@@ -32,7 +35,7 @@ PLAN_PRICE_MAP = {
 # Plan to Stripe Price ID mapping (annual)
 PLAN_PRICE_MAP_ANNUAL = {
     "business_starter": "STRIPE_PRICE_BUSINESS_STARTER_ANNUAL",
-    "business_pro": "STRIPE_PRICE_BUSINESS_PRO_ANNUAL",
+    "business_growth": "STRIPE_PRICE_BUSINESS_GROWTH_ANNUAL",
     "business_scale": "STRIPE_PRICE_BUSINESS_SCALE_ANNUAL",
     "enterprise": "STRIPE_PRICE_ENTERPRISE_ANNUAL",
 }
@@ -97,7 +100,7 @@ class StripeService:
 
         Args:
             user_id: The user's ID
-            plan: Plan name (business_starter, business_pro, business_scale, enterprise)
+            plan: Plan name (business_starter, business_growth, business_scale, enterprise)
             billing_period: "monthly" or "yearly" (yearly prices should be separate Price IDs)
             trial_days: Number of trial days (0 = no trial). When > 0, payment method
                 collection is deferred until trial end.

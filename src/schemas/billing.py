@@ -76,7 +76,7 @@ class StartTrialRequest(BaseModel):
     """Request to start a free trial via Stripe Checkout."""
     plan: str = Field(
         "business_starter",
-        description="Plan to trial (business_starter, business_pro, business_scale)"
+        description="Plan to trial (business_starter, business_growth, business_scale)"
     )
 
 

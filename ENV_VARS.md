@@ -121,7 +121,7 @@ BACKEND_CORS_ORIGINS=https://app.example.com,https://admin.example.com
 | `STRIPE_SECRET_KEY` | test key | Stripe secret API key (or restricted key) |
 | `STRIPE_WEBHOOK_SECRET` | test key | Stripe webhook signing secret |
 | `STRIPE_PRICE_BUSINESS_STARTER` | - | Stripe Price ID for Business Starter plan |
-| `STRIPE_PRICE_BUSINESS_PRO` | - | Stripe Price ID for Business Pro plan |
+| `STRIPE_PRICE_BUSINESS_GROWTH` | - | Stripe Price ID for Business Growth plan |
 | `STRIPE_PRICE_BUSINESS_SCALE` | - | Stripe Price ID for Business Scale plan |
 | `STRIPE_PRICE_ENTERPRISE` | - | Stripe Price ID for Enterprise plan |
 | `FRONTEND_URL` | `http://localhost:3000` | Frontend URL for Stripe redirects |
@@ -137,7 +137,7 @@ BACKEND_CORS_ORIGINS=https://app.example.com,https://admin.example.com
 STRIPE_SECRET_KEY=rk_live_your_restricted_key
 STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
 STRIPE_PRICE_BUSINESS_STARTER=price_1ABC123
-STRIPE_PRICE_BUSINESS_PRO=price_1DEF456
+STRIPE_PRICE_BUSINESS_GROWTH=price_1DEF456
 STRIPE_PRICE_BUSINESS_SCALE=price_1GHI789
 STRIPE_PRICE_ENTERPRISE=price_1JKL012
 ```

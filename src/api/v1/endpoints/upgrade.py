@@ -681,23 +681,22 @@ def _get_stripe_price_id(edition: str, billing_period: str) -> Optional[str]:
 
     settings = get_settings()
 
-    # Map edition names to config price IDs
-    # Note: Community is free, so no price ID needed
+    # Map edition names to config price IDs. Seed names are
+    # business_starter / business_growth / business_scale / enterprise.
+    # Note: Community is free, so no price ID needed.
     if billing_period == "annual":
         price_mapping = {
             "business_starter": settings.STRIPE_PRICE_BUSINESS_STARTER_ANNUAL,
-            "business_pro": settings.STRIPE_PRICE_BUSINESS_PRO_ANNUAL,
+            "business_growth": settings.STRIPE_PRICE_BUSINESS_GROWTH_ANNUAL,
             "business_scale": settings.STRIPE_PRICE_BUSINESS_SCALE_ANNUAL,
             "enterprise": settings.STRIPE_PRICE_ENTERPRISE_ANNUAL,
-            "business_growth": settings.STRIPE_PRICE_BUSINESS_PRO_ANNUAL,
         }
     else:
         price_mapping = {
             "business_starter": settings.STRIPE_PRICE_BUSINESS_STARTER,
-            "business_pro": settings.STRIPE_PRICE_BUSINESS_PRO,
+            "business_growth": settings.STRIPE_PRICE_BUSINESS_GROWTH,
             "business_scale": settings.STRIPE_PRICE_BUSINESS_SCALE,
             "enterprise": settings.STRIPE_PRICE_ENTERPRISE,
-            "business_growth": settings.STRIPE_PRICE_BUSINESS_PRO,
         }
 
     price_id = price_mapping.get(edition)
