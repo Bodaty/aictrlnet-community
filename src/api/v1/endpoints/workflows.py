@@ -921,6 +921,54 @@ async def create_workflow_schedule(
     }
 
 
+@router.delete("/schedules/{schedule_id}", status_code=204)
+async def delete_workflow_schedule(
+    schedule_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_active_user),
+):
+    """Delete a workflow schedule by its own id (not by workflow_id)."""
+    from models.workflow_execution import WorkflowSchedule
+    import uuid
+
+    try:
+        sched_uuid = uuid.UUID(schedule_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid schedule_id")
+
+    schedule = await db.get(WorkflowSchedule, sched_uuid)
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    await db.delete(schedule)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/triggers/{trigger_id}", status_code=204)
+async def delete_workflow_trigger(
+    trigger_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_active_user),
+):
+    """Delete a workflow trigger by its own id (not by workflow_id)."""
+    from models.workflow_execution import WorkflowTrigger
+    import uuid
+
+    try:
+        trig_uuid = uuid.UUID(trigger_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid trigger_id")
+
+    trigger = await db.get(WorkflowTrigger, trig_uuid)
+    if not trigger:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+
+    await db.delete(trigger)
+    await db.commit()
+    return Response(status_code=204)
+
+
 @router.post("/validate", response_model=WorkflowValidationResult)
 async def validate_workflow(
     workflow_definition: Dict[str, Any],

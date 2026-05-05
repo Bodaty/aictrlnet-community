@@ -410,20 +410,51 @@ async def update_app_settings_patch(
     return await update_app_settings(settings, current_user, db)
 
 
+def _serialize_user_profile(user) -> Dict[str, Any]:
+    """Build the canonical profile-response shape from a User row.
+
+    PUT and GET both round-trip through this so the UI sees the persisted
+    values (notifications, phone, timezone, language) on either path.
+    """
+    prefs = user.preferences or {}
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "name": user.full_name or user.username or "User",
+        "phone": prefs.get("phone"),
+        "timezone": prefs.get("timezone", "UTC"),
+        "language": prefs.get("language", "en"),
+        "notifications": prefs.get("notifications") or {
+            "email": True, "sms": False, "push": False
+        },
+        "edition": getattr(user, "edition", "community"),
+        "roles": [],
+        "permissions": [],
+    }
+
+
 @router.get("/profile")
 async def get_user_profile(
-    current_user: dict = Depends(get_current_user_safe),
+    current_user = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get user's profile information."""
-    return {
-        "id": current_user.get("sub", "anonymous"),
-        "email": current_user.get("email", "user@example.com"),
-        "name": current_user.get("name", "Test User"),
-        "edition": current_user.get("edition", "community"),
-        "roles": current_user.get("roles", ["user"]),
-        "permissions": current_user.get("permissions", [])
-    }
+    """Get user's profile information from DB (incl. notifications + prefs)."""
+    if not hasattr(current_user, "id"):
+        # Dev-token / synthetic user — no DB row to read; return what the
+        # token carries so the UI still hydrates.
+        return {
+            "id": "anonymous",
+            "email": "user@example.com",
+            "name": "Test User",
+            "phone": None,
+            "timezone": "UTC",
+            "language": "en",
+            "notifications": {"email": True, "sms": False, "push": False},
+            "edition": "community",
+            "roles": ["user"],
+            "permissions": [],
+        }
+    return _serialize_user_profile(current_user)
 
 
 @router.put("/profile")
@@ -449,15 +480,9 @@ async def update_user_profile(
     await db.commit()
     await db.refresh(current_user)
 
-    return {
-        "id": str(current_user.id),
-        "email": current_user.email,
-        "name": current_user.full_name or current_user.username or "Test User",
-        "phone": (current_user.preferences or {}).get("phone"),
-        "timezone": (current_user.preferences or {}).get("timezone", "UTC"),
-        "language": (current_user.preferences or {}).get("language", "en"),
-        "message": "Profile updated successfully"
-    }
+    response = _serialize_user_profile(current_user)
+    response["message"] = "Profile updated successfully"
+    return response
 
 
 @router.get("/preferences")
