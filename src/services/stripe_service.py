@@ -227,11 +227,14 @@ class StripeService:
         stripe_subscription_id = session_data.get("subscription")
         stripe_customer_id = session_data.get("customer")
 
-        # Create or update subscription record
+        # Create or update subscription record. Track "was this brand new?"
+        # so we fire the welcome email only on first sub creation, not on
+        # plan upgrades through the same handler.
         result = await self.db.execute(
             select(Subscription).where(Subscription.user_id == user_id)
         )
         subscription = result.scalar_one_or_none()
+        was_new_subscription = subscription is None
 
         # Determine subscription status from Stripe (trialing vs active)
         stripe_sub_status = "active"
@@ -300,6 +303,25 @@ class StripeService:
 
         await self.db.commit()
         logger.info(f"Checkout completed: user={user_id}, plan={plan}, subscription={stripe_subscription_id}")
+
+        # Publish welcome event for first-time subscribers. The companion
+        # publish in _handle_subscription_created short-circuits on
+        # "already exists" (which the row above just made true), so this is
+        # the canonical fire point for the welcome email in the checkout
+        # flow. Plan upgrades skip this branch.
+        if was_new_subscription:
+            try:
+                from events.event_bus import event_bus
+                await event_bus.publish("subscription.created", {
+                    "user_id": str(user_id),
+                    "subscription_id": str(subscription.id),
+                    "plan": plan,
+                    "trial_end": trial_end_ts.isoformat() if trial_end_ts else None,
+                    "current_period_end": subscription.current_period_end.isoformat()
+                        if subscription.current_period_end else None,
+                })
+            except Exception as notify_err:
+                logger.warning(f"Failed to publish subscription.created (checkout): {notify_err}")
 
     async def _handle_subscription_created(self, subscription_data: Dict[str, Any]) -> None:
         """Handle subscription created event.
