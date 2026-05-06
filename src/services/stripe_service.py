@@ -397,6 +397,19 @@ class StripeService:
         await self.db.commit()
         logger.info(f"Subscription created: user={user_id}, plan={plan}, subscription={stripe_subscription_id}")
 
+        # Publish so notification subscribers (e.g. SendGrid welcome email) can react.
+        try:
+            from events.event_bus import event_bus
+            await event_bus.publish("subscription.created", {
+                "user_id": str(user_id) if user_id else None,
+                "subscription_id": str(subscription.id),
+                "plan": plan,
+                "trial_end": trial_end_ts.isoformat() if trial_end_ts else None,
+                "current_period_end": period_end.isoformat() if period_end else None,
+            })
+        except Exception as notify_err:
+            logger.warning(f"Failed to publish subscription.created event: {notify_err}")
+
     async def _handle_subscription_updated(self, subscription_data: Dict[str, Any]) -> None:
         """Handle subscription updates (plan changes, status changes)."""
         stripe_subscription_id = subscription_data.get("id")
@@ -583,6 +596,21 @@ class StripeService:
             f"amount={amount_paid:.2f}, user={subscription.user_id}"
         )
 
+        # Publish so notification subscribers can send a receipt email.
+        try:
+            from events.event_bus import event_bus
+            await event_bus.publish("invoice.paid", {
+                "user_id": str(subscription.user_id),
+                "subscription_id": str(subscription.id),
+                "amount_paid": amount_paid,
+                "currency": invoice_data.get("currency", "usd"),
+                "invoice_id": invoice_data.get("id"),
+                "hosted_invoice_url": invoice_data.get("hosted_invoice_url"),
+                "period_end": subscription.current_period_end.isoformat() if subscription.current_period_end else None,
+            })
+        except Exception as notify_err:
+            logger.warning(f"Failed to publish invoice.paid event: {notify_err}")
+
     async def _handle_invoice_payment_failed(self, invoice_data: Dict[str, Any]) -> None:
         """Handle failed invoice payment.
 
@@ -642,6 +670,22 @@ class StripeService:
             f"Invoice payment failed: subscription={stripe_subscription_id}, "
             f"attempt={attempt_count}, user={subscription.user_id}"
         )
+
+        # Publish so notification subscribers can send "action required" email.
+        try:
+            from events.event_bus import event_bus
+            await event_bus.publish("invoice.payment_failed", {
+                "user_id": str(subscription.user_id),
+                "subscription_id": str(subscription.id),
+                "amount_due": invoice_data.get("amount_due", 0) / 100,
+                "currency": invoice_data.get("currency", "usd"),
+                "attempt_count": attempt_count,
+                "days_overdue": days_overdue,
+                "grace_days_remaining": max(0, GRACE_PERIOD_DAYS - days_overdue),
+                "hosted_invoice_url": invoice_data.get("hosted_invoice_url"),
+            })
+        except Exception as notify_err:
+            logger.warning(f"Failed to publish invoice.payment_failed event: {notify_err}")
 
     def _get_edition_from_plan(self, plan: str) -> str:
         """Get edition name from plan name."""
