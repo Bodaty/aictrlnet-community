@@ -15,6 +15,7 @@ vLLM is self-hosted alongside the AICtrlNet stack.
 """
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 import httpx
 import json
@@ -50,7 +51,18 @@ class VLLMAdapter(BaseAdapter, ToolCallingMixin):
         self.client: Optional[httpx.AsyncClient] = None
         self.discovery_only = config.custom_config.get("discovery_only", False)
 
-        raw = config.base_url or config.credentials.get("base_url", "http://localhost:8000")
+        # Resolution order: explicit AdapterConfig.base_url → credentials["base_url"]
+        # → VLLM_BASE_URL env → VLLM_URL env → localhost default. Env-var fallback
+        # mirrors llm/generation.py and integration.py so per-execution adapter
+        # instances built in ai_process_node (which pass no base_url) still pick
+        # up the operator-configured vLLM endpoint.
+        raw = (
+            config.base_url
+            or config.credentials.get("base_url")
+            or os.environ.get("VLLM_BASE_URL")
+            or os.environ.get("VLLM_URL")
+            or "http://localhost:8000"
+        )
         if "localhost" in raw and not self.discovery_only:
             raw = raw.replace("localhost", "host.docker.internal")
         raw = raw.rstrip("/")
