@@ -404,7 +404,11 @@ async def get_workflow_status(
     instance = instance_result.scalar_one_or_none()
     
     if instance:
-        # Return the status of the latest instance
+        # Return the status of the latest instance. Include the dry_run
+        # flag from context so the UI's polling sees the same value here
+        # as on the WorkflowExecution branch below — without this, a
+        # workflow with a WorkflowInstance row reported dry_run as falsy
+        # regardless of the request flag. (Demo bug 2/7.)
         return {
             "workflow_id": workflow_id,
             "instance_id": instance.id,
@@ -412,7 +416,8 @@ async def get_workflow_status(
             "started_at": instance.started_at,
             "completed_at": instance.completed_at,
             "context": instance.context or {},
-            "outputs": instance.outputs or {}
+            "outputs": instance.outputs or {},
+            "dry_run": (instance.context or {}).get("is_dry_run", False),
         }
 
     # Fallback: check WorkflowExecution table (execute endpoint creates these)
@@ -674,9 +679,11 @@ async def execute_workflow(
             modifications_made=None
         )
         
-        # Store learning execution ID for later update
-        execution.metadata = execution.metadata or {}
-        execution.metadata["learning_execution_id"] = str(learning_execution.id)
+        # Store learning execution ID for later update.
+        # ORM attribute is `execution_metadata` (column-aliased to `metadata`);
+        # writing to `.metadata` clashes with SQLAlchemy's MetaData descriptor.
+        execution.execution_metadata = execution.execution_metadata or {}
+        execution.execution_metadata["learning_execution_id"] = str(learning_execution.id)
         await db.commit()
     except ImportError:
         # Learning loop is a Business edition feature

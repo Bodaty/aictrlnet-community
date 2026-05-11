@@ -347,13 +347,44 @@ class WorkflowExecutionService:
                 # Execute workflow
                 await self.node_executor.execute_workflow(workflow_instance)
 
-                # Update execution status
-                execution.status = WorkflowExecutionStatus.COMPLETED
+                # Check for node failures. The node executor's error_handler
+                # routes per-node exceptions into NodeExecution rows with
+                # status=failed instead of re-raising, so execute_workflow
+                # returns cleanly even when a critical node has failed. Mark
+                # the workflow FAILED in that case so downstream readers
+                # (UI, audit, polling) see the truth. (Demo bug #6.)
+                failed_rows = (
+                    await db.execute(
+                        select(NodeExecution)
+                        .where(NodeExecution.execution_id == execution.id)
+                        .where(NodeExecution.status == NodeExecutionStatus.FAILED)
+                    )
+                ).scalars().all()
+
                 execution.completed_at = datetime.utcnow()
-                execution.duration_ms = int((execution.completed_at - execution.started_at).total_seconds() * 1000)
+                execution.duration_ms = int(
+                    (execution.completed_at - execution.started_at).total_seconds() * 1000
+                )
                 execution.output_data = workflow_instance.output_data
 
-                # Count intercepted nodes for dry-run summary
+                if failed_rows:
+                    execution.status = WorkflowExecutionStatus.FAILED
+                    execution.error_details = {
+                        "failed_nodes": [
+                            {
+                                "node_id": row.node_id,
+                                "node_type": row.node_type,
+                                "error": row.error_details,
+                            }
+                            for row in failed_rows
+                        ]
+                    }
+                else:
+                    execution.status = WorkflowExecutionStatus.COMPLETED
+
+                # Count intercepted nodes for dry-run summary (regardless of
+                # final status — a failed dry-run still reports what would
+                # have been intercepted up to the failure point).
                 if is_dry_run and workflow_instance.output_data:
                     intercepted = sum(
                         1 for node_output in (workflow_instance.output_data or {}).values()
@@ -366,18 +397,32 @@ class WorkflowExecutionService:
 
                 await db.commit()
 
-                # Publish completion event
-                await event_bus.publish(
-                    "workflow.execution.completed",
-                    {
-                        "execution_id": str(execution_id),
-                        "workflow_id": str(execution.workflow_id),
-                        "duration_ms": execution.duration_ms,
-                        "triggered_by": execution.triggered_by,
-                        "trigger_metadata": execution.trigger_metadata or {},
-                        "is_dry_run": is_dry_run,
-                    }
-                )
+                # Publish completion or failure event, matching the resolved status
+                if failed_rows:
+                    await event_bus.publish(
+                        "workflow.execution.failed",
+                        {
+                            "execution_id": str(execution_id),
+                            "workflow_id": str(execution.workflow_id),
+                            "duration_ms": execution.duration_ms,
+                            "triggered_by": execution.triggered_by,
+                            "trigger_metadata": execution.trigger_metadata or {},
+                            "is_dry_run": is_dry_run,
+                            "failed_node_count": len(failed_rows),
+                        }
+                    )
+                else:
+                    await event_bus.publish(
+                        "workflow.execution.completed",
+                        {
+                            "execution_id": str(execution_id),
+                            "workflow_id": str(execution.workflow_id),
+                            "duration_ms": execution.duration_ms,
+                            "triggered_by": execution.triggered_by,
+                            "trigger_metadata": execution.trigger_metadata or {},
+                            "is_dry_run": is_dry_run,
+                        }
+                    )
 
             except Exception as e:
                 logger.error(f"Workflow execution failed: {e}")
