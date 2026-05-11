@@ -394,40 +394,14 @@ async def get_workflow_status(
         logger.error(f"Workflow not found: {workflow_id}")
         raise HTTPException(status_code=404, detail="Workflow not found")
     
-    # Get the latest instance of this workflow
-    instance_result = await db.execute(
-        select(WorkflowInstance)
-        .filter(WorkflowInstance.definition_id == workflow_id)
-        .order_by(WorkflowInstance.created_at.desc())
-        .limit(1)
-    )
-    instance = instance_result.scalar_one_or_none()
-    
-    if instance:
-        # Return the status of the latest instance.
-        #
-        # WorkflowInstance's actual model fields are input_data, output_data,
-        # and instance_metadata (DB column 'metadata'). The previous response
-        # shape referenced `instance.context` and `instance.outputs` — neither
-        # exists on the model, so this branch raised AttributeError 500 the
-        # moment anything actually hit it (e.g. when scripts/sanjay-demo/
-        # demo.py seed creates a WorkflowInstance row). Map to real fields and
-        # expose dry_run from instance_metadata for parity with the
-        # WorkflowExecution branch below. (Demo bug 2/7 + a latent
-        # pre-existing bug uncovered by the Txley demo.)
-        meta = getattr(instance, 'instance_metadata', None) or {}
-        return {
-            "workflow_id": workflow_id,
-            "instance_id": instance.id,
-            "status": instance.status,
-            "started_at": instance.started_at,
-            "completed_at": instance.completed_at,
-            "context": meta,
-            "outputs": instance.output_data or {},
-            "dry_run": meta.get("is_dry_run", False),
-        }
-
-    # Fallback: check WorkflowExecution table (execute endpoint creates these)
+    # Prefer the most recent WorkflowExecution row. The execute endpoint
+    # creates these and they carry the live status (running/paused/completed/
+    # failed). WorkflowInstance rows are typically seeded once and never
+    # advanced past PENDING, so checking them first masked active executions
+    # — the UI polling stayed stuck at 'pending' even while the workflow was
+    # actually progressing. Demo bug surfaced by the Txley walkthrough:
+    # demo.py's seed creates a WorkflowInstance and every subsequent /execute
+    # creates a WorkflowExecution; the latter is what the UI needs.
     exec_result = await db.execute(
         select(WorkflowExecution)
         .filter(WorkflowExecution.workflow_id == workflow_id)
@@ -435,6 +409,34 @@ async def get_workflow_status(
         .limit(1)
     )
     execution = exec_result.scalar_one_or_none()
+
+    if not execution:
+        # Fall back to WorkflowInstance — covers workflows that have a
+        # config-level instance but never been executed.
+        instance_result = await db.execute(
+            select(WorkflowInstance)
+            .filter(WorkflowInstance.definition_id == workflow_id)
+            .order_by(WorkflowInstance.created_at.desc())
+            .limit(1)
+        )
+        instance = instance_result.scalar_one_or_none()
+
+        if instance:
+            # WorkflowInstance's actual model fields are input_data,
+            # output_data, instance_metadata (DB column 'metadata'). Prior
+            # to this fix the response referenced .context and .outputs —
+            # neither exists — so this branch 500'd on any hit.
+            meta = getattr(instance, 'instance_metadata', None) or {}
+            return {
+                "workflow_id": workflow_id,
+                "instance_id": instance.id,
+                "status": instance.status,
+                "started_at": instance.started_at,
+                "completed_at": instance.completed_at,
+                "context": meta,
+                "outputs": instance.output_data or {},
+                "dry_run": meta.get("is_dry_run", False),
+            }
 
     if execution:
         return {
