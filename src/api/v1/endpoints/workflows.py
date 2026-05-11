@@ -404,20 +404,27 @@ async def get_workflow_status(
     instance = instance_result.scalar_one_or_none()
     
     if instance:
-        # Return the status of the latest instance. Include the dry_run
-        # flag from context so the UI's polling sees the same value here
-        # as on the WorkflowExecution branch below — without this, a
-        # workflow with a WorkflowInstance row reported dry_run as falsy
-        # regardless of the request flag. (Demo bug 2/7.)
+        # Return the status of the latest instance.
+        #
+        # WorkflowInstance's actual model fields are input_data, output_data,
+        # and instance_metadata (DB column 'metadata'). The previous response
+        # shape referenced `instance.context` and `instance.outputs` — neither
+        # exists on the model, so this branch raised AttributeError 500 the
+        # moment anything actually hit it (e.g. when scripts/sanjay-demo/
+        # demo.py seed creates a WorkflowInstance row). Map to real fields and
+        # expose dry_run from instance_metadata for parity with the
+        # WorkflowExecution branch below. (Demo bug 2/7 + a latent
+        # pre-existing bug uncovered by the Txley demo.)
+        meta = getattr(instance, 'instance_metadata', None) or {}
         return {
             "workflow_id": workflow_id,
             "instance_id": instance.id,
             "status": instance.status,
             "started_at": instance.started_at,
             "completed_at": instance.completed_at,
-            "context": instance.context or {},
-            "outputs": instance.outputs or {},
-            "dry_run": (instance.context or {}).get("is_dry_run", False),
+            "context": meta,
+            "outputs": instance.output_data or {},
+            "dry_run": meta.get("is_dry_run", False),
         }
 
     # Fallback: check WorkflowExecution table (execute endpoint creates these)
