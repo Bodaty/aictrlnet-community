@@ -50,4 +50,4 @@ echo ""
 
 # Start the FastAPI application
 # Note: PYTHONPATH should include /app/src for production builds
-exec uvicorn main:app --host 0.0.0.0 --port 8000
+exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${WORKERS:-2}

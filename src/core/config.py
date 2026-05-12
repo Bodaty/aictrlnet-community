@@ -188,10 +188,15 @@ class Settings(BaseSettings):
     DATA_PATH: str = Field(default="/tmp/aictrlnet", env="DATA_PATH")
     
     # Performance
-    # Sized for 100 concurrent autonomy-gated approvals + steady-state app load.
-    # See docs/architecture/APPROVALS_SPEC.md §13.3 for derivation.
-    MAX_CONNECTIONS_COUNT: int = Field(default=50)
-    MIN_CONNECTIONS_COUNT: int = Field(default=10)
+    # PER-WORKER pool size. With uvicorn `--workers 2` x 3 editions = 6 worker
+    # processes, each with pool_size=20 + max_overflow=20 = 40 connections max,
+    # the steady-state ceiling is 240 connections (well under the Postgres
+    # max_connections=300 that docker-compose.yml now sets).
+    # The previous 50/10 sizing assumed single-worker per edition (3 procs ×
+    # 70 conns = 210, already over the default Postgres 100 cap).
+    # See docs/architecture/APPROVALS_SPEC.md §13.3 for the original derivation.
+    MAX_CONNECTIONS_COUNT: int = Field(default=20)
+    MIN_CONNECTIONS_COUNT: int = Field(default=5)
 
     # Approvals feature flags (PR 1 of approvals workstream).
     # Defaulted to true post-PR-2: pre-customer state means "bake in
