@@ -1339,6 +1339,33 @@ Response (just the sentence, no quotes):"""
         'list_api_endpoints', 'list_integrations', 'update_onboarding',
     }
 
+    # Intent → tool-category bias. Phase 2 of the conversation flow classifies
+    # the user message as one of the 3 intents in action_planner.py:35
+    # (workflow_generation | question | clarification) and stores it as
+    # session.primary_intent. _prune_tools uses this to bias selection toward
+    # tools whose category matches the intent's mapped set, before the
+    # keyword-overlap scoring kicks in. This lets vague messages
+    # ("Tell me more about your capabilities") classify as 'question' →
+    # narrow tool set → fast Ollama response, instead of dumping 32 random
+    # tools on the model.
+    _INTENT_CATEGORY_BIAS = {
+        # Workflow generation: prefer workflow-building, automation, scheduling,
+        # template, and task-management tools. Approval tools too — workflows
+        # often need approval gates.
+        "workflow_generation": {
+            "workflow", "automation", "clinical_workflow", "scheduling",
+            "task_management", "template", "approval",
+        },
+        # Question: usually informational. No category bias — pure keyword
+        # overlap + the score-floor safety net handles the "no good match"
+        # case (returns just always-include set for plain chat).
+        "question": set(),
+        # Clarification: user is mid-thought. Don't tempt the LLM with action
+        # tools; it should help the user finish stating their request.
+        "clarification": set(),
+    }
+    _CLARIFICATION_INTENTS = {"clarification"}
+
     # Per-provider tool caps — keep native tool-calling reliable.
     # Ollama degrades past ~35 tools (empirically). OpenAI/Anthropic handle
     # significantly more; leave headroom below their docs limits.
@@ -1398,16 +1425,34 @@ Response (just the sentence, no quotes):"""
         user_message: str,
         max_tools: Optional[int] = None,
         adapter: Optional[str] = None,
+        intent: Optional[str] = None,
     ) -> list:
         """Prune tools to stay within the LLM's effective tool limit.
 
-        Uses keyword overlap scoring to select the most relevant tools.
+        Combines two signals:
+          1. Intent → category bias (strong): tools whose category matches
+             the LLM-classified intent get a +20 base score before keyword
+             scoring. Drives the right tools to the top even when keyword
+             overlap with the message is sparse.
+          2. Keyword overlap (tiebreaker): tool name + category + description
+             words intersected with cleaned query words.
+
+        Safety net: if the best non-always-include tool still scores below
+        `_AMBIGUITY_SCORE_FLOOR` (no real keyword match AND no intent bias
+        pushed anything above the floor), return ONLY the always-include
+        management set. Skips dumping 32 random tools on Ollama for plain
+        chat messages like "Tell me more about your capabilities" — used
+        to spend 30-90s spinning before this safety net.
 
         Args:
             tools: available ToolDefinition objects from the dispatcher
             user_message: current user utterance (drives keyword match)
             max_tools: explicit cap; if None, derived from `adapter`
             adapter: provider name ('ollama'/'openai'/...) for auto cap sizing
+            intent: LLM-classified intent (workflow_generation | question |
+                clarification per action_planner.py:35) from
+                session.primary_intent. None disables the bias path
+                (back-compat with callers that haven't been updated).
 
         Returns:
             Filtered list of tools, ordered by relevance score. Pruning
@@ -1430,47 +1475,79 @@ Response (just the sentence, no quotes):"""
             'that', 'with', 'in', 'on', 'of',
         }
 
+        # Resolve intent → category bias set once per call.
+        intent_categories = self._INTENT_CATEGORY_BIAS.get(intent or "", set())
+
         # Score every tool even when we won't prune — callers use the
         # top/second scores for ambiguity detection downstream.
+        # Track keyword and intent-bias contributions separately: the
+        # safety net below uses keyword score alone to decide whether
+        # to fall back to always-include. Intent bias only RANKS WITHIN
+        # the keyword-qualified set — it does NOT push tools above the
+        # floor on its own. This prevents an over-eager intent
+        # classification (e.g., greeting misclassified as
+        # "workflow_generation") from causing the LLM to call
+        # create_workflow on the user's first "hello".
         scored = []
         for tool in tools:
             if tool.name in self._ALWAYS_INCLUDE_TOOLS:
-                scored.append((tool, 200, "always_include"))
+                scored.append((tool, 200, 200, "always_include"))
                 continue
 
-            score = 0.0
-            tool_category = getattr(tool, 'category', None) or ''
+            keyword_score = 0.0
+            tool_category = (getattr(tool, 'category', None) or '').lower()
+
             if tool_category:
                 cat_words = set(tool_category.replace('_', ' ').split())
                 if query_words & cat_words:
-                    score += 50
+                    keyword_score += 50
 
             tool_words = set(tool.name.replace('_', ' ').lower().split()) - {
                 'get', 'list', 'set', 'create', 'update', 'delete'
             }
-            score += len(query_words & tool_words) * 3
+            keyword_score += len(query_words & tool_words) * 3
 
             if tool.description:
                 desc_words = set(tool.description.lower().split())
-                score += len(query_words & desc_words)
+                keyword_score += len(query_words & desc_words)
 
-            scored.append((tool, score, "keyword"))
+            # Intent bias adds to the ranking score but is tracked
+            # separately so safety-net logic can ignore it.
+            intent_bias = 0.0
+            if tool_category and tool_category in intent_categories:
+                intent_bias = 20
+
+            total_score = keyword_score + intent_bias
+            scored.append((tool, total_score, keyword_score, "keyword"))
 
         scored.sort(key=lambda x: x[1], reverse=True)
 
-        if len(tools) <= max_tools:
+        # Safety net: use KEYWORD score only (not the intent bias) to
+        # decide if the message has a real tool match. If no keyword
+        # match cleared the floor, return only always-include — even if
+        # intent classification thought it was workflow_generation, we
+        # don't trust that signal alone to dump action tools on the LLM.
+        # Avoids the "Hello, who are you?" → create_workflow misfire.
+        best_keyword = next(
+            (kw for _, _, kw, src in scored if src != "always_include"),
+            0.0,
+        )
+        if best_keyword < self._AMBIGUITY_SCORE_FLOOR:
+            selected = [t for t, _, _, src in scored if src == "always_include"]
+            reason = "below_floor_always_include_only"
+        elif len(tools) <= max_tools:
             selected = tools
             reason = "under_cap"
         else:
-            selected = [t for t, _, _ in scored[:max_tools]]
+            selected = [t for t, _, _, _ in scored[:max_tools]]
             reason = "pruned"
 
         took_ms = int((time.monotonic() - t0) * 1000)
 
         # Structured telemetry — primarily for diagnosing wrong tool picks.
         # Top-5 tools with scores give enough signal without flooding logs.
-        top = [(t.name, round(s, 1)) for t, s, _ in scored[:5]]
-        always = [t.name for t, _, src in scored if src == "always_include"]
+        top = [(t.name, round(s, 1)) for t, s, _, _ in scored[:5]]
+        always = [t.name for t, _, _, src in scored if src == "always_include"]
         logger.info(
             "[tool_pruner] adapter=%s total=%d kept=%d cap=%d "
             "always_included=%d top=%s reason=%s took_ms=%d",
@@ -1489,7 +1566,7 @@ Response (just the sentence, no quotes):"""
         # separately because ALWAYS_INCLUDE sentinels (score 200) otherwise
         # drown out the keyword signal in the top-5 view.
         top_keyword_scores = [
-            (t.name, s) for t, s, src in scored if src != "always_include"
+            (t.name, kw) for t, _, kw, src in scored if src != "always_include"
         ][:5]
         self._last_prune_meta = {
             "adapter": adapter,
@@ -1497,7 +1574,7 @@ Response (just the sentence, no quotes):"""
             "kept": len(selected),
             "cap": max_tools,
             "reason": reason,
-            "top_scores": [(t.name, s) for t, s, _ in scored[:5]],
+            "top_scores": [(t.name, s) for t, s, _, _ in scored[:5]],
             "top_keyword_scores": top_keyword_scores,
             "took_ms": took_ms,
         }
@@ -2051,7 +2128,17 @@ Response (just the sentence, no quotes):"""
             # reliable tool-calling budget (Ollama≈32, OpenAI/Anthropic≈64).
             from llm.tier_resolver import get_environment_default_provider
             active_adapter = get_environment_default_provider()
-            tools = self._prune_tools(all_tools, content, adapter=active_adapter)
+            # Pass session.primary_intent so _prune_tools can bias toward
+            # intent-matching categories before keyword scoring. Phase 2 of
+            # this conversation flow populates session.primary_intent earlier
+            # in the message handling; if not yet set (first message),
+            # _prune_tools falls back to keyword-only + safety net.
+            tools = self._prune_tools(
+                all_tools,
+                content,
+                adapter=active_adapter,
+                intent=getattr(session, "primary_intent", None),
+            )
         else:
             tools = []  # Greeting/farewell — skip tool definitions entirely
 
