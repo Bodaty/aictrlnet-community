@@ -334,6 +334,35 @@ class WorkflowExecutionService:
                     if resolved_autonomy is not None:
                         ni.context["autonomy"] = resolved_autonomy
 
+                # Rehydrate state for resumed executions so the executor can
+                # skip nodes that already completed on a prior run. Without
+                # this, every resume re-runs every upstream node — including
+                # the expensive LLM calls — and creates duplicate approval
+                # rows at gate nodes when the rerun reaches them again.
+                # Scoped by execution_id and gated on RESUMING so first-run
+                # executions are untouched. We restore both inputs and
+                # outputs because the live executor's accumulation pattern
+                # is `{**input_data, **output_data}` — non-start nodes don't
+                # echo their inputs in their outputs, so propagating outputs
+                # alone would drop the workflow input fields across a skip.
+                from nodes.models import NodeStatus
+                if execution.status == WorkflowExecutionStatus.RESUMING:
+                    prior_rows = (await db.execute(
+                        select(NodeExecution).where(
+                            NodeExecution.execution_id == execution.id,
+                            NodeExecution.status == NodeExecutionStatus.COMPLETED,
+                        )
+                    )).scalars().all()
+                    for row in prior_rows:
+                        ni = node_instances.get(row.node_id)
+                        if ni is None:
+                            continue
+                        ni.status = NodeStatus.COMPLETED
+                        ni.input_data = row.inputs or {}
+                        ni.output_data = row.outputs or {}
+                        ni.completed_at = row.completed_at
+                        ni.duration_ms = row.duration_ms
+
                 # Create workflow instance for node executor
                 workflow_instance = NodeWorkflowInstance(
                     id=str(execution_id),
@@ -670,9 +699,22 @@ class WorkflowExecutionService:
         
         if not execution:
             raise ValueError(f"Execution {execution_id} not found")
-        
-        if execution.status != WorkflowExecutionStatus.PAUSED:
-            raise ValueError(f"Execution {execution_id} is not paused")
+
+        # Accept both PAUSED (normal case) and RESUMING (re-entry case where
+        # a prior resume crashed mid-flight or the gate node created a fresh
+        # approval that needs another resume to drive through). Without the
+        # RESUMING branch, the lifecycle worker emits resume events that
+        # silently no-op because the previous resume already flipped the
+        # status away from PAUSED — and the workflow stays wedged with a
+        # human-review node stuck in 'running'.
+        if execution.status not in (
+            WorkflowExecutionStatus.PAUSED,
+            WorkflowExecutionStatus.RESUMING,
+        ):
+            raise ValueError(
+                f"Execution {execution_id} is not resumable "
+                f"(status={execution.status})"
+            )
         
         # If checkpoint specified, restore from it
         if checkpoint_id:

@@ -41,6 +41,33 @@ class NotificationNode(BaseNode):
         # Get notification configuration
         channel = self.config.parameters.get("channel", "email")
 
+        # Node-level dry-run: workflows that run in `dry_run=false` at the
+        # workflow level can still mark individual side-effect nodes as
+        # dry-run via their config (the workflow-level dry-run interceptor
+        # in base_node.py only fires when the workflow is dry-run). The
+        # Txley demo workflow uses this for `send-response` — workflow is
+        # live so the human-review approval gate engages, but the final
+        # email send is intercepted to avoid wiring SMTP credentials for
+        # the demo. Honor either spelling (`is_dry_run` or `dry_run`).
+        node_dry_run = self.config.parameters.get("is_dry_run")
+        if node_dry_run is None:
+            node_dry_run = self.config.parameters.get("dry_run", False)
+        if node_dry_run:
+            recipients = self._get_recipients(input_data)
+            message = self._build_message(input_data, context)
+            logger.info(
+                "Notification node %s: node-level dry-run, skipping %s send to %d recipient(s)",
+                self.config.id, channel, len(recipients),
+            )
+            return {
+                "channel": channel,
+                "sent_to": [str(r) for r in recipients],
+                "skipped": True,
+                "_dry_run": True,
+                "message_subject": message.get("subject"),
+                "message_body": message.get("body"),
+            }
+
         # Resolve adapter from config (UI sets this) or use channel-specific default.
         # The frontend stores a unified "adapter" parameter; map it to the
         # per-channel parameter name that each _send_* method already reads.

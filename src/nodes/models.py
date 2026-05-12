@@ -110,7 +110,15 @@ class NodeInstance(BaseModel):
     input_data: Dict[str, Any] = {}
     output_data: Dict[str, Any] = {}
     context: Dict[str, Any] = {}
-    
+
+    # Resume bookkeeping — executor.execute_node() loads any prior state from
+    # state_manager and assigns to state_data. Pre-fix the field wasn't
+    # declared; Pydantic V2 rejected the attribute set with "object has no
+    # field 'state_data'", which surfaced on the first node the resume
+    # actually re-executed (the human-review approval node after the
+    # skip-completed-nodes resume fix landed).
+    state_data: Optional[Dict[str, Any]] = None
+
     # Relationships
     previous_nodes: List[str] = []  # Node instance IDs
     next_nodes: List[str] = []  # Node instance IDs

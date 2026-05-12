@@ -19,7 +19,11 @@ from core.tenant_context import get_current_tenant_id
 from middleware.enforcement import require_feature
 from core.upgrade_hints import attach_upgrade_hints
 from models.community import WorkflowDefinition, WorkflowInstance
-from models.workflow_execution import WorkflowExecution, WorkflowExecutionStatus
+from models.workflow_execution import (
+    WorkflowExecution,
+    WorkflowExecutionStatus,
+    NodeExecution,
+)
 from models.community_complete import Adapter, MCPTool
 from models.iam import IAMAgent
 from schemas.workflow import (
@@ -410,6 +414,39 @@ async def get_workflow_status(
     )
     execution = exec_result.scalar_one_or_none()
 
+    if execution:
+        # Per-node states keyed by node_id so the canvas can color nodes by
+        # progress. Status is normalized to the string value the UI expects
+        # ('completed' | 'failed' | 'running' | 'pending' | etc.). Outputs
+        # are passed through so the dry-run interception border can render.
+        node_rows = (await db.execute(
+            select(NodeExecution).where(NodeExecution.execution_id == execution.id)
+        )).scalars().all()
+        node_states: Dict[str, Any] = {}
+        for row in node_rows:
+            raw_status = row.status.value if hasattr(row.status, 'value') else row.status
+            node_states[row.node_id] = {
+                "status": str(raw_status or "pending").lower(),
+                "started_at": row.started_at,
+                "completed_at": row.completed_at,
+                "duration_ms": row.duration_ms,
+                "outputs": row.outputs or {},
+                "error": (row.error_details or {}).get("error") if row.error_details else None,
+            }
+        return {
+            "workflow_id": workflow_id,
+            "execution_id": str(execution.id),
+            "status": execution.status.value if hasattr(execution.status, 'value') else execution.status,
+            "started_at": execution.started_at,
+            "completed_at": execution.completed_at,
+            "outputs": execution.output_data or {},
+            "context": execution.context or {},
+            "dry_run": (execution.context or {}).get("is_dry_run", False),
+            "nodes_intercepted": (execution.execution_metadata or {}).get("nodes_intercepted", 0) if hasattr(execution, 'execution_metadata') else 0,
+            "error": (execution.error_details or {}).get("error") if execution.error_details else None,
+            "node_states": node_states,
+        }
+
     if not execution:
         # Fall back to WorkflowInstance — covers workflows that have a
         # config-level instance but never been executed.
@@ -438,19 +475,6 @@ async def get_workflow_status(
                 "dry_run": meta.get("is_dry_run", False),
             }
 
-    if execution:
-        return {
-            "workflow_id": workflow_id,
-            "execution_id": str(execution.id),
-            "status": execution.status.value if hasattr(execution.status, 'value') else execution.status,
-            "started_at": execution.started_at,
-            "completed_at": execution.completed_at,
-            "outputs": execution.output_data or {},
-            "context": execution.context or {},
-            "dry_run": (execution.context or {}).get("is_dry_run", False),
-            "nodes_intercepted": (execution.execution_metadata or {}).get("nodes_intercepted", 0) if hasattr(execution, 'execution_metadata') else 0,
-            "error": (execution.error_details or {}).get("error") if execution.error_details else None
-        }
 
     # No instance or execution found
     return {

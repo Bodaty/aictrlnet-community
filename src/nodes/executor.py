@@ -440,16 +440,38 @@ class NodeExecutor:
             for _ in range(batch_size):
                 try:
                     node_id, input_data = execution_queue.get_nowait()
-                    
+
                     # Skip if already completed
                     if node_id in completed_nodes:
                         continue
-                    
+
                     node_instance = workflow_instance.node_instances.get(node_id)
-                    if node_instance:
-                        node_instance.input_data = input_data
-                        batch.append(node_instance)
-                        
+                    if node_instance is None:
+                        continue
+
+                    # Rehydrated-completed branch: workflow_execution.py
+                    # populates COMPLETED status + input_data + output_data
+                    # on resume from the persisted node_executions rows.
+                    # Skip execution and fan the accumulated payload out to
+                    # downstream nodes, using the same `{**input, **output}`
+                    # shape the live executor emits at the post-execute
+                    # accumulation point below.
+                    if node_instance.status == NodeStatus.COMPLETED:
+                        completed_nodes.add(node_id)
+                        accumulated = {
+                            **node_instance.input_data,
+                            **node_instance.output_data,
+                        }
+                        for next_node_id in node_instance.next_nodes:
+                            if next_node_id not in completed_nodes:
+                                await execution_queue.put(
+                                    (next_node_id, accumulated)
+                                )
+                        continue
+
+                    node_instance.input_data = input_data
+                    batch.append(node_instance)
+
                 except asyncio.QueueEmpty:
                     break
             
