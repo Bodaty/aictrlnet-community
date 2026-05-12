@@ -1,9 +1,19 @@
 """Security utilities for authentication and authorization."""
 
+import logging
+
 from datetime import datetime, timedelta
 from typing import Optional, Union, TYPE_CHECKING
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+
+# Silence the passlib 1.7.4 + bcrypt 4.x compatibility warning that fires on
+# every login: `AttributeError: module 'bcrypt' has no attribute '__about__'`.
+# Bcrypt verification still works correctly — passlib just can't read the
+# version string. Upgrading bcrypt to <4 breaks login on long passwords;
+# upgrading passlib past 1.7.4 isn't released yet. Suppressing at the
+# logger level is the least-invasive workaround.
+logging.getLogger("passlib.handlers.bcrypt").setLevel(logging.ERROR)
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,7 +121,7 @@ async def get_current_user(
                 id="00000000-0000-0000-0000-000000000001",  # Valid UUID for dev user
                 email="dev@aictrlnet.com",
                 username="devuser",
-                hashed_password=get_password_hash("dev-password"),
+                hashed_password=get_password_hash("testpass123"),
                 full_name="Development User",
                 tenant_id=DEFAULT_TENANT_ID,
                 is_active=True,
