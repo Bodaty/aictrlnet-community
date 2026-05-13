@@ -32,8 +32,15 @@ def get_engine():
             str(settings.DATABASE_URL),
             echo=False,
             future=True,
+            # Per-worker pool sized so all editions × all workers × pool
+            # fit under postgres max_connections (300). With 4 uvicorn
+            # workers per edition × 3 editions, each worker can hold up to
+            # pool_size + max_overflow = 20 connections, totaling 240 —
+            # leaving 60 for postgres management. If you bump workers
+            # beyond 4 per edition, lower these defaults proportionally
+            # OR raise postgres max_connections.
             pool_size=settings.MAX_CONNECTIONS_COUNT,
-            max_overflow=20,
+            max_overflow=getattr(settings, "MAX_OVERFLOW_COUNT", 10),
             pool_pre_ping=True,
             pool_recycle=300,
             pool_timeout=30,

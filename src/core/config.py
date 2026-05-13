@@ -195,7 +195,12 @@ class Settings(BaseSettings):
     # The previous 50/10 sizing assumed single-worker per edition (3 procs ×
     # 70 conns = 210, already over the default Postgres 100 cap).
     # See docs/architecture/APPROVALS_SPEC.md §13.3 for the original derivation.
-    MAX_CONNECTIONS_COUNT: int = Field(default=20)
+    # Per-worker DB pool sizing. Defaults assume 4 uvicorn workers per
+    # edition × 3 editions sharing one Postgres (max_connections=300).
+    # Math: 3 × 4 × (MAX_CONNECTIONS_COUNT + MAX_OVERFLOW_COUNT) ≤ 280.
+    # Override via env var if you change worker count.
+    MAX_CONNECTIONS_COUNT: int = Field(default=10)
+    MAX_OVERFLOW_COUNT: int = Field(default=10)
     MIN_CONNECTIONS_COUNT: int = Field(default=5)
 
     # Approvals feature flags (PR 1 of approvals workstream).
