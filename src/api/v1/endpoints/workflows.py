@@ -427,6 +427,7 @@ async def get_workflow_status(
             raw_status = row.status.value if hasattr(row.status, 'value') else row.status
             node_states[row.node_id] = {
                 "status": str(raw_status or "pending").lower(),
+                "node_type": row.node_type,  # lets the UI tag action-needed nodes
                 "started_at": row.started_at,
                 "completed_at": row.completed_at,
                 "duration_ms": row.duration_ms,
