@@ -1,6 +1,9 @@
 """AI Process node implementation for AI/ML processing tasks."""
 
+import json
 import logging
+import re
+import time
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
@@ -13,6 +16,80 @@ from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest, Adap
 
 
 logger = logging.getLogger(__name__)
+
+
+_JSON_LIKE_PREFIX = re.compile(r"^\s*[\{\[]")
+_CODE_FENCE = re.compile(r"^```(?:json|JSON)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
+
+
+def _strip_code_fence(text: str) -> str:
+    m = _CODE_FENCE.match(text.strip())
+    return m.group(1) if m else text
+
+
+def _escape_control_chars_in_strings(text: str) -> str:
+    out = []
+    in_string = False
+    escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                out.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                out.append(ch)
+                escaped = True
+                continue
+            if ch == '"':
+                out.append(ch)
+                in_string = False
+                continue
+            code = ord(ch)
+            if code < 0x20:
+                if ch == "\n":
+                    out.append("\\n")
+                elif ch == "\r":
+                    out.append("\\r")
+                elif ch == "\t":
+                    out.append("\\t")
+                elif ch == "\b":
+                    out.append("\\b")
+                elif ch == "\f":
+                    out.append("\\f")
+                else:
+                    out.append("\\u%04x" % code)
+                continue
+            out.append(ch)
+        else:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+    return "".join(out)
+
+
+def _try_parse_llm_json(text: Any) -> Optional[Any]:
+    """Best-effort parse of LLM output into a Python object.
+
+    LLMs frequently emit "almost-JSON" — newlines and tabs inside string
+    literals instead of escape sequences, sometimes wrapped in a markdown
+    code fence. We strip the fence, try strict json.loads, and on failure
+    do a single repair pass that escapes raw control chars inside string
+    literals. Returns None if both attempts fail or the input doesn't
+    look JSON-shaped.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    candidate = _strip_code_fence(text)
+    if not _JSON_LIKE_PREFIX.match(candidate):
+        return None
+    try:
+        return json.loads(candidate)
+    except (ValueError, TypeError):
+        try:
+            return json.loads(_escape_control_chars_in_strings(candidate))
+        except (ValueError, TypeError):
+            return None
 
 
 # --- Narrative-style routing -------------------------------------------------
@@ -177,6 +254,13 @@ class AIProcessNode(BaseNode):
         # Patch self.config.parameters so downstream helpers see resolved values
         self.config.parameters.update(resolved_params)
 
+        # Track wall time across the LLM call so the audit row + metering
+        # can record response_time. Started just before the adapter dispatch
+        # so we measure the model's latency, not setup overhead.
+        _llm_started_at = time.monotonic()
+        _llm_status = "success"
+        _llm_error: Optional[str] = None
+
         # Process based on task type
         if ai_task == "generate":
             output_data = await self._process_generation(adapter, input_data)
@@ -203,6 +287,20 @@ class AIProcessNode(BaseNode):
 
         # Track LLM usage for metering (Business+ only)
         await self._track_llm_call(adapter_id, ai_task, output_data)
+
+        # AI Governance audit log entry — every LLM invocation gets a row in
+        # ai_audit_logs so /ai-governance?tab=audit-logs reflects what
+        # actually ran. Business-only; no-ops when Business model isn't
+        # importable (Community-standalone edition).
+        await self._audit_llm_call(
+            adapter_id=adapter_id,
+            ai_task=ai_task,
+            output_data=output_data,
+            context=context,
+            response_time_s=time.monotonic() - _llm_started_at,
+            status=_llm_status,
+            error_message=_llm_error,
+        )
 
         # Publish completion event
         await event_bus.publish(
@@ -400,6 +498,59 @@ class AIProcessNode(BaseNode):
             pass  # Community edition — no metering
         except Exception as e:
             logger.debug(f"LLM usage tracking skipped: {e}")
+
+    async def _audit_llm_call(
+        self,
+        *,
+        adapter_id: str,
+        ai_task: str,
+        output_data: Dict[str, Any],
+        context: Dict[str, Any],
+        response_time_s: float,
+        status: str,
+        error_message: Optional[str],
+    ) -> None:
+        """Write one ai_audit_logs row per LLM invocation.
+
+        Powers the Audit Logs tab on /ai-governance. Business-only —
+        AIAuditLog lives in aictrlnet_business; this no-ops when the
+        model isn't importable (Community-standalone edition) or when
+        the write fails. Never raises into the workflow.
+        """
+        try:
+            from core.database import get_session_maker
+            from aictrlnet_business.models.ai_governance_complete import AIAuditLog
+
+            usage = output_data.get("usage") or {}
+            tokens_used = usage.get("total_tokens") or 0
+            model_name = output_data.get("model") or adapter_id
+
+            row = AIAuditLog(
+                action="model_invoked",
+                model_id=str(model_name) if model_name else None,
+                user_id=context.get("user_id"),
+                workflow_id=context.get("workflow_id"),
+                task_id=self.config.id,
+                tokens_used=tokens_used or None,
+                response_time=response_time_s,
+                status=status,
+                error_message=error_message,
+                details={
+                    "ai_task": ai_task,
+                    "adapter_id": adapter_id,
+                    "node_name": self.config.name,
+                    "prompt_tokens": usage.get("prompt_tokens"),
+                    "completion_tokens": usage.get("completion_tokens"),
+                },
+            )
+
+            async with get_session_maker()() as db:
+                db.add(row)
+                await db.commit()
+        except ImportError:
+            pass  # Community edition — no AI audit logging
+        except Exception as e:
+            logger.debug(f"AI audit log write skipped: {e}")
 
     async def _auto_select_adapter(self, ai_task: str) -> str:
         """Auto-select adapter using the system default LLM provider.
@@ -674,11 +825,19 @@ class AIProcessNode(BaseNode):
             raise Exception(f"Generation failed: {response.error}")
 
         gen_text = response.data.get("text", "")
-        return {
+        result = {
             "generated_text": gen_text,
             "usage": response.data.get("usage", {}),
             "model": response.data.get("model"),
         }
+        # When the LLM emits JSON (most agent prompts do), also expose a
+        # parsed structured form so downstream consumers (approvals UI,
+        # workflow nodes) don't have to repair LLM-quirky JSON each time.
+        # parsed_output is None when the text isn't JSON-shaped.
+        parsed = _try_parse_llm_json(gen_text)
+        if parsed is not None:
+            result["parsed_output"] = parsed
+        return result
     
     async def _process_sentiment(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process sentiment analysis task."""
