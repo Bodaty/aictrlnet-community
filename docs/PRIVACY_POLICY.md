@@ -356,9 +356,9 @@ Email: privacy@aictrlnet.com
 **Data Protection Officer:**
 Email: dpo@aictrlnet.com
 
-**EU Representative (Article 27 GDPR):** [TO BE ENGAGED — placeholder pending Bodaty's engagement of an EU representative service such as VeraSafe or EDPO prior to Business EU launch]
+**EU Representative (Article 27 GDPR):** Bodaty does not currently target the Services to data subjects in the European Economic Area within the meaning of GDPR Article 3(2). Prior to onboarding any EU-based Customer or otherwise targeting Services to EU data subjects, Bodaty will designate an EU Article 27 representative (such as VeraSafe or EDPO) and update this Section 6.4 with the representative's name and contact details.
 
-**UK Representative:** [TO BE ENGAGED — placeholder pending UK representative engagement]
+**UK Representative:** Bodaty does not currently target the Services to data subjects in the United Kingdom within the meaning of UK GDPR Article 3(2). Prior to onboarding any UK-based Customer, Bodaty will designate a UK representative and update this Section 6.4 accordingly.
 
 ### 6.5 Legitimate Interests Assessment
 
