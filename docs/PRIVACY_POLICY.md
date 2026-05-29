@@ -1,13 +1,14 @@
 # AICtrlNet / HitLai Privacy Policy
 
-**Effective Date:** January 29, 2026
-**Last Updated:** January 29, 2026
+**Effective Date:** May 1, 2026
+**Last Updated:** May 1, 2026
+**Version:** 2.0
 
 ---
 
 ## Introduction
 
-This Privacy Policy describes how Bodaty Inc. ("Bodaty," "we," "us," or "our") collects, uses, shares, and protects information when you use the AICtrlNet platform and HitLai user interface (collectively, the "Service" or "Platform").
+This Privacy Policy describes how **Bodaty LLC, an Illinois limited liability company** ("Bodaty," "we," "us," or "our") collects, uses, shares, and protects information when you use the AICtrlNet platform and HitLai user interface (collectively, the "Service" or "Platform").
 
 AICtrlNet is an AI workflow orchestration and governance platform that enables organizations to build, deploy, and manage AI-powered automation workflows. HitLai is the user interface for accessing AICtrlNet across all editions (Community, Business, and Enterprise).
 
@@ -346,11 +347,18 @@ If you have concerns about our data practices, you may contact:
 ### 6.4 Data Controller Information
 
 **Data Controller:**
-Bodaty Inc.
+Bodaty LLC
+200 E. 5th Ave., Suite 121DE
+Naperville, IL 60563
+United States
 Email: privacy@aictrlnet.com
 
 **Data Protection Officer:**
 Email: dpo@aictrlnet.com
+
+**EU Representative (Article 27 GDPR):** [TO BE ENGAGED — placeholder pending Bodaty's engagement of an EU representative service such as VeraSafe or EDPO prior to Business EU launch]
+
+**UK Representative:** [TO BE ENGAGED — placeholder pending UK representative engagement]
 
 ### 6.5 Legitimate Interests Assessment
 
@@ -412,7 +420,23 @@ We will verify your identity before processing requests. You may designate an au
 
 We will respond to verifiable consumer requests within 45 days, with a possible 45-day extension for complex requests.
 
-### 7.5 Do Not Sell or Share My Personal Information
+### 7.5 Automated Decision-Making Technology (ADMT)
+
+If the Service is used to make Automated Decisions that produce a legal or similarly significant effect on you (including decisions affecting employment, housing, financial services, healthcare, education, essential services, or insurance), under the CPRA-amended CCPA and the California Privacy Protection Agency's Automated Decision-Making Technology regulations:
+
+**(a) Pre-Use Notice Right.** You have the right to receive a pre-use notice from the business deploying the ADMT before it is used to make a significant decision about you. Bodaty provides Customer with the technical capability to issue such pre-use notices; the obligation to issue them rests with the Customer (Controller) deploying the ADMT.
+
+**(b) Right to Opt-Out.** You have the right to opt out of the use of ADMT for significant decisions, subject to limited exceptions specified in the regulations. To exercise this right with respect to ADMT operated through the Service, contact the Customer (Controller) operating the workflow; Bodaty will support Customer in honoring such requests technically.
+
+**(c) Right of Access.** You have the right to obtain meaningful information about the ADMT used, including the logic, the personal information used, and the consequences of the decision.
+
+**(d) Right to Human Review and Appeal.** Where ADMT is used for a significant decision, you have the right to request human review and appeal of the decision under conditions specified in the regulations.
+
+**(e) Risk Assessments.** Where Bodaty processes personal information using ADMT or for purposes that present significant risk to consumer privacy under the CPPA regulations effective January 1, 2026, Bodaty conducts and documents risk assessments. Customers acting as Controllers retain primary responsibility for their own risk assessments under 11 CCR § 7152.
+
+These ADMT-specific rights are in addition to, and do not replace, the general California rights described in Section 7.2.
+
+### 7.6 Do Not Sell or Share My Personal Information
 
 We do not sell personal information. We do not share personal information for cross-context behavioral advertising. However, if you wish to record your preference, you may:
 - Email: privacy@aictrlnet.com with subject "Do Not Sell or Share"
@@ -506,7 +530,9 @@ When transferring data outside your region, we use appropriate safeguards:
 
 ### 9.3 EU-U.S. Data Privacy Framework
 
-We are working toward participation in the EU-U.S. Data Privacy Framework. This provides adequate protection for personal data transferred from the EU to the U.S.
+Bodaty relies on the **2021 EU Standard Contractual Clauses (Module Two — Controller-to-Processor)** and the **UK International Data Transfer Addendum** as the primary contractual mechanisms for transfers of personal data from the EEA, UK, and Switzerland to the United States. Bodaty intends to self-certify under the EU-U.S. Data Privacy Framework, the UK Extension, and the Swiss-U.S. Data Privacy Framework. Until certification is filed and active, all such transfers operate under the SCCs and equivalent UK/Swiss mechanisms.
+
+Where Bodaty's sub-processors (including AI model providers such as Anthropic, PBC and Google LLC) are themselves DPF-certified, Bodaty may rely on such certifications for downstream transfers, with SCCs serving as the contractual fallback in all cases.
 
 ### 9.4 Your Choices
 
@@ -539,6 +565,14 @@ For educational institutions using AICtrlNet:
 - Additional protections may apply under FERPA (U.S.), COPPA, or local laws
 - Contact us for educational agreements with enhanced privacy protections
 - We offer specific configurations for educational environments
+
+### 10.4 Biometric Information — Non-Collection (Illinois BIPA and Similar Laws)
+
+Bodaty does not collect, capture, purchase, receive, retain, or otherwise obtain biometric identifiers or biometric information as those terms are defined under the **Illinois Biometric Information Privacy Act (740 ILCS 14)** ("BIPA"), the **Texas Capture or Use of Biometric Identifier Act**, the **Washington Biometric Privacy Act**, or analogous laws in other jurisdictions. Specifically, the Service does not collect or process retinal or iris scans, fingerprints, voiceprints, scans of hand or face geometry, DNA, or any other biological characteristic used to identify an individual.
+
+**Customer-configured workflows.** Customers may build workflows on the Service that reference third-party biometric verification providers (e.g., identity verification or KYC vendors). In such cases, biometric identifiers flow directly between the data subject and the third-party provider; Bodaty does not capture, store, retain, or otherwise obtain those identifiers. Customers are solely responsible for selecting and contracting with such providers and for any BIPA, CUBI, or analogous compliance obligations arising from those workflows.
+
+If Customer separately chooses to send biometric data to the Service as Customer Content (for example, by configuring a workflow that processes a biometric image as input), Customer is the Controller of that biometric data and is solely responsible for obtaining the consents and complying with the notice, storage-limitation, and destruction obligations required by BIPA and analogous laws. Bodaty does not consent to receive biometric data and reserves the right to require Customer to remove such data and to disable the relevant workflow.
 
 ---
 
@@ -580,11 +614,13 @@ We implement comprehensive security measures to protect your data:
 
 ### 11.4 Security Certifications and Compliance
 
-We maintain compliance with:
-- SOC 2 Type II (in progress)
-- ISO 27001 (planned)
-- GDPR compliance program
-- HIPAA-ready architecture (for eligible Enterprise customers)
+We operate the following compliance programs:
+- **GDPR compliance program** — active, including DPA availability for Business and Enterprise customers
+- **CCPA / CPRA compliance program** — active, including ADMT risk assessments for in-scope automated decision-making
+- **HIPAA-ready architecture** — available for eligible Enterprise customers under Business Associate Agreement (BAA)
+- **NIST AI Risk Management Framework alignment** — operational roadmap; full attestation contingent on third-party assessment
+- **ISO 42001 (AI Management Systems) alignment** — operational roadmap; full attestation contingent on third-party assessment
+- **SOC 2 Type II audit** — engagement scoped; certification target is a future date and is not yet attested. Bodaty does not represent SOC 2 Type II compliance until a final report is issued.
 
 ### 11.5 Security Incident Notification
 
@@ -605,7 +641,7 @@ If you discover a security vulnerability:
 
 ## 12. AI-Specific Privacy Considerations
 
-Given that AICtrlNet is an AI-powered platform, we provide additional transparency about how AI interacts with your data:
+Given that AICtrlNet is an AI-powered platform, we provide additional transparency about how AI interacts with your data, in alignment with GDPR Art. 22 (right not to be subject to solely automated decision-making with legal or similarly significant effect), the CPRA-amended CCPA's Automated Decision-Making Technology regulations, the Colorado AI Act (effective June 30, 2026), and the EU AI Act (Regulation (EU) 2024/1689, full applicability August 2, 2026):
 
 ### 12.1 AI Model Inputs
 
@@ -613,59 +649,84 @@ When you use AI-powered features:
 
 | Data Type | How It's Used | Retention |
 |-----------|---------------|-----------|
-| Natural language commands | Processed to understand intent and generate workflows | Session only, unless saved |
-| Workflow context | Provided to AI for relevant suggestions | Session only |
-| Historical patterns | Used for personalized recommendations (optional) | As configured in settings |
+| Natural language commands and prompts | Processed to understand intent and generate workflows or Outputs | Session only, unless saved by Customer |
+| Workflow context (current + immediately relevant history) | Provided to the selected Foundation Model for relevant Outputs | Session only |
+| Historical patterns / fine-tuning data | Used only with Customer's explicit opt-in | As configured by Customer; deletable on request |
 
 ### 12.2 AI Model Outputs
 
-AI-generated content is:
-- Your property when generated from your inputs
-- Stored only if you choose to save it
-- Not used to train models without your consent
+AI-generated content ("**Outputs**") is:
+- **Owned by Customer.** As between Bodaty and Customer, Customer owns all right, title, and interest in Outputs generated from Customer Inputs.
+- **Stored only if Customer chooses to save.** Outputs surfaced through the Service are stored at Customer's direction; ephemeral Outputs are not retained.
+- **Not used to train models without consent.** Bodaty does not use Outputs (or Customer Inputs that generated them) to train AI models, sell or license Outputs to third parties, or use Outputs to deliver services to other customers.
+- **Not used to deliver services to other customers.** Outputs are not cross-pollinated across customer accounts.
 
 ### 12.3 Training Data Commitment
 
 **We make the following commitments regarding AI training:**
 
-1. **No Training Without Consent:** We do not use your data to train AI models without explicit opt-in consent.
+1. **No Training by Default.** Bodaty does not use Customer Personal Data, Customer Confidential Information, prompts, or Outputs to train, fine-tune, or otherwise improve any general-purpose AI model owned by Bodaty or any AI Sub-processor. The prohibition applies by default and persists unless Customer affirmatively opts in.
 
-2. **Anonymization First:** If you opt-in, data is anonymized and aggregated before any use.
+2. **Anonymization First.** If Customer opts in to a model-improvement program, data is de-identified and aggregated before any use.
 
-3. **Enterprise Guarantees:** Enterprise customers can enforce organization-wide opt-out.
+3. **Enterprise Organization-Wide Opt-Out.** Enterprise customers can enforce organization-wide opt-out policies that override individual user settings.
 
-4. **Third-Party AI Providers:** When using third-party AI services:
-   - We require contractual commitments against training on customer data
-   - We disable training features where available
-   - We clearly disclose which AI providers process your data
+4. **AI Sub-Processor Flow-Down.** Bodaty contractually requires every AI Sub-processor to honor a substantively equivalent no-default-training prohibition, with no-training flow-down to any further sub-processor in the AI inference chain.
 
-5. **Data Minimization:** We send only necessary context to AI systems.
+5. **Data Minimization.** Bodaty sends to each Foundation Model only the inputs reasonably necessary for the requested Output, in keeping with the data-minimization principles of GDPR Art. 5(1)(c) and equivalent provisions of other privacy laws.
 
-### 12.4 AI Provider Transparency
+### 12.4 AI Sub-Processor Disclosure
 
-We may use the following AI providers for various features:
+We may use the following Foundation Model Providers and AI Sub-Processors for various features. Bodaty maintains a current, complete list of Sub-Processors at [aictrlnet.com/legal/sub-processors](https://aictrlnet.com/legal/sub-processors); the table below is illustrative and may not reflect the most recent additions.
 
-| Provider | Purpose | Training Opt-Out |
-|----------|---------|------------------|
-| OpenAI | AI model execution (GPT-4, etc.) | Enforced via API settings |
-| Anthropic | AI model execution (Claude) | Enforced via API settings |
-| Ollama | Local AI model execution | N/A (self-hosted) |
+| Provider | Edition tier | Purpose | Region | Training Opt-Out / Flow-Down |
+|----------|--------------|---------|--------|-------------------------------|
+| Anthropic, PBC | Community+ | Claude model inference | United States | Default no-training; contractually flowed down |
+| OpenAI, LLC | Community+ | GPT model inference (where Customer enables) | United States | Default no-training (commercial / API tier); contractually flowed down |
+| HuggingFace, Inc. | Community+ | Hosted open-source model inference (where Customer enables) | United States; EU | Default no-training; flowed down |
+| DeepSeek | Community+ | DeepSeek model inference (where Customer enables) | China-based provider; review transfer-impact assessment before enabling | SCCs Module Three; supplementary measures required |
+| Google LLC (Gemini) | Business+ | Gemini model inference (where Customer enables) | United States; EU (where supported) | Default no-training; contractually flowed down |
+| AWS Bedrock | Business+ | Multi-model Foundation Model gateway (Anthropic, Meta, Mistral, Cohere) | United States (primary); EU (where supported) | Default no-training; contractually flowed down |
+| Cohere, Inc. | Business+ | Cohere model inference (where Customer enables) | United States; Canada | Default no-training; flowed down |
+| Microsoft (Azure OpenAI) | Business+ | OpenAI models via Azure regional deployment | Customer-selected Azure region | Default no-training; contractually flowed down |
+| Ollama / vLLM (self-hosted) | Community+ | Local Foundation Model inference | Customer infrastructure | N/A (Customer-controlled — not an AI Sub-Processor) |
 
-Enterprise customers can request documentation of our AI provider agreements.
+**AI Sub-Processor Change Notice.** We provide at least **fifteen (15) days' prior notice** of any addition, replacement, or material expansion of an AI Sub-Processor, by updating the published Sub-Processors page and notifying account administrators by email. This is shorter than the thirty (30) days applied to non-AI Sub-Processors because the AI vendor stack changes more frequently.
 
-### 12.5 Human-in-the-Loop
+### 12.5 Human-in-the-Loop and Right to Human Review
 
 Our AI governance features include:
-- Approval workflows requiring human authorization
+- Approval workflows requiring human authorization for high-stakes decisions
 - Audit trails of AI decisions and human overrides
 - Configurable confidence thresholds for automatic vs. human-assisted processing
+- Pre-use notice generation for ADMT-affected significant decisions
+- Mechanisms for data subjects to request human review of automated decisions
 
-### 12.6 AI Transparency Reports
+Where the Service is used by a Customer (Controller) to make solely automated decisions producing legal or similarly significant effects on individuals, the Customer is the Controller and is responsible for ensuring that the GDPR Art. 22 right not to be subject to such decisions, and analogous rights under the CPRA-amended CCPA, Colorado AI Act, and other applicable laws, are honored.
+
+### 12.6 Cross-Border AI Inference
+
+Customer acknowledges that AI Sub-Processors may host inference infrastructure in regions different from the data residency region selected by Customer. When a prompt or AI input from a user in the EEA, UK, or Switzerland is routed to an AI Sub-Processor's inference endpoint outside the EEA, UK, or Switzerland (as applicable), such routing constitutes an international data transfer.
+
+Bodaty relies on **(i) the EU-U.S. Data Privacy Framework, the UK Extension to the EU-U.S. DPF, and the Swiss-U.S. Data Privacy Framework** where the relevant AI Sub-Processor is certified, and **(ii) the EU Standard Contractual Clauses (Module Two: Controller-to-Processor; Module Three: Processor-to-Processor where applicable)** as the contractual fallback in all cases.
+
+Customer may select an in-region AI Sub-Processor where the Service supports such selection, subject to the availability of the requested model in the requested region.
+
+### 12.7 EU AI Act Deployer Support
+
+Where Customer is a "deployer" under the EU AI Act, Bodaty will, on written request and at Customer's reasonable cost, provide the technical and procedural support required for Customer's compliance with Article 26 (Obligations of Deployers of High-Risk AI Systems), as further detailed in our Terms of Service Section 6.9 and the Data Processing Agreement Section 12.
+
+### 12.8 Colorado AI Act Compliance
+
+For decisions affecting Colorado residents that fall within the scope of the Colorado Artificial Intelligence Act (effective June 30, 2026), Bodaty supports Customer's deployer obligations including: pre-use notice generation, adverse-action notice generation, and risk-assessment documentation. Customer is the deployer and bears primary compliance responsibility; Bodaty provides technical support consistent with the rebuttable-presumption framework of the Act.
+
+### 12.9 AI Transparency Reports
 
 We publish periodic AI transparency reports covering:
-- AI feature usage statistics (aggregated)
+- AI feature usage statistics (aggregated; never personally identifying)
 - Model performance and accuracy metrics
-- Changes to AI capabilities and providers
+- Changes to AI capabilities, AI Sub-Processors, and supported regions
+- Aggregate volume of pre-use notices, opt-outs, and human-review requests honored
 
 ---
 
@@ -723,8 +784,10 @@ For questions, concerns, or requests related to this Privacy Policy:
 **Subject Line:** Include "Privacy Inquiry" for faster routing
 
 **Mailing Address:**
-Bodaty Inc.
+Bodaty LLC
 Attn: Privacy Team
+200 E. 5th Ave., Suite 121DE
+Naperville, IL 60563
 Email: privacy@aictrlnet.com
 
 ### 14.2 Data Protection Officer
@@ -838,6 +901,12 @@ If you self-host AICtrlNet Community Edition:
 
 ---
 
-*This Privacy Policy is effective as of January 29, 2026.*
+*This Privacy Policy is effective as of May 1, 2026.*
 
-*Bodaty Inc. | privacy@aictrlnet.com*
+*Bodaty LLC | 200 E. 5th Ave., Suite 121DE, Naperville, IL 60563 | privacy@aictrlnet.com*
+
+---
+
+© 2026 Bodaty LLC. All rights reserved.
+
+AICtrlNet™, HitLai™, and "Governed AI Orchestration"™ are trademarks of Bodaty LLC.

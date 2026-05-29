@@ -1,12 +1,14 @@
 # AICtrlNet / HitLai Terms of Service
 
-**Effective Date:** January 29, 2026
+**Effective Date:** May 1, 2026
 
-**Last Updated:** January 29, 2026
+**Last Updated:** May 1, 2026
+
+**Version:** 2.0
 
 ---
 
-These Terms of Service ("Terms," "Agreement") constitute a legally binding agreement between you ("Customer," "you," "your") and Bodaty Technologies, Inc. ("Bodaty," "Company," "we," "us," "our") governing your access to and use of the AICtrlNet platform and HitLai user interface, including all related services, APIs, integrations, and documentation (collectively, the "Service" or "Platform").
+These Terms of Service ("Terms," "Agreement") constitute a legally binding agreement between you ("Customer," "you," "your") and **Bodaty LLC, an Illinois limited liability company** ("Bodaty," "Company," "we," "us," "our") governing your access to and use of the AICtrlNet platform and HitLai user interface, including all related services, APIs, integrations, and documentation (collectively, the "Service" or "Platform").
 
 **By accessing or using the Service, you agree to be bound by these Terms. If you do not agree to these Terms, do not access or use the Service.**
 
@@ -27,16 +29,17 @@ If you are entering into this Agreement on behalf of a company, organization, or
 9. [Third-Party Integrations and APIs](#9-third-party-integrations-and-apis)
 10. [Service Availability and SLAs](#10-service-availability-and-slas)
 11. [Security](#11-security)
-12. [Confidentiality](#12-confidentiality)
-13. [Warranties and Disclaimers](#13-warranties-and-disclaimers)
-14. [Limitation of Liability](#14-limitation-of-liability)
-15. [Indemnification](#15-indemnification)
-16. [Termination and Suspension](#16-termination-and-suspension)
-17. [Modifications to Terms](#17-modifications-to-terms)
-18. [Dispute Resolution](#18-dispute-resolution)
-19. [Export Compliance](#19-export-compliance)
-20. [General Provisions](#20-general-provisions)
-21. [Contact Information](#21-contact-information)
+12. [Implementation Services (Doing-With-You)](#12-implementation-services-doing-with-you)
+13. [Confidentiality](#13-confidentiality)
+14. [Warranties and Disclaimers](#14-warranties-and-disclaimers)
+15. [Limitation of Liability](#15-limitation-of-liability)
+16. [Indemnification](#16-indemnification)
+17. [Termination and Suspension](#17-termination-and-suspension)
+18. [Modifications to Terms](#18-modifications-to-terms)
+19. [Dispute Resolution](#19-dispute-resolution)
+20. [Export Compliance](#20-export-compliance)
+21. [General Provisions](#21-general-provisions)
+22. [Contact Information](#22-contact-information)
 
 ---
 
@@ -105,6 +108,11 @@ The Service provides the following capabilities, subject to your subscription ti
 - Webhooks for event-driven integrations
 - Third-party platform connectors
 - MCP (Model Context Protocol) support
+- A2A (Agent-to-Agent) protocol support
+- Headless browser automation
+- Self-extending adapters (runtime integration generation for novel APIs)
+
+**(e) Implementation Services (Doing-With-You).** Each paid Subscription tier includes a monthly allocation of expert hours that Bodaty personnel apply to configure, optimize, and operate the Service alongside Customer's team. DWY Services are part of the Service, not a separate professional-services engagement, and are governed by Section 12.
 
 ### 2.3 Beta Features
 
@@ -174,26 +182,55 @@ The Service is offered in the following subscription tiers:
 
 #### 4.1.1 Community Edition (Free)
 
-- **Price:** Free
-- **Features:** Basic workflow capabilities, pre-built templates, visual workflow designer, community support, REST API access, basic task management, webhook support
-- **Limitations:** Limited workflow executions, community support only, no SLA guarantees
+- **Price:** Free (open source, MIT licensed)
+- **Features:** Core workflow engine, pre-built templates, visual workflow designer, community support, REST API access, basic task management, webhook support
+- **Limitations:** Limited workflow executions, community support only, no SLA guarantees, no Implementation Services (DWY Hours)
 - **Users:** Up to 3 users
+- **Implementation Services:** None (see Section 12)
 
-#### 4.1.2 Business Edition
+#### 4.1.2 Business Starter
 
-- **Price:** $49 - $199 per month (varies by user count and features)
+- **Price:** $599 per month
 - **Features:** Everything in Community, plus: advanced workflow engine, ML-powered risk assessment, custom template creation, third-party integrations, OAuth2/SSO authentication, multi-step approval workflows, enhanced AI agents, AI governance tools, bias detection, email support
 - **Support:** Business hours email support (response within 24 hours)
 - **SLA:** 99.5% uptime guarantee
-- **Users:** Configurable based on subscription
+- **Implementation Services:** 2 DWY Hours per month (see Section 12)
 
-#### 4.1.3 Enterprise Edition
+#### 4.1.3 Business Growth
 
-- **Price:** Custom pricing (contact sales@aictrlnet.com)
-- **Features:** Everything in Business, plus: multi-tenancy, SAML/SSO integration, federation support, HIPAA and GDPR compliance tools, geographic data routing, advanced analytics, dedicated account manager, custom workflow development, white-label options
-- **Support:** Priority support with dedicated account manager, phone support available
+- **Price:** $1,499 per month
+- **Features:** Everything in Starter, plus: ongoing optimization, expanded integration capacity, Quarterly Business Review
+- **Support:** Business hours email + chat support
+- **SLA:** 99.5% uptime guarantee
+- **Implementation Services:** 5 DWY Hours per month (see Section 12)
+
+#### 4.1.4 Business Scale
+
+- **Price:** $2,499 per month
+- **Features:** Everything in Growth, plus: full autonomous AI capabilities, strategic consulting, AI agent tuning, advanced governance configuration
+- **Support:** Priority email + chat support
+- **SLA:** 99.5% uptime guarantee
+- **Implementation Services:** 8 DWY Hours per month (see Section 12)
+
+#### 4.1.5 Enterprise Base
+
+- **Price:** Starting at $12,000 per month (contact sales@aictrlnet.com)
+- **Features:** Everything in Business Scale, plus: multi-tenancy, SAML/SSO integration, federation support, HIPAA-ready and GDPR compliance tools, geographic data routing, advanced analytics, dedicated account manager, custom workflow development, white-label options, deploy-anywhere (sovereign / air-gapped / customer-controlled cloud)
+- **Support:** Priority support with dedicated account manager, phone support available, weekly customer success touchpoints
 - **SLA:** 99.9% uptime guarantee with financial credits
 - **Users:** Unlimited (within contract terms)
+- **Implementation Services:** 20 DWY Hours per month (see Section 12)
+
+#### 4.1.6 Enterprise Premium
+
+- **Price:** Starting at $24,000 per month (contact sales@aictrlnet.com)
+- **Features:** Everything in Enterprise Base, plus: full embedded team, daily availability, executive reviews, custom data residency, on-site audit rights
+- **Support:** Dedicated 24/7 priority support with named technical contacts
+- **SLA:** 99.95% uptime guarantee with enhanced financial credits
+- **Users:** Unlimited (within contract terms)
+- **Implementation Services:** 40+ DWY Hours per month (see Section 12)
+
+**Additional Implementation Services Hours.** When DWY Hours included with the Subscription tier are exhausted, Customer may purchase additional hours at $295 per hour, billed in 30-minute minimum increments per Section 12.4(f). Additional hours do not roll over.
 
 ### 4.2 Billing and Payment
 
@@ -366,7 +403,27 @@ If you become aware of any violations of this Acceptable Use Policy, please repo
 
 **(a) Feedback.** You may choose to provide feedback on AI outputs. Such feedback may be used to improve the Service.
 
-**(b) No Training on Customer Content.** Unless you explicitly opt in, we do not use your Customer Content to train machine learning models. Your data remains your property.
+**(b) No Training on Customer Content.** Unless you explicitly opt in, we do not use your Customer Content, prompts, or AI outputs to train machine learning models, nor do we share such information with Foundation Model Providers for training. Bodaty contractually requires AI Sub-processors to honor an equivalent no-default-training obligation. Your data remains your property.
+
+### 6.6 Model Deprecation and Substitution
+
+Foundation models accessible through the Service are operated by Foundation Model Providers (e.g., Anthropic, OpenAI, Google) and are subject to those providers' deprecation, retirement, and availability policies, which Bodaty does not control. Bodaty will: **(a)** provide Customer at least thirty (30) days' prior notice of any planned removal of a Foundation Model from the Service, where Bodaty has received corresponding notice from the Foundation Model Provider; **(b)** where commercially reasonable, identify a Bodaty-recommended substitute model and document material behavioral differences; and **(c)** where a Foundation Model is retired by its provider with less than thirty (30) days' notice (an "**Accelerated Retirement**"), pass through such notice promptly and assist Customer in identifying alternatives. Customer is responsible for re-validating Workflows, prompts, and Agent configurations after any model change. Bodaty's notice obligations under this Section 6.6 are Bodaty's sole obligation in respect of model availability, and model changes do not constitute a Service downtime event under Section 10.
+
+### 6.7 Hallucination and Output-Reliance Disclaimer
+
+Customer acknowledges that AI Agents and Foundation Models may generate Outputs that are factually incorrect, fabricated, internally inconsistent, biased, out-of-date, or unsuitable for Customer's purpose ("**Hallucinations**"). Hallucinations are an inherent characteristic of probabilistic generative AI systems and are not a defect of the Service. **Customer must not present, publish, transmit, or otherwise rely upon Outputs as factual statements, professional advice, or binding commitments to any third party (including any Authorized User, customer, end user, employee, or counterparty) without first applying the Human-in-the-Loop controls required by Section 6.2 to verify accuracy and appropriateness.** Customer is solely responsible for any Output it elects to surface to a third party, including Outputs surfaced by chat interfaces, autonomous agents, or workflow automations. The disclaimers in Sections 14.3(a) and 14.3(b) apply with full force to all Outputs.
+
+### 6.8 Autonomous Actions
+
+"**Autonomous Action**" means any action taken by an AI Agent that produces an effect outside the Service environment without contemporaneous human approval, including without limitation: (i) sending external communications (email, SMS, chat, social media); (ii) initiating financial transactions, payments, transfers, or trades; (iii) modifying records in third-party systems of record; (iv) executing code in production environments; (v) controlling physical-world devices; or (vi) entering into agreements on Customer's behalf. **Customer is solely and exclusively liable for all Autonomous Actions executed by AI Agents Customer has configured, permitted, or failed to constrain.** Bodaty provides controls (including HITL, scoped credentials, action-class allow/deny lists, and audit trails) to enable Customer to govern Autonomous Actions; Customer's failure to use these controls is at Customer's risk and is a breach of Section 5. For the avoidance of doubt, Bodaty's liability cap in Section 15.2 applies to any claim arising from or relating to Autonomous Actions, and the carve-out in Section 15.3(f) excludes the protection of that cap where Customer has failed to implement HITL controls required by Section 6.2.
+
+### 6.9 EU AI Act Compliance Cooperation
+
+If Customer is a "deployer" under Regulation (EU) 2024/1689 (the "**EU AI Act**") or otherwise subject to its requirements, Customer is solely responsible for its independent obligations under the EU AI Act, including: **(a)** using AI systems in accordance with their instructions; **(b)** assigning competent human oversight (consistent with Section 6.2 of these Terms); **(c)** ensuring input data relevance and representativeness; **(d)** monitoring system operation and reporting serious incidents; **(e)** informing affected natural persons where required by Article 26(11); and **(f)** maintaining logs as required by Article 26(6). Bodaty will, where Customer requests in writing and at Customer's reasonable cost: **(i)** provide the technical information reasonably necessary for Customer's Article 26 compliance to the extent the information is in Bodaty's possession; **(ii)** reasonably cooperate with Customer's competent-authority requests; and **(iii)** provide deployer-facing documentation for Bodaty-developed components classified as high-risk where Bodaty becomes a "provider" within the meaning of the EU AI Act. Customer remains the deployer; Bodaty is not a provider of any high-risk AI system under the EU AI Act unless and until Bodaty places such a system on the EU market under its own trademark.
+
+### 6.10 Output Indemnification Position
+
+For paid Business Scale and Enterprise Subscriptions, Bodaty offers a conditional Output IP Indemnification with respect to certain third-party intellectual-property claims related to Outputs, as set forth in Section 16.1A and subject to the Required Mitigations in Section 16.1B. Community, Business Starter, Business Growth, free trials, and Beta Features are excluded from Output IP Indemnification. Customer should consult Section 16 for the full scope, conditions, and exclusions.
 
 ---
 
@@ -530,7 +587,7 @@ Our collection, use, and disclosure of Personal Data is governed by our Privacy 
 
 **(b)** Scheduled maintenance windows (announced at least 72 hours in advance) are excluded from uptime calculations.
 
-**(c)** Downtime caused by factors outside our reasonable control (see Section 20.5) is excluded from uptime calculations.
+**(c)** Downtime caused by factors outside our reasonable control (see Section 21.5) is excluded from uptime calculations.
 
 ### 10.3 Service Credits (Enterprise Only)
 
@@ -602,9 +659,143 @@ Our collection, use, and disclosure of Personal Data is governed by our Privacy 
 
 ---
 
-## 12. Confidentiality
+## 12. Implementation Services (Doing-With-You)
 
-### 12.1 Confidential Information
+### 12.1 Definition and Scope
+
+**(a)** "**Doing-With-You Services**" or "**DWY Services**" means the hands-on implementation, configuration, optimization, integration, training, and advisory services performed by Bodaty personnel ("**DWY Personnel**") working alongside Customer's team to enable Customer's productive use of the Service. DWY Services are part of the Service for Customers on a paid Subscription tier and are governed by these Terms.
+
+**(b)** Notwithstanding the inclusion of DWY Services in the Subscription, the parties acknowledge that DWY Services are services in nature and that Sections 12.6 (Service Standards), 12.7 (IP), 12.9 (Knowledge Transfer), and 12.11 (DWY Liability) apply specifically to DWY Services and supplement (and where expressly stated, modify) the corresponding general provisions of these Terms.
+
+**(c)** Categories of DWY Services include, without limitation: (i) workflow design and configuration; (ii) AI agent deployment and tuning; (iii) prompt engineering and policy configuration; (iv) third-party integration build-out using Service-supported connectors; (v) training of Customer's Authorized Users; (vi) operational reviews including Quarterly Business Reviews; and (vii) advisory consulting on AI governance and human-in-the-loop design.
+
+### 12.2 Monthly Hour Allocation by Tier
+
+**(a) DWY Hour Bank.** Each paid Subscription tier includes a monthly allocation of DWY Hours as follows:
+
+| Subscription Tier | Monthly DWY Hours |
+|---|---|
+| Community Edition | 0 |
+| Business Starter | 2 |
+| Business Growth | 5 |
+| Business Scale | 8 |
+| Enterprise Base | 20 |
+| Enterprise Premium | 40 (or as specified in the Order Form) |
+
+**(b) Monthly Reset; No Rollover.** The DWY Hour Bank refreshes on the first day of each Subscription monthly billing cycle. **DWY Hours not consumed within a calendar month do not roll over, accumulate, or convert to credits, and are not refundable, exchangeable, or otherwise payable.** Unused DWY Hours expire at 11:59 PM Central Time on the last day of the applicable monthly billing cycle.
+
+**(c) Pro-Ration on Mid-Cycle Tier Changes.** If Customer upgrades or downgrades tier mid-cycle, the DWY Hour allocation for the remainder of that cycle is pro-rated by remaining calendar days. Hours already consumed under the prior tier are deducted from the new allocation.
+
+### 12.3 Included and Excluded Activities
+
+**(a) Included Activities.** DWY Hours may be applied to: (i) initial setup and configuration of the Service for Customer's environment; (ii) design, build, and tuning of Workflows, AI Agents, prompts, and policies within the Service; (iii) configuration of Service-supported integrations and connectors; (iv) AI behavior tuning, evaluation, and optimization; (v) HITL approval-flow design; (vi) live and recorded training for Authorized Users; (vii) recurring optimization reviews and Quarterly Business Reviews; and (viii) advisory consulting on AI governance, risk, and adoption.
+
+**(b) Excluded Activities.** DWY Hours may not be applied to, and Bodaty will not be obligated to perform under DWY: (i) software development outside the Service (custom application development, mobile app development, standalone code); (ii) repair, maintenance, configuration, or support of third-party tools, systems, or platforms that are not Service connectors, except to the limited extent of configuring the Service-side of an integration; (iii) data engineering work whose primary purpose is migration to or from systems unrelated to the Service; (iv) hardware procurement, networking, or on-premises infrastructure; (v) legal, regulatory, accounting, or other licensed-professional advice; or (vi) staff augmentation for Customer's general business operations unrelated to the Service.
+
+**(c) Scope Disputes.** If the parties disagree whether a requested activity is Included or Excluded, Bodaty's reasonable, good-faith determination will govern, provided that Bodaty will promptly explain the basis of the determination in writing if Customer so requests. Customer may purchase Excluded work as a separate engagement at then-current rates.
+
+### 12.4 Scheduling and Consumption Mechanics
+
+**(a) Booking.** DWY Hours are scheduled through the in-Service DWY scheduling tool or by request to Customer's named DWY Account Lead. Standard DWY Services are performed remotely Monday through Friday, 9:00 a.m. to 6:00 p.m. Central Time (the "**Standard Hours Window**").
+
+**(b) Lead Time.** Routine bookings require at least three (3) business days' lead time. Enterprise Premium bookings require at least one (1) business day. Bodaty will use commercially reasonable efforts to accommodate shorter lead times subject to consultant availability.
+
+**(c) Minimum Unit.** DWY Hours are consumed in thirty-minute (30-minute) minimum increments and rounded up to the next 30-minute increment after the first hour.
+
+**(d) Cancellation.** Customer may cancel or reschedule a booked DWY session without charge with at least twenty-four (24) hours' advance notice. Cancellations with less than twenty-four (24) hours' notice or no-shows consume the booked time from the DWY Hour Bank.
+
+**(e) After-Hours and Emergency Multipliers.** DWY Services performed outside the Standard Hours Window at Customer's request are billed against the DWY Hour Bank at **1.5x consumption** (i.e., one clock hour deducts 90 minutes from the Bank). DWY Services performed on weekends, U.S. federal holidays, or on an emergency basis (response within four hours of request) are billed at **2.0x consumption**. After-hours and emergency requests require Bodaty's prior confirmation and are subject to consultant availability.
+
+**(f) Additional Hours.** When the DWY Hour Bank is exhausted, Customer may purchase additional DWY Hours at the rate of **two hundred ninety-five U.S. dollars ($295)** per hour, billed in 30-minute increments and added to Customer's next monthly invoice. Additional Hour purchases do not roll over.
+
+**(g) Travel.** DWY Services are performed remotely. If Customer requests on-site delivery and Bodaty agrees in writing, Customer reimburses pre-approved travel expenses at cost and travel time is billed against the DWY Hour Bank at 0.5x consumption (i.e., one clock hour of travel deducts 30 minutes).
+
+### 12.5 Customer Obligations
+
+**(a) DWY Customer Lead.** Customer will designate one individual as its primary DWY Customer Lead and may name up to two alternates. The DWY Customer Lead is the authorized point of contact for booking, scoping, accepting, and approving DWY work. Bodaty is entitled to rely on the DWY Customer Lead's instructions.
+
+**(b) Access.** Customer will provide DWY Personnel with timely access to the systems, accounts, environments, sample data, and decision-makers reasonably necessary to perform the booked DWY Services. Customer access provisioning must comply with Section 11 (Security).
+
+**(c) Responsiveness.** When DWY Personnel reasonably request information, decisions, or approvals required to progress a booked engagement, Customer will respond within two (2) business days. Time during which DWY Personnel are blocked awaiting Customer response beyond two (2) business days is not consumed from the DWY Hour Bank but does not entitle Customer to extension of the monthly cycle.
+
+**(d) Decisions.** Customer is responsible for all business and operational decisions made on the basis of DWY Services, including the design of Workflows that affect individuals' rights or that fall within Section 6.2(c) high-stakes categories. DWY Personnel act in an advisory and configuration capacity; final authority for production deployment and human-in-the-loop checkpoints rests with Customer.
+
+### 12.6 Bodaty Obligations and Service Standards
+
+**(a) Workmanlike Standard.** Bodaty will perform DWY Services in a professional and workmanlike manner, consistent with practices used by other providers performing services of a similar nature, using DWY Personnel with the requisite skills, experience, and qualifications.
+
+**(b) Named-Personnel Continuity.** For Enterprise tier Customers, Bodaty will designate a named DWY Account Lead and at least one named alternate. Bodaty will use commercially reasonable efforts to maintain continuity of named DWY Personnel for the duration of the Subscription Term and will notify Customer of any change at least ten (10) business days in advance where reasonably practicable.
+
+**(c) Warranty and Sole Remedy.** Bodaty warrants that DWY Services will conform to the standard in Section 12.6(a). Customer must give Bodaty written notice of any claim of breach of this warranty within ninety (90) days after performance of the affected DWY Services. Customer's sole and exclusive remedy, and Bodaty's entire liability, for breach of this warranty is, at Bodaty's option, **(i) re-performance of the non-conforming DWY Services without additional charge to the DWY Hour Bank; or (ii) refund of the additional-hour fees, if any, paid for the non-conforming DWY Services**. The general remedies in Section 15 do not modify this Section 12.6(c) sole remedy except to the extent of Section 12.11.
+
+**(d) Disclaimer.** Except as expressly stated in Section 12.6(a) and (c), DWY Services are provided without warranty of any kind. The disclaimers in Section 14.3 (Disclaimers) apply to DWY Services and DWY work product, including AI-related disclaimers in Section 14.3(b).
+
+### 12.7 Intellectual Property in DWY Work Product
+
+**(a) Customer-Owned Outputs.** As between the parties and subject to Section 12.7(b), Customer **owns** all right, title, and interest in and to the Workflows, AI Agent configurations, prompts, policies, integration mappings, runbooks, and other configuration artifacts created during DWY Services that are specific to Customer's deployment of the Service ("**DWY Work Product**"). For the avoidance of doubt, DWY Work Product is Customer Content under Section 7.2 and Customer Content provisions apply.
+
+**(b) Bodaty Background and Tools.** Customer's ownership in Section 12.7(a) does not extend to: (i) the Service itself, the Platform, or any Bodaty IP; (ii) Bodaty's pre-existing methodologies, frameworks, templates, accelerators, libraries, or tools used in performing DWY Services ("**Bodaty Methods**"); (iii) generic, non-Customer-specific learnings, know-how, or improvements that have application beyond Customer's deployment; or (iv) any general-purpose AI prompt libraries, evaluation harnesses, or governance templates included by reference in DWY Work Product. To the extent any Bodaty Methods are incorporated into DWY Work Product, **Bodaty grants Customer a worldwide, non-exclusive, royalty-free, perpetual, non-transferable license to use, reproduce, modify, and create derivative works of such Bodaty Methods solely as embedded in the DWY Work Product for Customer's internal business purposes, including after termination of these Terms.**
+
+**(c) Independent Development.** Nothing in this Section 12.7 limits Bodaty's right to perform similar DWY Services for, or develop similar configurations for, other customers, provided Bodaty does not violate Section 12.8 (Heightened Confidentiality) or use Customer-specific DWY Work Product for other customers without consent.
+
+**(d) Feedback.** Section 7.4 (Feedback) applies to feedback provided during DWY Services.
+
+### 12.8 Heightened Confidentiality During DWY
+
+**(a) Heightened Bar.** DWY engagements involve deeper access to Customer systems, data, processes, and personnel than baseline Service use. Accordingly, DWY Personnel will treat as Confidential Information of Customer all information accessed in the course of DWY Services, regardless of whether marked or designated, with the exceptions set forth in Section 13.1(b).
+
+**(b) Need-to-Know.** Bodaty will limit access to Customer Confidential Information to DWY Personnel with a need to know for the performance of DWY Services and will ensure such DWY Personnel are bound by written confidentiality obligations no less protective than those in Section 13.
+
+**(c) No Use Beyond Engagement.** Bodaty will not use Customer Confidential Information accessed during DWY Services for any purpose other than performing DWY Services and managing the customer relationship under these Terms.
+
+**(d) Survival.** Confidentiality obligations specific to DWY Services survive termination for **five (5) years** following the date the relevant Confidential Information was accessed, notwithstanding any shorter survival period in Section 13.
+
+### 12.9 Knowledge Transfer and Documentation
+
+**(a) Runbooks and Configuration Documentation.** For each material DWY engagement (defined as any contiguous DWY effort consuming more than four (4) hours of DWY Hours toward a single deliverable), Bodaty will produce written documentation describing the configuration changes made, design decisions, dependencies, and operational considerations sufficient for a reasonably skilled Authorized User to operate, maintain, and modify the resulting DWY Work Product. Such documentation is part of DWY Work Product and is owned by Customer under Section 12.7(a).
+
+**(b) Walk-Through.** At Customer's request, Bodaty will conduct a knowledge-transfer walk-through with Customer's designated personnel for each material DWY engagement. The walk-through is consumed from the DWY Hour Bank.
+
+**(c) End-of-Engagement Handover.** Upon termination of DWY Services (whether on tier downgrade, DWY-only termination under Section 12.11(c), or termination of these Terms), Bodaty will provide Customer with a final consolidated documentation package describing all DWY Work Product, configurations, integration credentials Customer owns, and recommended operational practices, within thirty (30) days of the effective termination date. Up to four (4) hours of preparation time is included in the final monthly DWY Hour allocation; additional hours may be purchased at the standard rate.
+
+### 12.10 Off-Boarding, Data Export, and Customer Independence
+
+This Section 12.10 represents Bodaty's deliberate commitment to customer independence and portability. Bodaty's compliance with this Section is a material obligation.
+
+**(a) Customer Ownership of Work Product.** All DWY Work Product, Customer Content, Workflows, AI Agent configurations, prompts, policies, audit logs, and integration mappings are owned by Customer under Section 12.7(a) and Section 7.2 and may be exported, reused, modified, and operated by Customer or any successor provider of Customer's choice. Bodaty disclaims any contractual, technological, or commercial restriction that would prevent Customer from doing so.
+
+**(b) Data Export.** During the Subscription Term, Bodaty shall make available to Customer:
+- (i) **Workflow templates** created or modified by Customer, exportable in JSON, YAML, or BPMN format via the Workflow Templates API (Business and Enterprise editions);
+- (ii) **Audit logs, execution history, and compliance reports** accessible via the Service's REST APIs in JSON format; programmatic export to CSV is available for analytics and compliance check results;
+- (iii) **Other Customer Content** available upon written request to legal@aictrlnet.com, which Bodaty will make commercially reasonable efforts to fulfill within thirty (30) days in a mutually acceptable format.
+
+Customer is responsible for periodically exporting any data required for continuity. **Bodaty does not warrant any post-termination access window** beyond any grace period available under Section 4 (Subscription Plans and Payment Terms). Customers requiring guaranteed post-termination access should ensure their export practices and contractual addenda reflect this.
+
+**(c) Documentation Handover.** Bodaty will provide Customer with the final consolidated documentation package described in Section 12.9(c) regardless of the reason for termination.
+
+**(d) No Lock-In Through Methods.** Bodaty will not embed in DWY Work Product any proprietary Bodaty Method that is not licensed to Customer under Section 12.7(b) or that would impair Customer's ability to operate the DWY Work Product on a successor platform after termination.
+
+**(e) Migration Cooperation.** During the Subscription Term, Bodaty will cooperate in good faith with Customer's reasonable requests for migration assistance, including providing reasonably necessary technical information about the export formats described in Section 12.10(b) and Customer-specific configurations. Migration assistance after termination is available as a separate engagement at then-current rates.
+
+**(f) Survival.** This Section 12.10, together with Sections 12.7 and 12.9, survives termination of these Terms.
+
+### 12.11 DWY-Specific Liability and Termination
+
+**(a) Liability for DWY Work — Unified Cap.** The aggregate liability cap in Section 15.2 is the **single, unified cap** that applies to all claims arising from or related to the Service, including DWY Services and DWY Work Product. The parties have considered, and have elected not to adopt, a separate sub-cap for DWY Services. This unified cap is a deliberate and material allocation of risk reflecting the fact that DWY Services are bundled into the Subscription, not separately priced.
+
+**(b) No Special Carve-Outs for DWY.** The exceptions to the cap in Section 15.3 (gross negligence/willful misconduct, payment, AUP breach, indemnification, non-limitable matters, HITL bypass) apply equally to DWY-related claims. No additional exceptions apply solely because a claim arises from DWY Services.
+
+**(c) DWY-Only Termination.**
+- (i) **Business Tiers.** DWY Services are bundled into Business Starter, Business Growth, and Business Scale Subscriptions and cannot be cancelled or unbundled separately from the Subscription. To discontinue DWY Services, Customer must downgrade to Community Edition (which has zero DWY Hours) under Section 4.6 (Downgrades).
+- (ii) **Enterprise Tiers.** Enterprise Customers may, in the applicable Order Form, elect to reduce, modify, or discontinue DWY Hour allocation independent of the underlying Subscription, with corresponding adjustment to fees. Any such modification takes effect at the start of the next renewal term unless the Order Form expressly provides otherwise.
+
+**(d) Effect of Termination on DWY.** Upon termination of these Terms or downgrade away from a paid tier, accrued unused DWY Hours expire immediately. Sections 12.7, 12.8, 12.9, 12.10, and this Section 12.11(d) survive termination.
+
+---
+
+## 13. Confidentiality
+
+### 13.1 Confidential Information
 
 **(a)** "Confidential Information" means information disclosed by one party to the other that is marked as confidential or that reasonably should be understood to be confidential, including business plans, technical data, pricing, and Customer Content.
 
@@ -614,7 +805,7 @@ Our collection, use, and disclosure of Personal Data is governed by our Privacy 
 - Is rightfully obtained from a third party without confidentiality restrictions
 - Is independently developed without use of Confidential Information
 
-### 12.2 Protection of Confidential Information
+### 13.2 Protection of Confidential Information
 
 **(a)** Each party agrees to protect the other's Confidential Information using at least the same degree of care it uses for its own confidential information, and in no event less than reasonable care.
 
@@ -622,7 +813,7 @@ Our collection, use, and disclosure of Personal Data is governed by our Privacy 
 
 **(c)** Confidential Information may only be disclosed to employees, contractors, and agents who need to know and are bound by confidentiality obligations.
 
-### 12.3 Compelled Disclosure
+### 13.3 Compelled Disclosure
 
 **(a)** If required by law to disclose Confidential Information, the receiving party will (to the extent legally permitted):
 - Promptly notify the disclosing party
@@ -631,9 +822,9 @@ Our collection, use, and disclosure of Personal Data is governed by our Privacy 
 
 ---
 
-## 13. Warranties and Disclaimers
+## 14. Warranties and Disclaimers
 
-### 13.1 Bodaty's Warranties
+### 14.1 Bodaty's Warranties
 
 Bodaty warrants that:
 
@@ -643,7 +834,7 @@ Bodaty warrants that:
 
 **(c)** We have the right to grant the licenses described in these Terms.
 
-### 13.2 Your Warranties
+### 14.2 Your Warranties
 
 You warrant that:
 
@@ -653,7 +844,7 @@ You warrant that:
 
 **(c)** You will use the Service in compliance with these Terms and all applicable laws.
 
-### 13.3 Disclaimers
+### 14.3 Disclaimers
 
 **EXCEPT AS EXPRESSLY PROVIDED IN SECTION 13.1, THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE."**
 
@@ -671,13 +862,13 @@ You warrant that:
 
 ---
 
-## 14. Limitation of Liability
+## 15. Limitation of Liability
 
-### 14.1 Exclusion of Consequential Damages
+### 15.1 Exclusion of Consequential Damages
 
 **TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT WILL EITHER PARTY BE LIABLE TO THE OTHER FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, PUNITIVE, OR EXEMPLARY DAMAGES, INCLUDING DAMAGES FOR LOSS OF PROFITS, GOODWILL, USE, DATA, OR OTHER INTANGIBLE LOSSES, EVEN IF THE PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.**
 
-### 14.2 Cap on Liability
+### 15.2 Cap on Liability
 
 **EXCEPT AS PROVIDED IN SECTION 14.3, EACH PARTY'S TOTAL AGGREGATE LIABILITY UNDER THESE TERMS WILL NOT EXCEED THE GREATER OF:**
 
@@ -685,9 +876,9 @@ You warrant that:
 
 **(b)** ONE HUNDRED DOLLARS ($100) FOR COMMUNITY EDITION USERS.
 
-### 14.3 Exceptions
+### 15.3 Exceptions
 
-The limitations in Sections 14.1 and 14.2 do not apply to:
+The limitations in Sections 15.1 and 15.2 do not apply to:
 
 **(a)** Liability arising from a party's gross negligence or willful misconduct;
 
@@ -695,21 +886,23 @@ The limitations in Sections 14.1 and 14.2 do not apply to:
 
 **(c)** Your breach of Section 5 (Acceptable Use Policy);
 
-**(d)** Either party's indemnification obligations under Section 15;
+**(d)** Either party's indemnification obligations under Section 16;
 
-**(e)** Liability that cannot be limited by applicable law.
+**(e)** Liability that cannot be limited by applicable law;
 
-### 14.4 Basis of the Bargain
+**(f) HITL Bypass.** Liability arising from or relating to Customer's failure to implement, or Customer's circumvention or disabling of, the Human-in-the-Loop controls required by Section 6.2 with respect to any high-stakes decision category enumerated in Section 6.2(c) or any Autonomous Action under Section 6.8. For clarity, where Customer has bypassed required HITL controls and harm results from an AI-generated decision or action, Bodaty's liability cap in Section 15.2 does not protect Customer from the consequences of that bypass; Customer remains liable to itself and to third parties for such harm.
+
+### 15.4 Basis of the Bargain
 
 **THE PARTIES AGREE THAT THE LIMITATIONS OF LIABILITY IN THIS SECTION REFLECT A REASONABLE ALLOCATION OF RISK AND ARE A FUNDAMENTAL BASIS OF THE BARGAIN BETWEEN THE PARTIES.**
 
 ---
 
-## 15. Indemnification
+## 16. Indemnification
 
-### 15.1 Indemnification by Bodaty
+### 16.1 Indemnification by Bodaty — Service IP Infringement
 
-**(a)** Bodaty will defend, indemnify, and hold harmless Customer from and against any third-party claims, damages, losses, and expenses (including reasonable attorneys' fees) arising from allegations that the Service (excluding Customer Content, Third-Party Services, and open source components) infringes any third party's intellectual property rights.
+**(a)** Bodaty will defend, indemnify, and hold harmless Customer from and against any third-party claims, damages, losses, and expenses (including reasonable attorneys' fees) arising from allegations that the Service (excluding Customer Content, Third-Party Services, Outputs, and open source components) infringes any third party's intellectual property rights.
 
 **(b)** This indemnification obligation does not apply if the claim arises from:
 - Customer's modification of the Service
@@ -722,7 +915,51 @@ The limitations in Sections 14.1 and 14.2 do not apply to:
 - Replace or modify the Service to be non-infringing
 - Terminate the affected portion of the Service and refund prepaid fees for the remaining Subscription Term
 
-### 15.2 Indemnification by Customer
+### 16.1A Output IP Indemnification (Business Scale and Enterprise Tiers Only)
+
+**(a) Scope.** Subject to the conditions in Section 16.1B and the exclusions in Section 16.1C, Bodaty will defend Customer against, and pay damages and reasonable settlement amounts finally awarded against Customer in, any third-party claim alleging that an Output generated by Customer's authorized use of the Service infringes such third party's existing United States copyright or trademark right (an "**Output IP Claim**").
+
+**(b) Tier Eligibility.** Section 16.1A applies only to active, paid Subscriptions at the Business Scale tier or any Enterprise tier. Section 16.1A does not apply to Community Edition, Business Starter, Business Growth, free trials, Beta Features, evaluation accounts, or any unpaid use of the Service.
+
+### 16.1B Required Mitigations
+
+The defense and indemnification obligations of Section 16.1A are conditional on Customer's implementation of all of the following Required Mitigations:
+
+**(i) Human-in-the-Loop Review.** Customer applied the Human-in-the-Loop review required by Section 6.2 to the Output prior to any external use, publication, or transmission to a third party.
+
+**(ii) Default-On Governance Controls.** Customer operated the Service with the Bodaty-provided runtime governance gate (which enforces per-action human review or auto-approval thresholds based on the Customer's Autonomy Policy) and other applicable safety controls in their default-on configuration in any Bodaty-operated environment; Customer did not disable, weaken, or bypass such controls. For Customer-operated (self-hosted) deployments, Customer is responsible for configuring the governance gate and any applicable content guardrails to a level appropriate to Customer's risk tolerance.
+
+**(iii) No Knowing Infringement-Prompts.** Neither Customer nor any Authorized User issued any prompt, instruction, or system message that could reasonably be expected to elicit an infringing Output, and Customer did not knowingly continue to use an Output after becoming aware of an infringement risk. Customer acknowledges that the Service does not provide automated prompt screening for intellectual property risk; Customer is solely responsible for reviewing prompts and prompt templates for content that a reasonable person would expect to elicit Output infringing a third party's intellectual property rights.
+
+**(iv) Prompt Notice.** Customer promptly notified Bodaty in writing of the Output IP Claim and tendered control of the defense to Bodaty in accordance with Section 16.3.
+
+**(v) Cooperation.** Customer reasonably cooperated with Bodaty in the defense and did not enter into any settlement or admission of liability with respect to the Output IP Claim without Bodaty's prior written consent.
+
+### 16.1C Exclusions from Output Indemnification
+
+Section 16.1A does not apply to, and Bodaty has no defense or indemnification obligation with respect to:
+
+**(a)** Outputs derived in whole or material part from Customer Content, Customer-supplied prompts, or fine-tuning data Customer supplied;
+
+**(b)** **Patent claims** of any kind;
+
+**(c)** **Trade-secret** misappropriation claims;
+
+**(d)** Right-of-publicity, defamation, false-light, or privacy claims;
+
+**(e)** Outputs that Customer modified after generation;
+
+**(f)** Claims arising from Customer's combination of Outputs with non-Bodaty materials, software, products, or processes;
+
+**(g)** Outputs generated through self-hosted, customer-controlled, or customer-deployed Foundation Models;
+
+**(h)** Any claim to the extent the underlying Foundation Model Provider's terms exclude or do not pass through equivalent protection to Bodaty (Customer acknowledges that Bodaty's defense of an Output IP Claim is dependent in part on the corresponding indemnity flow-through from the Foundation Model Provider that generated the Output);
+
+**(i)** Outputs from Beta Features or pre-release model versions;
+
+**(j)** Trademark claims arising from Customer's use of an Output as a brand identifier, mark, or trade dress (Bodaty's defense covers infringement of an existing third-party trademark *contained within* an Output, not Customer's own use of an Output as a mark).
+
+### 16.2 Indemnification by Customer
 
 **(a)** Customer will defend, indemnify, and hold harmless Bodaty from and against any third-party claims, damages, losses, and expenses (including reasonable attorneys' fees) arising from:
 - Customer Content
@@ -730,8 +967,11 @@ The limitations in Sections 14.1 and 14.2 do not apply to:
 - Customer's violation of applicable law
 - Customer's use of Third-Party Services
 - Decisions made based on AI outputs without appropriate human oversight
+- **Customer's deployment of Autonomous Actions under Section 6.8**
+- **Customer's use of Outputs without the Human-in-the-Loop review required by Section 6.2**
+- **Customer's failure to implement Required Mitigations under Section 16.1B**
 
-### 15.3 Indemnification Procedures
+### 16.3 Indemnification Procedures
 
 **(a)** The indemnified party must promptly notify the indemnifying party of any claim.
 
@@ -741,15 +981,15 @@ The limitations in Sections 14.1 and 14.2 do not apply to:
 
 ---
 
-## 16. Termination and Suspension
+## 17. Termination and Suspension
 
-### 16.1 Term
+### 17.1 Term
 
 **(a) Community Edition.** Community edition subscriptions continue until terminated by either party.
 
 **(b) Paid Subscriptions.** Paid subscriptions continue for the Subscription Term and automatically renew unless cancelled.
 
-### 16.2 Termination for Convenience
+### 17.2 Termination for Convenience
 
 **(a)** You may terminate your subscription at any time through your Account settings or by contacting support.
 
@@ -757,7 +997,7 @@ The limitations in Sections 14.1 and 14.2 do not apply to:
 
 **(c)** For annual subscriptions, you may cancel auto-renewal at any time, and your access will continue until the end of the annual term.
 
-### 16.3 Termination for Cause
+### 17.3 Termination for Cause
 
 **(a)** Either party may terminate these Terms immediately upon written notice if the other party:
 - Materially breaches these Terms and fails to cure within 30 days of notice
@@ -768,7 +1008,7 @@ The limitations in Sections 14.1 and 14.2 do not apply to:
 - Your use poses a security risk to the Service or other users
 - Required by law or legal process
 
-### 16.4 Suspension
+### 17.4 Suspension
 
 **(a)** We may suspend your access to the Service if:
 - You fail to pay fees when due
@@ -780,38 +1020,46 @@ The limitations in Sections 14.1 and 14.2 do not apply to:
 
 **(c)** We will restore access once the grounds for suspension are resolved.
 
-### 16.5 Effects of Termination
+### 17.5 Effects of Termination
 
 **(a) Access.** Upon termination, your right to access and use the Service immediately ceases.
 
 **(b) Data Export.** You may export your Customer Content prior to termination. After termination, we will retain Customer Content for 30 days to allow for data export, after which it will be deleted.
 
-**(c) Survival.** Sections 1, 7, 8.6, 12, 13.3, 14, 15, 16.5, 18, and 20 survive termination.
+**(c) Survival.** Sections 1, 7, 8.6, 12.7, 12.8, 12.9, 12.10, 12.11(d), 13, 14.3, 15, 16, 17.5, 19, and 21 survive termination.
 
 **(d) Refunds.** If Bodaty terminates for cause, no refund is due. If Customer terminates for cause due to Bodaty's uncured material breach, Customer is entitled to a pro-rata refund of prepaid fees for the remaining Subscription Term.
 
+**(e) Implementation Services on Termination.** Customer's data export rights with respect to DWY Work Product are governed by Section 12.10. Accrued unused DWY Hours expire immediately on termination with no refund per Section 12.11(d); DWY Work Product delivered prior to termination remains owned by Customer and licensed to Customer per Sections 12.6 and 12.7. Customer is responsible for completing any required export during the Subscription Term; Bodaty does not warrant any post-termination access window beyond any grace period under Section 4.
+
 ---
 
-## 17. Modifications to Terms
+## 18. Modifications to Terms
 
-### 17.1 Changes to Terms
+### 18.1 Changes to Terms
 
-**(a)** We may modify these Terms at any time. We will provide notice of material changes at least 30 days before they take effect.
+**(a) Right to Modify.** AICtrlNet and HitLai are evolving products operating in a rapidly developing AI regulatory environment. Customer acknowledges that these Terms, the referenced Privacy Policy, and the Data Processing Agreement will be updated from time to time to reflect (i) product capabilities and roadmap changes, (ii) changes in applicable law or regulatory guidance (including the EU AI Act, U.S. state AI laws, and global data-protection regulations), (iii) changes in upstream Foundation Model Provider terms, and (iv) clarifications, corrections, or improvements identified through ongoing review.
 
-**(b)** Notice may be provided by:
-- Email to the address associated with your Account
+**(b) Notice of Material Changes.** For material changes — meaning changes that materially adversely affect Customer's rights or obligations — we will provide at least thirty (30) days' prior notice before they take effect.
+
+**(c) Notice of Non-Material Changes.** For non-material changes (including corrections, clarifications, formatting, cross-reference updates, and changes that benefit Customer), we will publish the updated version and update the "Last Updated" date; separate notice is not required.
+
+**(d) Notice Channels.** Notice may be provided by:
+- Email to the address associated with your Account or your designated Account administrator
 - Prominent notice within the Service
-- Posting on our website
+- Posting on our website at the canonical Terms URL
 
-**(c)** Changes to legal compliance, security, or Acceptable Use Policy provisions may take effect immediately.
+**(e) Immediate Effect for Specific Categories.** Changes to legal-compliance, security, Acceptable Use Policy, or AI-safety provisions may take effect immediately when required by applicable law or to address a security or safety risk; such changes will be documented in the Document History at the end of these Terms.
 
-### 17.2 Acceptance of Changes
+**(f) Version Tracking.** Bodaty maintains a version history at the end of these Terms summarizing each material change. Prior versions are available on request to legal@aictrlnet.com.
+
+### 18.2 Acceptance of Changes
 
 **(a)** Your continued use of the Service after changes take effect constitutes acceptance of the modified Terms.
 
 **(b)** If you do not agree to modified Terms, you must stop using the Service before the changes take effect and may terminate your subscription.
 
-### 17.3 Changes to the Service
+### 18.3 Changes to the Service
 
 **(a)** We may modify, update, or discontinue features of the Service at any time.
 
@@ -821,35 +1069,35 @@ The limitations in Sections 14.1 and 14.2 do not apply to:
 
 ---
 
-## 18. Dispute Resolution
+## 19. Dispute Resolution
 
-### 18.1 Governing Law
+### 19.1 Governing Law
 
-These Terms are governed by the laws of the State of Delaware, United States, without regard to conflict of laws principles.
+These Terms are governed by the laws of the **State of Illinois**, United States, without regard to conflict of laws principles.
 
-### 18.2 Informal Resolution
+### 19.2 Informal Resolution
 
 **(a)** Before initiating formal dispute resolution, you agree to contact us at legal@aictrlnet.com to attempt to resolve the dispute informally.
 
 **(b)** We will attempt to resolve disputes within 60 days of receiving notice.
 
-### 18.3 Arbitration Agreement
+### 19.3 Arbitration Agreement
 
-**(a) Agreement to Arbitrate.** Except as provided in Section 18.5, any dispute arising from or relating to these Terms or the Service will be resolved by binding arbitration administered by JAMS under its Comprehensive Arbitration Rules.
+**(a) Agreement to Arbitrate.** Except as provided in Section 19.5, any dispute arising from or relating to these Terms or the Service will be resolved by binding arbitration administered by JAMS under its Comprehensive Arbitration Rules.
 
 **(b) Arbitration Process.**
-- Arbitration will be conducted in Wilmington, Delaware, or another mutually agreed location
+- Arbitration will be conducted in **Chicago, Illinois**, or another mutually agreed location
 - Arbitration will be conducted by a single arbitrator
 - The arbitrator's decision will be final and binding
 - Judgment on the award may be entered in any court of competent jurisdiction
 
 **(c) Costs.** Each party will bear its own attorneys' fees and costs. Arbitration fees will be shared equally, except that Bodaty will pay your share if you demonstrate financial hardship.
 
-### 18.4 Class Action Waiver
+### 19.4 Class Action Waiver
 
 **YOU AND BODATY AGREE THAT EACH MAY BRING CLAIMS AGAINST THE OTHER ONLY IN YOUR OR ITS INDIVIDUAL CAPACITY AND NOT AS A PLAINTIFF OR CLASS MEMBER IN ANY CLASS OR REPRESENTATIVE ACTION.**
 
-### 18.5 Exceptions to Arbitration
+### 19.5 Exceptions to Arbitration
 
 The following claims are not subject to arbitration:
 
@@ -859,25 +1107,25 @@ The following claims are not subject to arbitration:
 
 **(c)** Claims where arbitration is prohibited by applicable law.
 
-### 18.6 Jurisdiction
+### 19.6 Jurisdiction
 
-For any claims not subject to arbitration, you consent to the exclusive jurisdiction of the federal and state courts located in Delaware.
+For any claims not subject to arbitration, you consent to the exclusive jurisdiction of the federal and state courts located in **Cook County, Illinois**.
 
-### 18.7 Time Limitation
+### 19.7 Time Limitation
 
 Any claim arising from or relating to these Terms must be filed within one (1) year after the claim arose, or it will be permanently barred.
 
 ---
 
-## 19. Export Compliance
+## 20. Export Compliance
 
-### 19.1 Export Laws
+### 20.1 Export Laws
 
 **(a)** You acknowledge that the Service may be subject to U.S. export control laws and regulations, including the Export Administration Regulations (EAR) and sanctions administered by the Office of Foreign Assets Control (OFAC).
 
 **(b)** You will comply with all applicable export laws and will not export, re-export, or transfer the Service to prohibited countries, entities, or individuals.
 
-### 19.2 Sanctions Compliance
+### 20.2 Sanctions Compliance
 
 **(a)** You represent that you are not located in, organized under the laws of, or a national or resident of any country subject to U.S. trade sanctions.
 
@@ -885,65 +1133,69 @@ Any claim arising from or relating to these Terms must be filed within one (1) y
 
 ---
 
-## 20. General Provisions
+## 21. General Provisions
 
-### 20.1 Entire Agreement
+### 21.1 Entire Agreement
 
 These Terms, together with the Privacy Policy and any Order Forms, constitute the entire agreement between you and Bodaty regarding the Service and supersede all prior agreements.
 
-### 20.2 Assignment
+### 21.2 Assignment
 
 **(a)** You may not assign these Terms without our prior written consent.
 
 **(b)** Bodaty may assign these Terms to an affiliate or in connection with a merger, acquisition, or sale of assets upon notice to you.
 
-### 20.3 Waiver
+### 21.3 Waiver
 
 Failure to enforce any provision of these Terms does not constitute a waiver of that provision or any other provision.
 
-### 20.4 Severability
+### 21.4 Severability
 
 If any provision of these Terms is found unenforceable, the remaining provisions will continue in effect, and the unenforceable provision will be modified to the minimum extent necessary to make it enforceable.
 
-### 20.5 Force Majeure
+### 21.5 Force Majeure
 
 Neither party will be liable for delays or failures in performance resulting from causes beyond its reasonable control, including acts of God, natural disasters, war, terrorism, labor disputes, government actions, pandemics, or failures of third-party services or infrastructure.
 
-### 20.6 Independent Contractors
+### 21.6 Independent Contractors
 
 The parties are independent contractors. Nothing in these Terms creates a partnership, joint venture, agency, or employment relationship.
 
-### 20.7 Third-Party Beneficiaries
+### 21.7 Third-Party Beneficiaries
 
 These Terms do not create any third-party beneficiary rights.
 
-### 20.8 Notices
+### 21.8 Notices
 
 **(a)** Notices to Bodaty must be sent to:
 
-Bodaty Technologies, Inc.
+Bodaty LLC
 Attn: Legal Department
+200 E. 5th Ave., Suite 121DE
+Naperville, IL 60563
 legal@aictrlnet.com
 
 **(b)** Notices to you will be sent to the email address associated with your Account.
 
 **(c)** Notices are effective upon receipt.
 
-### 20.9 Headings
+### 21.9 Headings
 
 Section headings are for convenience only and do not affect interpretation.
 
-### 20.10 Language
+### 21.10 Language
 
 These Terms are drafted in English. Any translations are for convenience only, and the English version controls.
 
 ---
 
-## 21. Contact Information
+## 22. Contact Information
 
 If you have questions about these Terms, please contact us:
 
-**Bodaty Technologies, Inc.**
+**Bodaty LLC**
+200 E. 5th Ave., Suite 121DE
+Naperville, IL 60563
 
 **General Inquiries:**
 Email: contact@aictrlnet.com
@@ -967,7 +1219,14 @@ Email: privacy@aictrlnet.com
 | Version | Date | Description |
 |---------|------|-------------|
 | 1.0 | January 29, 2026 | Initial release |
+| 2.0 | May 1, 2026 | Entity correction (Bodaty Technologies, Inc. → Bodaty LLC); governing law changed from Delaware to Illinois (Cook County / Chicago); pricing table refreshed with current Business and Enterprise tier ladder; new Section 12 (Implementation Services / DWY) added; renumbered former Sections 12-21 to 13-22; AI-era updates to Section 6 (model deprecation 6.6, hallucination disclaimer 6.7, autonomous action liability 6.8, EU AI Act cooperation 6.9); new Output IP Indemnification (Section 16.1A/B, Microsoft CCC-style, Business Scale + Enterprise only); new HITL bypass carve-out (Section 15.3(f)); Foundation Model Provider disclosure (Section 9.5). |
 
 ---
 
 *By using AICtrlNet or HitLai, you acknowledge that you have read, understood, and agree to be bound by these Terms of Service.*
+
+---
+
+© 2026 Bodaty LLC. All rights reserved.
+
+AICtrlNet™, HitLai™, and "Governed AI Orchestration"™ are trademarks of Bodaty LLC.
