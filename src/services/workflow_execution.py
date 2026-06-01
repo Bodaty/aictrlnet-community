@@ -347,6 +347,14 @@ class WorkflowExecutionService:
                 # alone would drop the workflow input fields across a skip.
                 from nodes.models import NodeStatus
                 if execution.status == WorkflowExecutionStatus.RESUMING:
+                    # No populate_existing needed here (unlike the failed_rows
+                    # summary below): these COMPLETED rows were committed by the
+                    # PRIOR run before the pause, loaded fresh by the selectinload
+                    # above in this resume task's own session, and read here
+                    # BEFORE this run's executor (node_executor.execute_workflow)
+                    # mutates anything — so the identity-map copies are current.
+                    # If a row mutation is ever added before this point, this
+                    # query must switch to populate_existing=True.
                     prior_rows = (await db.execute(
                         select(NodeExecution).where(
                             NodeExecution.execution_id == execution.id,
