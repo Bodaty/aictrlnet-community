@@ -1,5 +1,6 @@
 """Security utilities for authentication and authorization."""
 
+import asyncio
 import logging
 
 from datetime import datetime, timedelta
@@ -36,13 +37,28 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=F
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against a hash."""
+    """Verify a password against a hash (synchronous; for non-async callers)."""
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def get_password_hash(password: str) -> str:
-    """Hash a password."""
+    """Hash a password (synchronous; for non-async callers)."""
     return pwd_context.hash(password)
+
+
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password off the event loop.
+
+    bcrypt is deliberately slow (~100ms) and CPU-bound; running it inline on
+    an async request handler serializes the login burst and wedges the worker.
+    Offload to a thread so other requests keep flowing.
+    """
+    return await asyncio.to_thread(pwd_context.verify, plain_password, hashed_password)
+
+
+async def get_password_hash_async(password: str) -> str:
+    """Hash a password off the event loop (see verify_password_async)."""
+    return await asyncio.to_thread(pwd_context.hash, password)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

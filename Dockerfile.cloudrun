@@ -32,10 +32,15 @@ if [ "${RUN_MIGRATIONS}" = "true" ]; then\n\
 fi\n\
 \n\
 # Start the application on the PORT specified by Cloud Run\n\
-exec uvicorn main:app \\\n\
-    --host ${HOST:-0.0.0.0} \\\n\
-    --port ${PORT:-8080} \\\n\
-    --workers ${WORKERS:-1} \\\n\
+# gunicorn + UvicornWorker: a wedged worker is killed+respawned after --timeout.\n\
+exec gunicorn main:app \\\n\
+    -k uvicorn.workers.UvicornWorker \\\n\
+    --bind ${HOST:-0.0.0.0}:${PORT:-8080} \\\n\
+    --workers ${WORKERS:-2} \\\n\
+    --timeout 120 \\\n\
+    --graceful-timeout 30 \\\n\
+    --keep-alive 5 \\\n\
+    --forwarded-allow-ips="*" \\\n\
     --log-level ${LOG_LEVEL:-info}\n\
 ' > /app/startup-cloudrun.sh && chmod +x /app/startup-cloudrun.sh
 

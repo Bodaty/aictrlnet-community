@@ -50,4 +50,15 @@ echo ""
 
 # Start the FastAPI application
 # Note: PYTHONPATH should include /app/src for production builds
-exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${WORKERS:-2}
+# gunicorn manages UvicornWorker processes: a worker whose event loop wedges
+# (blocking call) stops heart-beating and is killed+respawned after --timeout,
+# so a single blocking path can't silently freeze the edition (see
+# .claude/plans/worker-wedge-permanent-fix.md).
+exec gunicorn main:app \
+    -k uvicorn.workers.UvicornWorker \
+    --workers ${WORKERS:-2} \
+    --bind 0.0.0.0:8000 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --keep-alive 5 \
+    --forwarded-allow-ips="*"

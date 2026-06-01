@@ -55,8 +55,8 @@ def _clear_login_attempts(key: str):
 
 from core.database import get_db
 from core.security import (
-    verify_password,
-    get_password_hash,
+    verify_password_async,
+    get_password_hash_async,
     create_access_token,
     create_refresh_token,
     get_current_active_user,
@@ -152,7 +152,7 @@ async def register(
         email=user_data.email,
         username=user_data.username,
         full_name=user_data.full_name,
-        hashed_password=get_password_hash(user_data.password),
+        hashed_password=await get_password_hash_async(user_data.password),
         edition="business",  # All new users start with 14-day Business trial
         tenant_id=DEFAULT_TENANT_ID,
         is_active=True,
@@ -215,7 +215,7 @@ async def login(
     )
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    if not user or not await verify_password_async(form_data.password, user.hashed_password):
         _record_failed_login(f"ip:{client_ip}")
         _record_failed_login(f"user:{form_data.username}")
         raise HTTPException(
@@ -478,7 +478,7 @@ async def confirm_password_reset(
         )
     
     # Update password and invalidate all existing tokens
-    user.hashed_password = get_password_hash(reset_data.new_password)
+    user.hashed_password = await get_password_hash_async(reset_data.new_password)
     user.token_version = (user.token_version or 0) + 1
     user.password_reset_token = None
     user.password_reset_expires = None
@@ -501,14 +501,14 @@ async def change_password(
 ) -> dict:
     """Change password for authenticated user."""
     # Verify current password
-    if not verify_password(password_data.current_password, current_user.hashed_password):
+    if not await verify_password_async(password_data.current_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect current password"
         )
     
     # Update password and invalidate existing tokens
-    current_user.hashed_password = get_password_hash(password_data.new_password)
+    current_user.hashed_password = await get_password_hash_async(password_data.new_password)
     current_user.token_version = (current_user.token_version or 0) + 1
     await db.commit()
 

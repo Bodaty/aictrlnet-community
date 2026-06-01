@@ -1,4 +1,5 @@
 """Platform Credential Service for secure credential management"""
+import asyncio
 import os
 import json
 from abc import ABC, abstractmethod
@@ -130,11 +131,20 @@ class FileBackend(CredentialBackend):
             with open(self.file_path, 'w') as f:
                 json.dump({}, f)
 
+    def _read_all(self) -> Dict[str, Any]:
+        """Synchronous file read — call via asyncio.to_thread from async methods."""
+        with open(self.file_path, 'r') as f:
+            return json.load(f)
+
+    def _write_all(self, credentials: Dict[str, Any]) -> None:
+        """Synchronous file write — call via asyncio.to_thread from async methods."""
+        with open(self.file_path, 'w') as f:
+            json.dump(credentials, f, indent=2)
+
     async def get_credential(self, key: str) -> Optional[Dict[str, Any]]:
         """Get credential from file, decrypting the stored token."""
         try:
-            with open(self.file_path, 'r') as f:
-                credentials = json.load(f)
+            credentials = await asyncio.to_thread(self._read_all)
             encrypted = credentials.get(key)
             if encrypted is None:
                 return None
@@ -146,13 +156,9 @@ class FileBackend(CredentialBackend):
     async def store_credential(self, key: str, credential: Dict[str, Any]) -> bool:
         """Encrypt credential and store the ciphertext in the file."""
         try:
-            with open(self.file_path, 'r') as f:
-                credentials = json.load(f)
-
+            credentials = await asyncio.to_thread(self._read_all)
             credentials[key] = self._encrypt_data(credential)
-
-            with open(self.file_path, 'w') as f:
-                json.dump(credentials, f, indent=2)
+            await asyncio.to_thread(self._write_all, credentials)
             return True
         except Exception as e:
             logger.error(f"Error storing credential to file: {e}")
@@ -161,14 +167,10 @@ class FileBackend(CredentialBackend):
     async def delete_credential(self, key: str) -> bool:
         """Delete credential from file"""
         try:
-            with open(self.file_path, 'r') as f:
-                credentials = json.load(f)
-
+            credentials = await asyncio.to_thread(self._read_all)
             if key in credentials:
                 del credentials[key]
-
-                with open(self.file_path, 'w') as f:
-                    json.dump(credentials, f, indent=2)
+                await asyncio.to_thread(self._write_all, credentials)
                 return True
             return False
         except Exception as e:
@@ -178,9 +180,8 @@ class FileBackend(CredentialBackend):
     async def list_credentials(self) -> List[str]:
         """List credential keys from file"""
         try:
-            with open(self.file_path, 'r') as f:
-                credentials = json.load(f)
-                return list(credentials.keys())
+            credentials = await asyncio.to_thread(self._read_all)
+            return list(credentials.keys())
         except Exception as e:
             logger.error(f"Error listing credentials from file: {e}")
             return []
