@@ -100,8 +100,9 @@ class NodeInstance(BaseModel):
     # Execution tracking
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
     duration_ms: Optional[float] = None
-    
+
     # Retry tracking
     attempt_number: int = 0
     last_error: Optional[str] = None

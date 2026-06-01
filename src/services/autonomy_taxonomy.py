@@ -76,7 +76,13 @@ NODE_TYPE_RISK: Dict[str, float] = {
 DEFAULT_NODE_RISK = 0.4  # unknown node type — middle-of-the-road
 
 
-SYSTEM_DEFAULT_LEVEL = 25  # Assistance phase — safe default when nothing else resolves
+SYSTEM_DEFAULT_LEVEL = 55  # Optimization phase ("Do it, ask sometimes") — fallback
+# when nothing else is set. threshold = 55/100*0.95 = 0.52, so AI cognition and
+# low-risk steps auto-approve (dataTransform 0.1, condition 0.1, notification 0.2,
+# loop 0.3, aiProcess 0.5) while consequential external actions gate (apiCall/mcp
+# 0.6, code 0.7, browserAutomation 0.8, iam 0.9). Owners tune this per-user /
+# per-workflow via the autonomy API + WorkflowAutonomyPanel UI; this is only the
+# floor when no explicit policy resolves.
 
 
 def _clamp_level(level: int) -> int:
