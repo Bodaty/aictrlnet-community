@@ -496,7 +496,9 @@ async def _handle_list_workflows(
     from services.workflow_service import WorkflowService
 
     svc = WorkflowService(db)
+    q = arguments.get("q")
     workflows = await svc.list_workflows(
+        filters={"name": q} if q else None,
         limit=arguments.get("limit", 20),
         offset=arguments.get("offset", 0),
     )
@@ -505,7 +507,8 @@ async def _handle_list_workflows(
             {
                 "id": str(w.id),
                 "name": w.name,
-                "status": getattr(w, "status", "unknown"),
+                # WorkflowDefinition has no status column — it tracks active/inactive.
+                "status": "active" if getattr(w, "active", False) else "inactive",
                 "created_at": str(getattr(w, "created_at", "")),
             }
             for w in workflows
@@ -591,6 +594,9 @@ async def _handle_list_templates(
         category=arguments.get("category"),
         limit=arguments.get("limit", 20),
         skip=0,
+        # MCP response returns only id/name/description/category — skip the
+        # per-template definition-file reads that otherwise block the worker.
+        load_preview=False,
     )
     templates, total = await svc.list_templates(db=db, user_id=user_id, request=request)
     return {

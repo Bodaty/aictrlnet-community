@@ -135,10 +135,15 @@ class WorkflowService:
 
         # Apply filters if provided
         if filters:
-            # Simple implementation - in production would need proper filtering
-            if "metadata.created_via" in filters:
-                # Filter by metadata field
-                pass
+            # Case-insensitive name substring search (used by MCP `q` arg so
+            # callers can find a workflow by name instead of paging the list).
+            name = filters.get("name")
+            if name:
+                query = query.where(Workflow.name.ilike(f"%{name}%"))
+
+        # Newest-first so recently-created workflows (e.g. demo/template
+        # instantiations) surface ahead of accumulated test fixtures.
+        query = query.order_by(Workflow.created_at.desc())
 
         query = query.limit(limit).offset(offset)
         result = await self.db.execute(query)

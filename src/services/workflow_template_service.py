@@ -1,5 +1,6 @@
 """Workflow template service for managing template operations."""
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -95,28 +96,31 @@ class WorkflowTemplateService:
     def _load_template_preview(self, definition_path: str) -> Optional[Dict[str, Any]]:
         """Load preview data from a template definition file."""
         try:
-            # Try multiple potential paths
+            # Try multiple potential paths. definition_path is stored relative
+            # (e.g. "workflow-templates/system/data/x.json"); resolve it against
+            # the live edition mounts. The old /workspace/aictrlnet-fastapi* paths
+            # were dead monolith mounts and have been removed.
             paths_to_try = [
                 Path(definition_path),
                 self.base_template_dir.parent / definition_path,
-                Path("/workspace/aictrlnet-fastapi") / definition_path,
-                Path("/workspace/aictrlnet-fastapi-business") / definition_path,
-                Path("/workspace/aictrlnet-fastapi-enterprise") / definition_path,
+                Path("/workspace/editions/community") / definition_path,
+                Path("/workspace/editions/business") / definition_path,
+                Path("/workspace/editions/enterprise") / definition_path,
             ]
-            
+
             template_file = None
             for path in paths_to_try:
                 if path.exists():
                     template_file = path
                     break
-            
+
             if not template_file:
                 logger.debug(f"Template file not found: {definition_path}")
                 return None
-            
+
             with open(template_file, 'r') as f:
                 template_data = json.load(f)
-            
+
             # Extract preview data (first 5 nodes max)
             # Check if nodes are in workflow field (new format) or root (old format)
             if 'workflow' in template_data and isinstance(template_data['workflow'], dict):
@@ -261,17 +265,22 @@ class WorkflowTemplateService:
         responses = []
         for template in templates:
             response = WorkflowTemplateResponse.model_validate(template)
-            
-            # Try to load preview data from the template definition file
-            if template.definition_path:
-                preview_data = self._load_template_preview(template.definition_path)
+
+            # Try to load preview data from the template definition file.
+            # _load_template_preview does blocking disk I/O, so run it off the
+            # event loop; skip entirely when the caller doesn't need preview
+            # (e.g. MCP list_templates) to avoid per-row file reads.
+            if request.load_preview and template.definition_path:
+                preview_data = await asyncio.to_thread(
+                    self._load_template_preview, template.definition_path
+                )
                 if preview_data:
                     response.preview = preview_data.get('preview')
                     response.node_count = preview_data.get('node_count')
                     response.edge_count = preview_data.get('edge_count')
-            
+
             responses.append(response)
-        
+
         return responses, total
     
     async def get_template(

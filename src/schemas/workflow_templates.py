@@ -248,6 +248,7 @@ class TemplateListRequest(BaseModel):
     sort_desc: bool = True
     skip: int = 0
     limit: int = 100
+    load_preview: bool = True  # Set False to skip per-template definition-file reads (e.g. MCP callers that only need id/name)
 
 
 class TemplateListResponse(BaseModel):

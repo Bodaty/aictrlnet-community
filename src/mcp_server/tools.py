@@ -33,10 +33,14 @@ COMMUNITY_TOOLS = [
     },
     {
         "name": "list_workflows",
-        "description": "List existing workflows with their status, name, and node count.",
+        "description": "List existing workflows (newest first) with their status and name. Use 'q' to find a workflow by name.",
         "inputSchema": {
             "type": "object",
             "properties": {
+                "q": {
+                    "type": "string",
+                    "description": "Optional case-insensitive name filter. Returns only workflows whose name contains this text.",
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Maximum number of workflows to return (default 20)",
