@@ -148,11 +148,15 @@ class NodeExecutionResult(BaseModel):
     status: NodeStatus
     output_data: Dict[str, Any] = {}
     error: Optional[str] = None
-    duration_ms: float
-    
+    # Defaulted so the error-handling strategies (error_handler.py) — which
+    # build a result without timing on the failure path — validate cleanly.
+    duration_ms: float = 0.0
+    # Recovery strategy / error_details carried by the error_handler paths.
+    metadata: Dict[str, Any] = {}
+
     # Next nodes to execute
     next_node_ids: List[str] = []
-    
+
     # Side effects
     events_published: int = 0
     adapters_called: List[str] = []
