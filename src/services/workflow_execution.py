@@ -382,11 +382,18 @@ class WorkflowExecutionService:
                 # returns cleanly even when a critical node has failed. Mark
                 # the workflow FAILED in that case so downstream readers
                 # (UI, audit, polling) see the truth. (Demo bug #6.)
+                # populate_existing forces a fresh read: the per-node executor
+                # persists status + error_details via its OWN sessions (parallel
+                # nodes can't share one AsyncSession), but `db` created these
+                # NodeExecution rows as PENDING at start, so its identity map
+                # would otherwise return stale objects (error_details=None) even
+                # though the WHERE matched the committed FAILED rows.
                 failed_rows = (
                     await db.execute(
                         select(NodeExecution)
                         .where(NodeExecution.execution_id == execution.id)
                         .where(NodeExecution.status == NodeExecutionStatus.FAILED)
+                        .execution_options(populate_existing=True)
                     )
                 ).scalars().all()
 
