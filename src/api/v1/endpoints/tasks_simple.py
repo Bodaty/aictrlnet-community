@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from core.database import get_db
 from core.security import get_current_active_user
+from core.tenant_context import get_current_tenant_id
 from models.community import Task
 from schemas.task import TaskCreate, TaskResponse
 
@@ -44,7 +45,8 @@ async def create_task(
         name=task_data.name,
         description=task_data.description,
         status="pending",
-        task_metadata=task_data.task_metadata
+        task_metadata=task_data.task_metadata,
+        tenant_id=get_current_tenant_id(),
     )
     db.add(task)
     await db.commit()
