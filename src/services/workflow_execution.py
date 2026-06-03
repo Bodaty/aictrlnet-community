@@ -428,11 +428,17 @@ class WorkflowExecutionService:
 
                 # Count intercepted nodes for dry-run summary (regardless of
                 # final status — a failed dry-run still reports what would
-                # have been intercepted up to the failure point).
-                if is_dry_run and workflow_instance.output_data:
+                # have been intercepted up to the failure point). Scan the
+                # node instances directly: workflow_instance.output_data only
+                # carries end-node output, so iterating it undercounts the
+                # side-effect nodes that were simulated. This mirrors the
+                # per-node "(intercepted)" markers the Monitoring UI shows.
+                if is_dry_run:
                     intercepted = sum(
-                        1 for node_output in (workflow_instance.output_data or {}).values()
-                        if isinstance(node_output, dict) and node_output.get("_dry_run")
+                        1
+                        for ni in workflow_instance.node_instances.values()
+                        if isinstance(getattr(ni, "output_data", None), dict)
+                        and ni.output_data.get("_dry_run")
                     )
                     execution.execution_metadata = {
                         **(execution.execution_metadata or {}),
