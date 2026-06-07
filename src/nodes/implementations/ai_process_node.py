@@ -224,7 +224,11 @@ class AIProcessNode(BaseNode):
         # Look up UI-configured credentials for this adapter
         credentials = await get_adapter_credentials(adapter_id) or {}
 
-        # Create adapter instance with proper config + credentials
+        # Create adapter instance with proper config + credentials.
+        # Propagate the node's "timeout" so long generations (e.g. large
+        # parse/synthesis prompts) aren't killed by the adapter's short
+        # default. Defaults to 300s — the lenient value adapters already
+        # intend for local models — instead of the 60s AdapterConfig default.
         adapter_config = AdapterConfig(
             name=adapter_id,
             category=AdapterCategory.AI,
@@ -232,6 +236,7 @@ class AIProcessNode(BaseNode):
             description=f"AI adapter for {ai_task}",
             api_key=credentials.get("api_key"),
             credentials=credentials,
+            timeout_seconds=self.config.parameters.get("timeout", 300),
         )
         adapter = adapter_class(adapter_config)
         try:

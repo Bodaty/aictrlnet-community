@@ -9,6 +9,7 @@ from urllib.parse import urljoin
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
+from ..template_utils import resolve_templates
 from events.event_bus import event_bus
 
 
@@ -28,6 +29,16 @@ class APICallNode(BaseNode):
     
     async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the API call node. Returns output dict for BaseNode.run() to wrap."""
+        # Resolve {{...}} placeholders (e.g. {{env.PERPLEXITY_API_KEY}}) in node
+        # params before building the request. Mirrors ai_process_node so secrets
+        # can live in env/secret rather than plaintext in the node config. The
+        # regex only matches double-brace tokens, leaving existing single-brace
+        # {var} .format() templates (url/body_template) untouched.
+        tmpl_ctx = {"input_data": input_data, **input_data}
+        self.config.parameters.update(
+            resolve_templates(dict(self.config.parameters), tmpl_ctx)
+        )
+
         # Get API configuration
         url = self._build_url(input_data)
         method = self.config.parameters.get("method", "GET").upper()
