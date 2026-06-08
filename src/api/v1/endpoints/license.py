@@ -142,7 +142,17 @@ async def upgrade_license(
         )
 
     if not settings.STRIPE_SECRET_KEY or settings.STRIPE_SECRET_KEY == "sk_test_dummy":
-        # Return mock response if Stripe not configured
+        # Stripe not configured. In production this is a misconfiguration we must
+        # NOT hide behind a fake checkout (customers would hit /mock-checkout) —
+        # fail loud so it gets caught. Mock is allowed only in non-production.
+        import os
+        if os.getenv("ENVIRONMENT", "").lower() == "production":
+            raise HTTPException(
+                status_code=503,
+                detail="Billing is not configured (STRIPE_SECRET_KEY missing). "
+                       "Refusing to return a mock checkout in production.",
+            )
+        # Dev / non-production: return a mock checkout so local testing works.
         return LicenseUpgradeResponse(
             subscription={
                 "id": "sub_upgraded",
