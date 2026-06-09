@@ -264,27 +264,62 @@ class BaseNode(ABC):
         self,
         adapter_id: str,
         capability: str,
-        parameters: Dict[str, Any]
+        parameters: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Helper method to call an adapter."""
-        # Get adapter class from registry
+        """Helper method to call an adapter.
+
+        Builds a real ``AdapterConfig`` with resolved credentials and runs the
+        full adapter lifecycle (instantiate -> start -> request -> shutdown),
+        mirroring ai_process_node. The previous implementation passed an empty
+        ``{}`` config — which both broke construction (adapters expect an
+        AdapterConfig) and left the adapter unauthenticated/uninitialised, so a
+        credentialed engine like Perplexity could never run. Credentials come
+        from the UI-configured adapter row (``get_adapter_credentials``); the
+        adapter itself falls back to its env key (e.g. PERPLEXITY_API_KEY) when
+        none is stored. Per-org tenant-scoped credential resolution lands in B2.
+        """
+        from adapters.models import AdapterConfig, AdapterCategory, AdapterStatus
+        from nodes.template_utils import get_adapter_credentials
+
         adapter_class = adapter_registry.get_adapter_class(adapter_id)
         if not adapter_class:
             raise ValueError(f"Adapter {adapter_id} not found")
-        
-        # Create adapter instance
-        adapter = adapter_class({})
-        
-        request = AdapterRequest(
-            capability=capability,
-            parameters=parameters
+
+        credentials = await get_adapter_credentials(adapter_id) or {}
+
+        adapter_config = AdapterConfig(
+            name=adapter_id,
+            category=AdapterCategory.AI,
+            description=f"Adapter for {capability}",
+            api_key=credentials.get("api_key"),
+            credentials=credentials,
+            timeout_seconds=(self.config.parameters or {}).get("timeout", 300),
         )
-        
-        response = await adapter.handle_request(request)
-        
+        adapter = adapter_class(adapter_config)
+        try:
+            await adapter.start()
+        except Exception as start_err:
+            # Adapter may already be registered from a prior execution — reuse it.
+            if "already registered" in str(start_err):
+                await adapter.initialize()
+                adapter.status = AdapterStatus.READY
+                adapter._initialized = True
+            else:
+                raise
+
+        try:
+            request = AdapterRequest(capability=capability, parameters=parameters)
+            response = await adapter.handle_request(request)
+        finally:
+            try:
+                await adapter.shutdown()
+            except Exception:
+                pass
+
         if response.status == "error":
             raise RuntimeError(f"Adapter error: {response.error}")
-        
+
         return response.data
     
     def get_info(self) -> Dict[str, Any]:

@@ -37,7 +37,8 @@ class AdapterNode(BaseNode):
             result = await self.call_adapter(
                 adapter_id=adapter_id,
                 capability=capability,
-                parameters=adapter_params
+                parameters=adapter_params,
+                context=context,
             )
             
             # Process adapter response
