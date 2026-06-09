@@ -261,7 +261,15 @@ class DataSourceNode(BaseNode):
         """Load static data from configuration."""
         data = self.config.parameters.get("data")
         if data is None:
-            raise ValueError("data parameter is required for static source")
+            # Auto-generated system templates carry descriptive dataSource nodes
+            # with no inline `data` (and no source_type). Rather than crashing the
+            # whole workflow, a static source with nothing configured yields empty
+            # data and lets downstream nodes proceed. Honest: no data is fabricated.
+            logger.info(
+                "dataSource node %s is static with no 'data' configured — "
+                "yielding empty data", self.config.id
+            )
+            return {"data": {}, "source_type": "static", "note": "no static data configured"}
         
         # Wrap in standard format if needed
         if isinstance(data, list):
@@ -402,7 +410,8 @@ class DataSourceNode(BaseNode):
                 raise ValueError("adapter_id parameter is required for database source")
             if not self.config.parameters.get("query"):
                 raise ValueError("query parameter is required for database source")
-        elif source_type == "static" and "data" not in self.config.parameters:
-            raise ValueError("data parameter is required for static source")
-        
+        # A static source with no `data` is tolerated: execute() yields empty
+        # data rather than crashing, so descriptive auto-generated template nodes
+        # don't fail validation. (Other source types still require their params.)
+
         return True

@@ -229,6 +229,15 @@ class AIProcessNode(BaseNode):
         # parse/synthesis prompts) aren't killed by the adapter's short
         # default. Defaults to 300s — the lenient value adapters already
         # intend for local models — instead of the 60s AdapterConfig default.
+        # Clamp to a 1800s ceiling: many auto-generated system templates carry
+        # garbage timeout values (e.g. 19800s ≈ 5.5h); without a cap a stalled
+        # LLM call would hang the workflow for hours. 1800s is generous for the
+        # heaviest legitimate parse on a slow local model while bounding the tail.
+        try:
+            node_timeout = int(self.config.parameters.get("timeout", 300))
+        except (TypeError, ValueError):
+            node_timeout = 300
+        node_timeout = max(1, min(node_timeout, 1800))
         adapter_config = AdapterConfig(
             name=adapter_id,
             category=AdapterCategory.AI,
@@ -236,7 +245,7 @@ class AIProcessNode(BaseNode):
             description=f"AI adapter for {ai_task}",
             api_key=credentials.get("api_key"),
             credentials=credentials,
-            timeout_seconds=self.config.parameters.get("timeout", 300),
+            timeout_seconds=node_timeout,
         )
         adapter = adapter_class(adapter_config)
         try:

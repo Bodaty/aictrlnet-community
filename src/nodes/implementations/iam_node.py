@@ -73,11 +73,23 @@ class IAMNode(BaseNode):
         target_agent = self.config.parameters.get("target_agent") or input_data.get("target_agent")
         message_type = self.config.parameters.get("message_type", "data")
         message_content = self.config.parameters.get("message") or input_data.get("message")
-        
-        if not target_agent:
-            raise ValueError("target_agent is required for send_message operation")
-        if not message_content:
-            raise ValueError("message content is required")
+
+        # Auto-generated system templates carry descriptive agentDelegation nodes
+        # (prompt/agent/analysis fields, no operation/target_agent). Rather than
+        # crashing the whole workflow, an unconfigured delegation is skipped with
+        # a clear, audit-visible reason — no message is fabricated or sent.
+        if not target_agent or not message_content:
+            reason = "no target_agent configured" if not target_agent else "no message content configured"
+            logger.info(
+                "agentDelegation node %s skipped — %s", self.config.id, reason
+            )
+            return {
+                "status": "skipped",
+                "executed": False,
+                "operation": "send_message",
+                "reason": reason,
+                "node_id": self.config.id,
+            }
         
         # Build message
         message = {
