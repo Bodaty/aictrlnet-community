@@ -100,3 +100,70 @@ async def get_adapter_credentials(adapter_type: str) -> Optional[Dict[str, Any]]
         )
 
     return None
+
+
+# Sentinel tenant the workflow runtime injects when no real org is in scope
+# (workflow_execution.py defaults context["tenant_id"] to this). Treated like
+# "no tenant" for credential resolution so it falls through to the shared key.
+_DEFAULT_TENANT = "default-tenant"
+
+
+async def get_adapter_credentials_for_tenant(
+    adapter_type: str, tenant_id: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Resolve adapter credentials scoped to a tenant (GEO Phase B2 tiered model).
+
+    Resolution order:
+      1. The org's own row (``tenant_id`` matches a real tenant) — their key,
+         their billing.
+      2. A shared/global row (``tenant_id IS NULL`` — the Bodaty free-tier key).
+      3. ``None`` — the adapter falls back to its env key (e.g. PERPLEXITY_API_KEY).
+
+    Unlike ``get_adapter_credentials``, this never returns another tenant's row:
+    step 2 matches NULL explicitly, not "any tenant", so there is no cross-tenant
+    credential leak. Falls back gracefully (returns None) on any error.
+    """
+    try:
+        from core.database import get_session_maker
+        from models.adapter_config import UserAdapterConfig
+        from core.crypto import decrypt_data
+        from sqlalchemy import select
+
+        async def _load(session, tenant_filter):
+            query = (
+                select(UserAdapterConfig)
+                .where(
+                    UserAdapterConfig.adapter_type == adapter_type,
+                    UserAdapterConfig.enabled == True,
+                    tenant_filter,
+                )
+                .order_by(UserAdapterConfig.updated_at.desc())
+                .limit(1)
+            )
+            config = (await session.execute(query)).scalar_one_or_none()
+            if config and config.credentials:
+                return decrypt_data(config.credentials)
+            return None
+
+        async with get_session_maker()() as session:
+            if tenant_id and tenant_id != _DEFAULT_TENANT:
+                creds = await _load(session, UserAdapterConfig.tenant_id == tenant_id)
+                if creds:
+                    logger.info(
+                        f"Loaded tenant '{tenant_id}' credentials for adapter '{adapter_type}'"
+                    )
+                    return creds
+            # Shared / free-tier row (explicitly tenant-less), never another org's.
+            creds = await _load(session, UserAdapterConfig.tenant_id.is_(None))
+            if creds:
+                logger.info(
+                    f"Loaded shared (free-tier) credentials for adapter '{adapter_type}'"
+                )
+                return creds
+
+    except Exception as exc:
+        logger.debug(
+            f"Could not load tenant credentials for '{adapter_type}'/'{tenant_id}': {exc}"
+        )
+
+    return None

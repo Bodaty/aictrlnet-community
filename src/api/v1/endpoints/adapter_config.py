@@ -98,10 +98,13 @@ async def create_adapter_config(
         )
 
     try:
-        # Create configuration
+        # Create configuration. tenant_id is derived from the authenticated
+        # user (never client-supplied) so a customer's key is scoped to their
+        # org; NULL for single-tenant Community/Business → shared/free-tier key.
         config = await service.create_config(
             user_id=current_user.get('id'),
-            config_data=config_data
+            config_data=config_data,
+            tenant_id=current_user.get('tenant_id'),
         )
 
         # Convert to response model

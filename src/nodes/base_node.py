@@ -280,13 +280,17 @@ class BaseNode(ABC):
         none is stored. Per-org tenant-scoped credential resolution lands in B2.
         """
         from adapters.models import AdapterConfig, AdapterCategory, AdapterStatus
-        from nodes.template_utils import get_adapter_credentials
+        from nodes.template_utils import get_adapter_credentials_for_tenant
 
         adapter_class = adapter_registry.get_adapter_class(adapter_id)
         if not adapter_class:
             raise ValueError(f"Adapter {adapter_id} not found")
 
-        credentials = await get_adapter_credentials(adapter_id) or {}
+        # Tenant-scoped credentials (B2): the executing org's key → shared
+        # free-tier key → adapter env fallback. Tenant comes from the execution
+        # context the workflow runtime threads into every node.
+        tenant_id = (context or {}).get("tenant_id")
+        credentials = await get_adapter_credentials_for_tenant(adapter_id, tenant_id) or {}
 
         adapter_config = AdapterConfig(
             name=adapter_id,

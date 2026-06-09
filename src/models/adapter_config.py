@@ -32,7 +32,13 @@ class UserAdapterConfig(Base):
     
     # Adapter reference (to registry type, not DB)
     adapter_type = Column(String(100), nullable=False, index=True)
-    
+
+    # Tenant (org) scoping for per-org adapter credentials (GEO Phase B2).
+    # Nullable: legacy/global rows and the default-tenant Bodaty free-tier path
+    # (which falls back to the env key) leave this null. Resolved via
+    # get_adapter_credentials_for_tenant(adapter_type, tenant_id).
+    tenant_id = Column(String(36), nullable=True, index=True)
+
     # User's custom name for this configuration
     name = Column(String(255), nullable=True)
     display_name = Column(String(255), nullable=True)

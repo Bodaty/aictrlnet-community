@@ -85,17 +85,25 @@ class AdapterConfigService:
     async def create_config(
         self,
         user_id: str,
-        config_data: AdapterConfigCreate
+        config_data: AdapterConfigCreate,
+        tenant_id: Optional[str] = None,
     ) -> UserAdapterConfig:
-        """Create a new adapter configuration."""
+        """Create a new adapter configuration.
+
+        ``tenant_id`` scopes the credential to an org (GEO Phase B2). It is
+        derived from the authenticated user by the endpoint — never client
+        supplied — and is NULL for single-tenant Community/Business deployments
+        (which makes the row the shared/free-tier key).
+        """
         # Encrypt credentials if provided
         encrypted_credentials = None
         if config_data.credentials:
             encrypted_credentials = encrypt_data(config_data.credentials)
-        
+
         # Create configuration
         config = UserAdapterConfig(
             user_id=user_id,
+            tenant_id=tenant_id,
             adapter_type=config_data.adapter_type,
             name=config_data.name or f"{config_data.adapter_type}_config",
             display_name=config_data.display_name,

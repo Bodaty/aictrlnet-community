@@ -56,10 +56,10 @@ async def test_call_adapter_builds_real_credentialed_config():
     node = _Node(NodeConfig(id="n", name="n", type=NodeType.TASK, parameters={"timeout": 123}))
 
     with patch(
-        "nodes.template_utils.get_adapter_credentials",
+        "nodes.template_utils.get_adapter_credentials_for_tenant",
         new=AsyncMock(return_value={"api_key": "abc", "extra": 1}),
     ):
-        data = await node.call_adapter("capturing-test", "ping", {"q": 1})
+        data = await node.call_adapter("capturing-test", "ping", {"q": 1}, context={"tenant_id": "org-x"})
 
     cfg = _captured["config"]
     assert isinstance(cfg, AdapterConfig)            # not the old {}
