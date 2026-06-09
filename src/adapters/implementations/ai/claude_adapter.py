@@ -84,6 +84,23 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
         """Return Claude adapter capabilities."""
         return [
             AdapterCapability(
+                name="answer",
+                description=(
+                    "Answer a query with Claude's web_search server tool and "
+                    "return the answer text plus the source URLs cited (GEO "
+                    "answer-engine contract)"
+                ),
+                category="answer_engine",
+                parameters={
+                    "query": {"type": "string", "description": "The question to answer"},
+                    "model": {"type": "string", "default": "claude-opus-4-8"},
+                    "max_tokens": {"type": "integer"},
+                },
+                required_parameters=["query"],
+                async_supported=True,
+                estimated_duration_seconds=8.0,
+            ),
+            AdapterCapability(
                 name="chat_completion",
                 description="Generate chat completions using Claude models",
                 category="text_generation",
@@ -137,7 +154,9 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
         self.validate_request(request)
         
         # Route to appropriate handler
-        if request.capability == "chat_completion":
+        if request.capability == "answer":
+            return await self._handle_answer(request)
+        elif request.capability == "chat_completion":
             return await self._handle_chat_completion(request)
         elif request.capability == "text_completion":
             return await self._handle_text_completion(request)
@@ -148,8 +167,115 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
     
     async def _handle_chat_completion(self, request: AdapterRequest) -> AdapterResponse:
         """Handle chat completion requests."""
+        return await self.__chat_completion_impl(request)
+
+    async def _handle_answer(self, request: AdapterRequest) -> AdapterResponse:
+        """Answer a query with Claude's web_search server tool; normalise to the
+        GEO contract {content, citations, search_results, model}.
+
+        Uses the Messages API web_search tool so the response carries text-block
+        citations (url/title) and web_search_tool_result blocks, which we map to
+        citations — the same shape as the perplexity/openai/gemini adapters.
+        No temperature is sent (current Opus models reject sampling params).
+        """
         start_time = datetime.utcnow()
-        
+        params = request.parameters or {}
+        query = params.get("query") or params.get("prompt")
+        if not query and isinstance(params.get("messages"), list):
+            for m in reversed(params["messages"]):
+                if isinstance(m, dict) and m.get("role") == "user" and m.get("content"):
+                    query = m["content"] if isinstance(m["content"], str) else None
+                    if query:
+                        break
+        if not query:
+            return AdapterResponse(
+                request_id=request.id, capability=request.capability, status="error",
+                error="answer capability requires a 'query' parameter",
+                error_code="MISSING_QUERY",
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+            )
+
+        model = params.get("model") or "claude-opus-4-8"
+        data = {
+            "model": model,
+            "max_tokens": params.get("max_tokens", 1024),
+            "messages": [{"role": "user", "content": query}],
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+        }
+
+        try:
+            response = await self.client.post("/messages", json=data)
+            response.raise_for_status()
+            result = response.json()
+
+            content_text = ""
+            citations, search_results = [], []
+
+            def _add(url, title):
+                if url:
+                    citations.append(url)
+                    search_results.append({"title": title, "url": url})
+
+            for block in result.get("content", []):
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    content_text += block.get("text", "") or ""
+                    for c in (block.get("citations") or []):
+                        if isinstance(c, dict):
+                            _add(c.get("url"), c.get("title"))
+                elif btype == "web_search_tool_result":
+                    inner = block.get("content")
+                    if isinstance(inner, list):
+                        for r in inner:
+                            if isinstance(r, dict) and r.get("type") == "web_search_result":
+                                _add(r.get("url"), r.get("title"))
+
+            citations = list(dict.fromkeys(citations))
+            seen, deduped = set(), []
+            for s in search_results:
+                if s["url"] not in seen:
+                    seen.add(s["url"])
+                    deduped.append(s)
+            usage = result.get("usage") or {}
+
+            return AdapterResponse(
+                request_id=request.id, capability=request.capability, status="success",
+                data={
+                    "content": content_text,
+                    "citations": citations,
+                    "search_results": deduped,
+                    "model": result.get("model") or model,
+                    "usage": usage,
+                },
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+                cost=0.0,
+                tokens_used=(usage.get("input_tokens", 0) + usage.get("output_tokens", 0)) or None,
+                metadata={"claude_id": result.get("id")},
+            )
+        except httpx.HTTPStatusError as e:
+            try:
+                error_data = e.response.json()
+                msg = error_data.get("error", {}).get("message", str(e))
+            except Exception:
+                msg = e.response.text or str(e)
+            return AdapterResponse(
+                request_id=request.id, capability=request.capability, status="error",
+                error=f"Claude HTTP {e.response.status_code}: {msg}",
+                error_code=f"HTTP_{e.response.status_code}",
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+            )
+        except Exception as e:
+            return AdapterResponse(
+                request_id=request.id, capability=request.capability, status="error",
+                error=str(e),
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+            )
+
+    async def __chat_completion_impl(self, request: AdapterRequest) -> AdapterResponse:
+        start_time = datetime.utcnow()
+
         try:
             # Convert messages to Claude format
             messages = self._convert_messages(request.parameters["messages"])

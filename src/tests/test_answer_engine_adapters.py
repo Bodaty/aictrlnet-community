@@ -16,6 +16,7 @@ import pytest
 
 from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest
 from adapters.implementations.ai.openai_adapter import OpenAIAdapter
+from adapters.implementations.ai.claude_adapter import ClaudeAdapter
 from business_adapters.implementations.ai.gemini_adapter import GeminiAdapter
 
 
@@ -91,8 +92,40 @@ async def test_gemini_answer_missing_query_errors():
     assert resp.status == "error"
 
 
-def test_both_expose_answer_capability():
+@pytest.mark.asyncio
+async def test_claude_answer_normalizes_web_search():
+    a = ClaudeAdapter(AdapterConfig(name="claude", category=AdapterCategory.AI, api_key="x"))
+    a.client = AsyncMock()
+    a.client.post = AsyncMock(return_value=_resp({
+        "content": [
+            {"type": "text", "text": "BrandX is great.",
+             "citations": [{"type": "web_search_result_location", "url": "https://a.com", "title": "A"}]},
+            {"type": "web_search_tool_result",
+             "content": [{"type": "web_search_result", "url": "https://b.com", "title": "B"}]},
+        ],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+        "model": "claude-opus-4-8", "id": "msg_x",
+    }))
+    resp = await a._handle_answer(AdapterRequest(capability="answer", parameters={"query": "what is brandx"}))
+    assert resp.status == "success"
+    d = resp.data
+    assert d["content"] == "BrandX is great."
+    assert d["citations"] == ["https://a.com", "https://b.com"]
+    assert {s["url"] for s in d["search_results"]} == {"https://a.com", "https://b.com"}
+
+
+@pytest.mark.asyncio
+async def test_claude_answer_missing_query_errors():
+    a = ClaudeAdapter(AdapterConfig(name="claude", category=AdapterCategory.AI, api_key="x"))
+    a.client = AsyncMock()
+    resp = await a._handle_answer(AdapterRequest(capability="answer", parameters={}))
+    assert resp.status == "error"
+
+
+def test_all_engines_expose_answer_capability():
     o = OpenAIAdapter(AdapterConfig(name="openai", category=AdapterCategory.AI, api_key="x"))
     g = GeminiAdapter(AdapterConfig(name="gemini", category=AdapterCategory.AI, api_key="x"))
-    assert any(c.name == "answer" for c in o.get_capabilities())
-    assert any(c.name == "answer" for c in g.get_capabilities())
+    c = ClaudeAdapter(AdapterConfig(name="claude", category=AdapterCategory.AI, api_key="x"))
+    assert any(cap.name == "answer" for cap in o.get_capabilities())
+    assert any(cap.name == "answer" for cap in g.get_capabilities())
+    assert any(cap.name == "answer" for cap in c.get_capabilities())
