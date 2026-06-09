@@ -21,7 +21,17 @@ class AdapterNode(BaseNode):
         # Get adapter configuration
         adapter_id = self.config.adapter_id or self.config.parameters.get("adapter_id")
         capability = self.config.adapter_capability or self.config.parameters.get("capability")
-        
+
+        # Dynamic per-item adapter routing: when `adapter_id_from` names an input
+        # path (dot notation), resolve the adapter from the current input data.
+        # This lets a loop fan a query out across engines (GEO multi-engine):
+        # each iteration's item carries its engine, picked up here.
+        adapter_id_from = self.config.parameters.get("adapter_id_from")
+        if adapter_id_from:
+            resolved = self._get_nested_value(input_data, adapter_id_from)
+            if resolved:
+                adapter_id = resolved
+
         if not adapter_id:
             raise ValueError("No adapter_id specified")
         if not capability:

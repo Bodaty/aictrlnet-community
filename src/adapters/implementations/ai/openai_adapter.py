@@ -148,6 +148,22 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
         """Return OpenAI adapter capabilities."""
         return [
             AdapterCapability(
+                name="answer",
+                description=(
+                    "Answer a query with live web search and return the answer "
+                    "text plus the source URLs cited (GEO answer-engine contract)"
+                ),
+                category="answer_engine",
+                parameters={
+                    "query": {"type": "string", "description": "The question to answer"},
+                    "model": {"type": "string", "default": "gpt-4o-search-preview"},
+                    "max_tokens": {"type": "integer"},
+                },
+                required_parameters=["query"],
+                async_supported=True,
+                estimated_duration_seconds=8.0,
+            ),
+            AdapterCapability(
                 name="chat_completion",
                 description="Generate chat completions using OpenAI models",
                 category="text_generation",
@@ -212,7 +228,9 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
         self.validate_request(request)
         
         # Route to appropriate handler
-        if request.capability == "chat_completion":
+        if request.capability == "answer":
+            return await self._handle_answer(request)
+        elif request.capability == "chat_completion":
             return await self._handle_chat_completion(request)
         elif request.capability == "embeddings":
             return await self._handle_embeddings(request)
@@ -223,6 +241,83 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
         else:
             raise ValueError(f"Unknown capability: {request.capability}")
     
+    async def _handle_answer(self, request: AdapterRequest) -> AdapterResponse:
+        """Answer a query with live web search; normalise to the GEO contract.
+
+        Uses a search-enabled Chat Completions model so the response carries
+        url_citation annotations. Returns {content, citations, search_results,
+        model} — the same shape as the perplexity adapter — so the GEO audit is
+        engine-agnostic.
+        """
+        start_time = datetime.utcnow()
+        params = request.parameters or {}
+        query = params.get("query") or params.get("prompt")
+        if not query and isinstance(params.get("messages"), list):
+            for m in reversed(params["messages"]):
+                if isinstance(m, dict) and m.get("role") == "user" and m.get("content"):
+                    query = m["content"]
+                    break
+        if not query:
+            return AdapterResponse(
+                request_id=request.id, capability=request.capability, status="error",
+                error="answer capability requires a 'query' parameter",
+                error_code="MISSING_QUERY",
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+            )
+
+        model = params.get("model") or "gpt-4o-search-preview"
+        data = {"model": model, "messages": [{"role": "user", "content": query}]}
+        if params.get("max_tokens") is not None:
+            data["max_tokens"] = params["max_tokens"]
+
+        try:
+            response = await self.client.post("/chat/completions", json=data)
+            response.raise_for_status()
+            result = response.json()
+            choices = result.get("choices") or []
+            msg = (choices[0].get("message") or {}) if choices else {}
+            content = msg.get("content", "") or ""
+
+            citations, search_results = [], []
+            for a in (msg.get("annotations") or []):
+                if isinstance(a, dict) and a.get("type") == "url_citation":
+                    uc = a.get("url_citation") or {}
+                    url = uc.get("url")
+                    if url:
+                        citations.append(url)
+                        search_results.append({"title": uc.get("title"), "url": url})
+            citations = list(dict.fromkeys(citations))
+            usage = result.get("usage") or {}
+
+            return AdapterResponse(
+                request_id=request.id, capability=request.capability, status="success",
+                data={
+                    "content": content,
+                    "citations": citations,
+                    "search_results": search_results,
+                    "model": result.get("model") or model,
+                    "usage": usage,
+                },
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+                cost=0.0, tokens_used=usage.get("total_tokens"),
+                metadata={"openai_id": result.get("id")},
+            )
+        except httpx.HTTPStatusError as e:
+            error_data = e.response.json() if e.response.content else {}
+            msg = error_data.get("error", {}).get("message", str(e)) if isinstance(error_data, dict) else str(e)
+            return AdapterResponse(
+                request_id=request.id, capability=request.capability, status="error",
+                error=f"OpenAI HTTP {e.response.status_code}: {msg}",
+                error_code=f"HTTP_{e.response.status_code}",
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+            )
+        except Exception as e:
+            return AdapterResponse(
+                request_id=request.id, capability=request.capability, status="error",
+                error=str(e),
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+            )
+
     async def _handle_chat_completion(self, request: AdapterRequest) -> AdapterResponse:
         """Handle chat completion requests."""
         start_time = datetime.utcnow()
