@@ -9,7 +9,10 @@ from datetime import datetime
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
-from ..template_utils import resolve_templates, get_adapter_credentials
+from ..template_utils import (
+    resolve_templates,
+    get_adapter_credentials_for_tenant,
+)
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest, AdapterStatus
@@ -221,8 +224,15 @@ class AIProcessNode(BaseNode):
         if not adapter_class:
             raise ValueError(f"AI adapter {adapter_id} not found")
 
-        # Look up UI-configured credentials for this adapter
-        credentials = await get_adapter_credentials(adapter_id) or {}
+        # Look up UI-configured credentials for this adapter, scoped to the
+        # executing org (B2 tiered model): tenant key -> shared/free-tier key
+        # -> adapter env fallback. The tenant-aware getter matches a NULL
+        # (shared) row explicitly and never returns another tenant's row, so
+        # one org's LLM key can't leak to another. context["tenant_id"] is
+        # threaded into every node by the workflow runtime.
+        credentials = await get_adapter_credentials_for_tenant(
+            adapter_id, context.get("tenant_id")
+        ) or {}
 
         # Create adapter instance with proper config + credentials.
         # Propagate the node's "timeout" so long generations (e.g. large
