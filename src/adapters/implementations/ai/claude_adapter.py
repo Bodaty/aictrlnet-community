@@ -29,7 +29,14 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
         
         self.client: Optional[httpx.AsyncClient] = None
         self.base_url = config.base_url or "https://api.anthropic.com/v1"
-        self.api_key = config.api_key or config.credentials.get("api_key")
+        # Env fallback (Bodaty free-tier key) so per-execution instances built
+        # with no stored credential still authenticate — mirrors the perplexity
+        # adapter and the tiered GEO model.
+        self.api_key = (
+            config.api_key
+            or config.credentials.get("api_key")
+            or os.environ.get("ANTHROPIC_API_KEY")
+        )
         
         # Check if we're in discovery-only mode
         self.discovery_only = config.custom_config.get("discovery_only", False)
