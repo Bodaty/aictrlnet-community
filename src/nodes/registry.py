@@ -67,6 +67,16 @@ class NodeRegistry:
         self.register_node_class(NodeType.APPROVAL, ApprovalNode)
         self.register_custom_node("approval", ApprovalNode)
         self.register_custom_node("approvalRequest", ApprovalNode)
+        # Human-in-the-loop aliases. The generation/enhancement pipeline emits
+        # "humanAgent" for "human review/approval required" steps, but no such
+        # node was registered — so they silently ran as passthrough TaskNodes
+        # (no pause, no approval request). Route them to ApprovalNode so they
+        # actually pause for a human. Business/Enterprise overwrite the stub
+        # with the real ApprovalNode via nodes/edition_nodes.py.
+        self.register_custom_node("humanAgent", ApprovalNode)
+        self.register_custom_node("human_agent", ApprovalNode)
+        self.register_custom_node("humanTask", ApprovalNode)
+        self.register_custom_node("human_task", ApprovalNode)
 
         # Aliases for workflow template node types that map to existing implementations
         self.register_custom_node("process", TaskNode)

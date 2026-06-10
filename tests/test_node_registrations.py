@@ -76,6 +76,22 @@ class TestCommunityApprovalStub:
         node = registry.create_node(config)
         assert isinstance(node, CommunityApprovalStub)
 
+    @pytest.mark.parametrize(
+        "alias", ["humanAgent", "human_agent", "humanTask", "human_task"]
+    )
+    def test_registry_routes_human_aliases_to_approval(self, alias):
+        """Human-in-the-loop aliases resolve to ApprovalNode (the stub in
+        Community) instead of silently falling back to a passthrough TaskNode.
+        Business/Enterprise overwrite the stub with the real ApprovalNode."""
+        registry = get_node_registry()
+        config = NodeConfig(
+            name=f"{alias}-test",
+            type=NodeType.TASK,
+            parameters={"custom_node_type": alias},
+        )
+        node = registry.create_node(config)
+        assert isinstance(node, CommunityApprovalStub)
+
     @pytest.mark.asyncio
     async def test_stub_execute_raises_edition_required_error(self):
         config = NodeConfig(
