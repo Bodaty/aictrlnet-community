@@ -294,11 +294,23 @@ class WorkflowExecutionService:
                     if "custom_node_type" not in parameters:
                         parameters["custom_node_type"] = raw_type
 
+                    # Honor a per-node lifecycle timeout from the definition
+                    # ("timeout_seconds" in the node's config/data). Without
+                    # this every node gets NodeConfig's 300s default, which a
+                    # multi-engine GEO audit loop (36 sequential probes)
+                    # cannot fit. Distinct from nodes' internal "timeout"
+                    # params (per-HTTP-request / subprocess budgets).
+                    try:
+                        timeout_seconds = int(parameters.get("timeout_seconds", 300))
+                    except (TypeError, ValueError):
+                        timeout_seconds = 300
+
                     node_config = NodeConfig(
                         id=node_id,
                         name=node_def.get("name") or node_id,
                         type=node_type,
-                        parameters=parameters
+                        parameters=parameters,
+                        timeout_seconds=timeout_seconds
                     )
                     node_instances[node_id] = NodeInstance(
                         id=node_id,
