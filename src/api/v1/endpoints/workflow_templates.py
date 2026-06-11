@@ -41,12 +41,13 @@ async def list_templates(
     sort_desc: bool = True,
     skip: int = 0,
     limit: int = Query(100, le=1000),
+    load_preview: bool = Query(False, description="Load preview nodes/edges from each template's definition file; one disk read per template, so avoid on large lists"),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     List all accessible workflow templates.
-    
+
     - **category**: Filter by template category
     - **tags**: Filter by tags (matches any)
     - **edition**: Filter by edition (community, business, enterprise)
@@ -59,6 +60,7 @@ async def list_templates(
     - **sort_desc**: Sort descending
     - **skip**: Number of templates to skip
     - **limit**: Maximum number of templates to return
+    - **load_preview**: Include per-template preview data (slow for large lists)
     """
     request = TemplateListRequest(
         category=category,
@@ -72,7 +74,8 @@ async def list_templates(
         sort_by=sort_by,
         sort_desc=sort_desc,
         skip=skip,
-        limit=limit
+        limit=limit,
+        load_preview=load_preview
     )
     
     templates, total = await template_service.list_templates(

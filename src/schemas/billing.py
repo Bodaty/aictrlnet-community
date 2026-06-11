@@ -86,3 +86,18 @@ class StartTrialResponse(BaseModel):
     session_id: str = Field(..., description="Stripe Checkout Session ID")
     trial_days: int = Field(..., description="Number of trial days")
     trial_end: str = Field(..., description="ISO datetime when the trial ends")
+
+
+class RedeemTrialCodeRequest(BaseModel):
+    """Request to redeem a trial extension code (e.g. Institute cohort)."""
+    code: str = Field(..., min_length=1, max_length=64, description="Trial redemption code")
+
+
+class RedeemTrialCodeResponse(BaseModel):
+    """Response after a successful trial code redemption."""
+    code: str = Field(..., description="The redeemed code")
+    days: int = Field(..., description="Trial length the code grants, in days")
+    days_remaining: int = Field(..., description="Days of trial remaining from now")
+    trial_end: str = Field(..., description="ISO datetime when the trial ends")
+    reactivated: bool = Field(False, description="True if an expired trial was reactivated")
+    message: str = Field(..., description="Human-readable confirmation")

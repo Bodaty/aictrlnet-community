@@ -96,7 +96,14 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             response = await call_next(request)
             return response
-        
+
+        # In-process test harnesses (smoke/unit) run each test on a fresh
+        # event loop; the module-global DB/Redis pools cannot span loops, so
+        # middleware DB work would poison the pool for the endpoint itself.
+        # Enforcement behavior is covered by integration flows instead.
+        if get_settings().ENVIRONMENT == "test":
+            return await call_next(request)
+
         try:
             # Get current user/tenant
             tenant_id = await self._get_tenant_id(request)
@@ -224,7 +231,7 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
                 if user.edition == "trial_expired":
                     return {
                         "trial_expired": True,
-                        "message": "Your 14-day Business trial has ended. Choose a plan to continue using HitLai.",
+                        "message": "Your Business trial has ended. Choose a plan to continue using HitLai.",
                         "options": {
                             "subscribe": "/pricing",
                             "self_hosted": "https://aictrlnet.com/download",
@@ -248,7 +255,7 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
 
                     return {
                         "trial_expired": True,
-                        "message": "Your 14-day Business trial has ended. Choose a plan to continue using HitLai.",
+                        "message": "Your Business trial has ended. Choose a plan to continue using HitLai.",
                         "options": {
                             "subscribe": "/pricing",
                             "self_hosted": "https://aictrlnet.com/download",
@@ -286,12 +293,16 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
             auth_header = request.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
                 token = auth_header[7:]
-                # This would normally decode JWT and extract tenant_id
                 # DEV_ONLY_START
                 # Development token for testing - removed in production builds
                 if token == "dev-token-for-testing":
                     return get_current_tenant_id()
                 # DEV_ONLY_END
+                # Real JWT: TenantMiddleware (which wraps this middleware) has
+                # already resolved tenant context for the request. Without this
+                # fallback, enforcement (incl. trial expiry) silently skipped
+                # every real-user request.
+                return getattr(request.state, "tenant_id", None) or get_current_tenant_id()
         except Exception as e:
             logger.debug(f"Could not extract tenant_id: {e}")
 

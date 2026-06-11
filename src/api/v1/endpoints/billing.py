@@ -10,11 +10,13 @@ Exposes StripeService methods for:
 from typing import Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Header
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import os
 
 from core.database import get_db
+from models.subscription import Subscription, SubscriptionStatus
 from core.dependencies import get_current_user_safe
 from schemas.billing import (
     BillingPortalResponse,
@@ -23,8 +25,11 @@ from schemas.billing import (
     UpcomingInvoiceResponse,
     StartTrialRequest,
     StartTrialResponse,
+    RedeemTrialCodeRequest,
+    RedeemTrialCodeResponse,
 )
 from services.stripe_service import StripeService
+from services.trial_code_service import redeem_trial_code, TrialCodeError
 from core.config import get_settings
 
 router = APIRouter()
@@ -96,19 +101,36 @@ async def start_trial(
 
     stripe_service = StripeService(db)
 
+    # Honor an existing in-app trial that is longer than the default
+    # (e.g. redeemed trial codes) so starting Stripe checkout never
+    # shortens a promised trial period.
+    trial_days = get_settings().TRIAL_DAYS
+    trial_result = await db.execute(
+        select(Subscription).where(
+            Subscription.user_id == user_id,
+            Subscription.status == SubscriptionStatus.TRIALING,
+            Subscription.stripe_subscription_id.is_(None),
+        )
+    )
+    in_app_trial = trial_result.scalars().first()
+    if in_app_trial and in_app_trial.trial_end:
+        remaining_seconds = (in_app_trial.trial_end - datetime.utcnow()).total_seconds()
+        if remaining_seconds > 0:
+            trial_days = max(trial_days, int(remaining_seconds // 86400) + 1)
+
     try:
         result = await stripe_service.create_checkout_session(
             user_id=user_id,
             plan=request.plan,
-            trial_days=get_settings().TRIAL_DAYS
+            trial_days=trial_days
         )
 
-        trial_end = (datetime.utcnow() + timedelta(days=get_settings().TRIAL_DAYS)).isoformat()
+        trial_end = (datetime.utcnow() + timedelta(days=trial_days)).isoformat()
 
         return StartTrialResponse(
             checkout_url=result["checkout_url"],
             session_id=result["session_id"],
-            trial_days=get_settings().TRIAL_DAYS,
+            trial_days=trial_days,
             trial_end=trial_end
         )
     except ValueError as e:
@@ -116,6 +138,40 @@ async def start_trial(
     except Exception as e:
         logger.error(f"Error starting trial: {e}")
         raise HTTPException(status_code=500, detail="Failed to start trial")
+
+
+@router.post("/redeem-trial-code", response_model=RedeemTrialCodeResponse)
+async def redeem_trial_code_endpoint(
+    request: RedeemTrialCodeRequest,
+    current_user: dict = Depends(get_current_user_safe),
+    db: AsyncSession = Depends(get_db)
+):
+    """Redeem a trial extension code (e.g. Institute cohort codes).
+
+    Extends an in-app trial, reactivates an expired one, or creates a
+    fresh trial subscription if none exists. Codes are configured via
+    the TRIAL_CODES setting; redemption is capped per code and stamped
+    into subscription metadata for attribution.
+    """
+    user_id = current_user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User ID not found")
+
+    try:
+        result = await redeem_trial_code(db, user_id, request.code)
+    except TrialCodeError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"error": e.code, "message": e.message}
+        )
+    except Exception as e:
+        logger.error(f"Error redeeming trial code: {e}")
+        raise HTTPException(status_code=500, detail="Failed to redeem code")
+
+    return RedeemTrialCodeResponse(
+        **result,
+        message=f"Code applied — your Business trial now runs through {result['trial_end'][:10]}."
+    )
 
 
 @router.get("/invoices", response_model=InvoiceListResponse)

@@ -195,7 +195,14 @@ class AICtrlNetApp:
             except Exception as e:
                 logger.error(f"Failed to register adapter classes: {e}")
                 # Don't fail startup if adapters can't be registered
-            
+
+            # Event-loop lag heartbeat for /health/detail (wedge early-warning)
+            try:
+                from core.loop_monitor import start_loop_monitor
+                start_loop_monitor()
+            except Exception as e:
+                logger.warning(f"Loop monitor not started: {e}")
+
             yield
 
             # Shutdown
@@ -264,12 +271,23 @@ class AICtrlNetApp:
         )
         
         # Request timing and rate limit headers middleware
+        import os as _os
+        slow_request_seconds = float(_os.getenv("SLOW_REQUEST_LOG_SECONDS", "10"))
+
         @self.app.middleware("http")
         async def add_process_time_header(request, call_next):
             import time
             start_time = time.time()
             response = await call_next(request)
             process_time = time.time() - start_time
+            # Wedge early-warning: surface requests that should never be slow.
+            # SSE/streaming responses report header-time only, so they don't
+            # false-positive here.
+            if process_time > slow_request_seconds:
+                logger.warning(
+                    f"slow_request method={request.method} path={request.url.path} "
+                    f"ms={process_time * 1000:.0f}"
+                )
             response.headers["X-Process-Time"] = str(process_time)
             response.headers["X-Edition"] = self.settings.EDITION
             

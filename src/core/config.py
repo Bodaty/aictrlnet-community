@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     STRIPE_PRICE_ENTERPRISE_ANNUAL: str = Field(default="")
     FRONTEND_URL: str = Field(default="http://localhost:3000")
     TRIAL_DAYS: int = Field(default=14)
+    # Trial redemption codes: "CODE:days:max_redemptions[:expiry_iso]" comma-separated,
+    # e.g. "INSTITUTE90:90:40:2026-10-31,LIVE30:30:100". Empty = no codes valid.
+    TRIAL_CODES: str = Field(default="")
     
     # Feature Flags
     FEATURES: Dict[str, Any] = Field(default_factory=lambda: {

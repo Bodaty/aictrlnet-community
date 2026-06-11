@@ -260,7 +260,12 @@ class WorkflowTemplateService:
         # Execute query
         result = await db.execute(query)
         templates = result.scalars().all()
-        
+
+        # Read-only listing: end the transaction now so the connection isn't
+        # 'idle in transaction' while preview file I/O runs (sessions use
+        # expire_on_commit=False, so the loaded rows stay usable).
+        await db.commit()
+
         # Add preview data to each template
         responses = []
         for template in templates:

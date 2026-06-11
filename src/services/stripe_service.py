@@ -94,7 +94,8 @@ class StripeService:
         user_id: str,
         plan: str,
         billing_period: str = "monthly",
-        trial_days: int = 0
+        trial_days: int = 0,
+        collect_payment_method: bool = False
     ) -> Dict[str, Any]:
         """Create a Stripe checkout session for subscription upgrade.
 
@@ -103,7 +104,9 @@ class StripeService:
             plan: Plan name (business_starter, business_growth, business_scale, enterprise)
             billing_period: "monthly" or "yearly" (yearly prices should be separate Price IDs)
             trial_days: Number of trial days (0 = no trial). When > 0, payment method
-                collection is deferred until trial end.
+                collection is deferred until trial end unless collect_payment_method is set.
+            collect_payment_method: Require card entry even for a $0-today trial checkout
+                (card-on-file activation — auto-bills when the trial ends).
 
         Returns:
             Dict with checkout_url and session_id
@@ -149,7 +152,9 @@ class StripeService:
         # Configure trial period
         if trial_days > 0:
             checkout_params["subscription_data"]["trial_period_days"] = trial_days
-            checkout_params["payment_method_collection"] = "if_required"
+            checkout_params["payment_method_collection"] = (
+                "always" if collect_payment_method else "if_required"
+            )
 
         # Use existing customer if available, otherwise let Stripe create one
         if existing_subscription and existing_subscription.stripe_customer_id:

@@ -43,6 +43,41 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     )
 
 
+@router.get("/health/detail")
+async def health_detail():
+    """Worker-level health internals for wedge diagnosis.
+
+    Reports event-loop lag, default-executor and slow-sync pool saturation,
+    and DB pool usage. Curl repeatedly to sample all gunicorn workers (pid
+    distinguishes them).
+    """
+    import os
+
+    from core.executors import blocking_executor_stats
+    from core.loop_monitor import default_executor_stats, loop_monitor_stats
+
+    detail = {
+        "pid": os.getpid(),
+        "event_loop": loop_monitor_stats(),
+        "default_executor": default_executor_stats(),
+        "blocking_executor": blocking_executor_stats(),
+    }
+
+    try:
+        from core.database import get_engine
+        pool = get_engine().pool
+        detail["db_pool"] = {
+            "size": pool.size(),
+            "checked_out": pool.checkedout(),
+            "overflow": pool.overflow(),
+            "status": pool.status(),
+        }
+    except Exception as e:
+        detail["db_pool"] = {"error": str(e)}
+
+    return detail
+
+
 @router.get("/edition")
 async def get_edition_info():
     """Get edition information."""

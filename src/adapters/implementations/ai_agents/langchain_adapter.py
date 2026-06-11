@@ -365,11 +365,13 @@ class LangChainAdapter(AgenticAIAdapter):
             if self._langchain_available and "agent" in agent:
                 langchain_agent = agent["agent"]
                 
-                # Execute with timeout
+                # Execute with timeout on the dedicated slow-sync pool
                 try:
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(langchain_agent.run, input_text),
-                        timeout=30  # 30 second timeout for Community
+                    from core.executors import run_blocking
+                    result = await run_blocking(
+                        langchain_agent.run,
+                        input_text,
+                        timeout=30,  # 30 second timeout for Community
                     )
                     
                     duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
