@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional, AsyncGenerator
 import httpx
 import json
@@ -310,7 +311,12 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
                 metadata={"openai_id": result.get("id")},
             )
         except httpx.HTTPStatusError as e:
-            error_data = e.response.json() if e.response.content else {}
+            # Error bodies aren't always JSON (proxies return HTML for 502s);
+            # a raise inside this handler would lose the HTTP status entirely.
+            try:
+                error_data = e.response.json() if e.response.content else {}
+            except ValueError:
+                error_data = {}
             msg = error_data.get("error", {}).get("message", str(e)) if isinstance(error_data, dict) else str(e)
             return AdapterResponse(
                 request_id=request.id, capability=request.capability, status="error",
@@ -393,7 +399,10 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
             )
             
         except httpx.HTTPStatusError as e:
-            error_data = e.response.json() if e.response.content else {}
+            try:
+                error_data = e.response.json() if e.response.content else {}
+            except ValueError:
+                error_data = {}
             error_message = error_data.get("error", {}).get("message", str(e))
             
             return AdapterResponse(

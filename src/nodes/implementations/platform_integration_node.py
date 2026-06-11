@@ -45,11 +45,20 @@ class PlatformIntegrationNode(BaseNode):
         """Build a real PlatformNodeConfig from node parameters, or None.
 
         Returns None for descriptive placeholder nodes that lack the operational
-        fields (valid platform enum + workflow_id + credential_id).
+        fields (valid platform enum + workflow_id + credential_id). A node that
+        HAS operational fields but fails validation is a misconfigured live
+        integration — raise so the author sees the error instead of a silent
+        'skipped' no-op.
         """
         try:
             return PlatformNodeConfig(**self.config.parameters)
-        except Exception:
+        except Exception as exc:
+            p = self.config.parameters or {}
+            if p.get("platform") and (p.get("workflow_id") or p.get("credential_id")):
+                raise ValueError(
+                    f"platformIntegration node {self.config.id}: "
+                    f"invalid platform configuration: {exc}"
+                )
             return None
 
     async def execute(

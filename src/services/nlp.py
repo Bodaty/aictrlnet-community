@@ -2183,8 +2183,9 @@ Return ONLY a single number (the index). Example: 5
         Returns the merged workflow dict, or None to fall back to full generation.
         """
         intent = edit_intent.get("intent", "unknown")
-        nodes = list(current_workflow.get("nodes", []))
-        edges = list(current_workflow.get("edges", []))
+        # Canvas state arrives from the client and can contain null entries
+        nodes = [n for n in (current_workflow.get("nodes") or []) if isinstance(n, dict)]
+        edges = [e for e in (current_workflow.get("edges") or []) if isinstance(e, dict)]
 
         if intent == "add":
             return await self._edit_add_node(prompt, nodes, edges, edit_intent, context, user_id)
@@ -2237,7 +2238,7 @@ Return ONLY a single number (the index). Example: 5
                     last_real_id = edge.get("source") or edge.get("from")
                     break
 
-        max_x = max((n.get("position", {}).get("x", 0) for n in nodes), default=400)
+        max_x = max(((n.get("position") or {}).get("x") or 0 for n in nodes), default=400)
         new_node = {
             "id": node_id,
             "type": node_type,
@@ -3294,7 +3295,7 @@ Do NOT return patterns that aren't clearly stated in the request."""
             if patterns.get("loop"):
                 loop_info = {
                     "type": "foreach" if not patterns["loop"].get("parallel") else "batch",
-                    "item_type": patterns["loop"].get("item_type", "item"),
+                    "item_type": patterns["loop"].get("item_type") or "item",
                     "parallel": patterns["loop"].get("parallel", False)
                 }
                 logger.info(f"LLM LOOP: Detected pattern: {loop_info}")
@@ -4018,7 +4019,7 @@ Do NOT return patterns that aren't clearly stated in the request."""
             node_label = node.get("data", {}).get("label", "").lower() if node.get("data") else ""
 
             # Check if this node matches the loop pattern
-            item_type = loop_info.get("item_type", "").lower()
+            item_type = (loop_info.get("item_type") or "").lower()
 
             if item_type and (item_type in node_name or item_type in node_label):
                 # Transform this node into a loop node

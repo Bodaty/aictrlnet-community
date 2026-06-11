@@ -210,6 +210,10 @@ class WorkflowExecutionService:
         session_maker = get_session_maker()
         async with session_maker() as db:
             execution = None
+            # Bound before the try so the except handler can't NameError when
+            # the failure happens before the context is loaded (which would
+            # swallow the failure event and leave the row 'running' forever).
+            is_dry_run = False
             try:
                 # Scope this session to the execution's tenant for RLS. Must
                 # happen before any table query below — otherwise the
@@ -752,10 +756,15 @@ class WorkflowExecutionService:
 
         # Resume execution — thread tenant_id so RLS resolves correctly in
         # the background task's session (see _execute_workflow_locally).
+        # Strong-ref the task like the start path does (line ~184): an
+        # unreferenced task can be GC'd mid-flight, leaving the execution
+        # stuck in 'resuming'.
         tenant_id_str = execution.tenant_id or get_current_tenant_id()
-        asyncio.create_task(
+        _task = asyncio.create_task(
             self._execute_workflow_locally(execution_id, tenant_id=tenant_id_str)
         )
+        _background_tasks.add(_task)
+        _task.add_done_callback(_background_tasks.discard)
         
         await self.db.refresh(execution)
         return WorkflowExecutionResponse.model_validate(execution)

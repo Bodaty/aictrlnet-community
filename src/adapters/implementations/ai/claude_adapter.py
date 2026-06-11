@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional
 import httpx
 import json
@@ -375,7 +376,10 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
             )
             
         except httpx.HTTPStatusError as e:
-            error_data = e.response.json() if e.response.content else {}
+            try:
+                error_data = e.response.json() if e.response.content else {}
+            except ValueError:
+                error_data = {}
             error_message = error_data.get("error", {}).get("message", str(e))
             
             return AdapterResponse(

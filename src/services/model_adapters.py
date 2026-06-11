@@ -213,7 +213,7 @@ Return ONLY the JSON array, no other text."""
                 return steps
                 
         except Exception as e:
-            logger.error(f"Error generating workflow steps with {model_name}: {e}")
+            logger.error(f"Error generating workflow steps with {model_name}: {e!r}")
             return None
     
     def _parse_llama_response(self, response_text: str, model_name: str) -> Optional[List[WorkflowStep]]:
@@ -374,7 +374,7 @@ class MultiModelAdapter(ModelAdapter):
                 return steps if len(steps) > 2 else None
                 
         except Exception as e:
-            logger.error(f"Two-stage generation failed: {e}")
+            logger.error(f"Two-stage generation failed: {e!r}")
             return None
     
     async def _simple_extraction(self, prompt: str) -> List[WorkflowStep]:

@@ -100,6 +100,15 @@ class AdapterConfigService:
         if config_data.credentials:
             encrypted_credentials = encrypt_data(config_data.credentials)
 
+        # Normalize the synthetic default tenant to NULL: single-tenant
+        # deployments put every user on "default-tenant", but the resolver
+        # (get_adapter_credentials_for_tenant) reads real-tenant rows or
+        # NULL (shared) rows only — a literal "default-tenant" row would be
+        # orphaned and the saved key never used.
+        from core.tenant_context import DEFAULT_TENANT_ID
+        if tenant_id == DEFAULT_TENANT_ID:
+            tenant_id = None
+
         # Create configuration
         config = UserAdapterConfig(
             user_id=user_id,

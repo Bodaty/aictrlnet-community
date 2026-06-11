@@ -153,8 +153,15 @@ async def get_adapter_credentials_for_tenant(
                         f"Loaded tenant '{tenant_id}' credentials for adapter '{adapter_type}'"
                     )
                     return creds
-            # Shared / free-tier row (explicitly tenant-less), never another org's.
-            creds = await _load(session, UserAdapterConfig.tenant_id.is_(None))
+            # Shared / free-tier row, never another org's. Rows saved on
+            # single-tenant deployments before tenant normalization carry the
+            # literal "default-tenant" — treat those as shared too so
+            # existing saved keys keep working without a data migration.
+            creds = await _load(
+                session,
+                (UserAdapterConfig.tenant_id.is_(None))
+                | (UserAdapterConfig.tenant_id == _DEFAULT_TENANT),
+            )
             if creds:
                 logger.info(
                     f"Loaded shared (free-tier) credentials for adapter '{adapter_type}'"

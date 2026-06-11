@@ -7,7 +7,7 @@ import json
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
-from ..template_utils import resolve_templates, get_adapter_credentials
+from ..template_utils import resolve_templates, get_adapter_credentials_for_tenant
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest
@@ -33,6 +33,10 @@ class NotificationNode(BaseNode):
     
     async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the notification node. Returns output dict for BaseNode.run() to wrap."""
+        # Stash the executing org for credential resolution in _create_adapter
+        # (the _send_* helpers don't thread context through).
+        self._tenant_id = context.get("tenant_id")
+
         # Build template context and resolve templates in parameters
         tmpl_ctx = {"input_data": input_data, **input_data}
         resolved_params = resolve_templates(dict(self.config.parameters), tmpl_ctx)
@@ -140,11 +144,17 @@ class NotificationNode(BaseNode):
 
         return output_data
     
-    @staticmethod
-    async def _create_adapter(adapter_class, adapter_id: str, credentials: dict = None):
-        """Create adapter instance with proper AdapterConfig + credentials."""
+    async def _create_adapter(self, adapter_class, adapter_id: str, credentials: dict = None):
+        """Create adapter instance with proper AdapterConfig + credentials.
+
+        Credentials resolve through the tenant-scoped getter (org's own key →
+        shared/free-tier key → adapter env fallback) so one org's key never
+        leaks to another via the previously-unscoped global lookup.
+        """
         if credentials is None:
-            credentials = await get_adapter_credentials(adapter_id) or {}
+            credentials = await get_adapter_credentials_for_tenant(
+                adapter_id, getattr(self, "_tenant_id", None)
+            ) or {}
         config = AdapterConfig(
             name=adapter_id,
             category=AdapterCategory.COMMUNICATION,
