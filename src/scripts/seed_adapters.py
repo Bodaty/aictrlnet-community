@@ -138,6 +138,33 @@ class AdapterSeeder:
                 "tags": ["messaging", "team", "collaboration", "notifications"]
             },
             {
+                "id": "trello",
+                "name": "Trello",
+                "category": "integration",
+                "description": "Trello board automation: create/move/update cards, comments, lists, labels, checklists, members, and webhooks",
+                "version": "1.0.0",
+                "min_edition": "community",
+                "enabled": True,
+                "available": True,
+                "installed": True,
+                "install_count": 1,
+                "adapter_metadata": {
+                    "factory_path": "adapters.implementations.integration.trello_adapter.TrelloAdapter",
+                    "capabilities": ["create_card", "get_card", "move_card", "update_card", "add_comment", "list_cards", "archive_card", "list_lists", "create_list", "add_label", "list_labels", "add_checklist", "get_board", "get_members", "assign_member", "register_webhook", "delete_webhook", "list_webhooks"],
+                    "tags": ["trello", "project-management", "cards", "boards", "kanban"]
+                },
+                "config_schema": {
+                    "type": "object",
+                    "properties": {
+                        "api_key": {"type": "string", "description": "Trello API key"},
+                        "api_token": {"type": "string", "description": "Trello API token"}
+                    },
+                    "required": ["api_key", "api_token"]
+                },
+                "capabilities": ["create_card", "get_card", "move_card", "update_card", "add_comment", "list_cards", "archive_card", "list_lists", "create_list", "add_label", "list_labels", "add_checklist", "get_board", "get_members", "assign_member", "register_webhook", "delete_webhook", "list_webhooks"],
+                "tags": ["trello", "project-management", "cards", "boards", "kanban"]
+            },
+            {
                 "id": "upwork",
                 "name": "Upwork",
                 "category": "human",

@@ -62,6 +62,9 @@ class AdapterFactory:
 
         # Utility Adapters
         "declarative-http": "adapters.implementations.utility.declarative_http_adapter.DeclarativeHTTPAdapter",
+
+        # Integration Adapters
+        "trello": "adapters.implementations.integration.trello_adapter.TrelloAdapter",
     }
     
     @classmethod
