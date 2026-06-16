@@ -52,7 +52,10 @@ COMMUNITY_ADAPTERS = {
         
         # Payment Adapters
         {"name": "Stripe", "type": "stripe", "category": "payment", "provider": "Stripe", "required_edition": "community"},
-        
+
+        # Integration Adapters
+        {"name": "Trello", "type": "trello", "category": "integration", "provider": "Trello", "required_edition": "community"},
+
         # AI Agent Adapters (Community Limited Versions)
         {"name": "LangChain (Community)", "type": "langchain", "category": "ai_agents", "provider": "LangChain", "required_edition": "community"},
         {"name": "AutoGPT (Community)", "type": "autogpt", "category": "ai_agents", "provider": "AutoGPT", "required_edition": "community"},
