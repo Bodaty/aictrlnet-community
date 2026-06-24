@@ -916,6 +916,37 @@ async def create_workflow_trigger(
     }
 
 
+@router.get("/{workflow_id}/triggers")
+async def list_workflow_triggers(
+    workflow_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_active_user),
+):
+    """List the triggers configured for a workflow."""
+    from models.workflow_execution import WorkflowTrigger
+
+    try:
+        result = await db.execute(
+            select(WorkflowTrigger).where(WorkflowTrigger.workflow_id == workflow_id)
+        )
+        triggers = result.scalars().all()
+    except Exception as e:
+        logger.warning(f"Failed to fetch triggers for workflow {workflow_id}: {e}")
+        return []
+
+    return [
+        {
+            "id": str(t.id),
+            "workflow_id": str(t.workflow_id),
+            "name": t.name,
+            "trigger_type": t.trigger_type,
+            "config": t.config,
+            "is_active": t.is_active,
+        }
+        for t in triggers
+    ]
+
+
 @router.get("/{workflow_id}/schedules", response_model=dict)
 async def get_workflow_schedules(
     workflow_id: str,
