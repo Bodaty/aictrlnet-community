@@ -280,17 +280,23 @@ class BaseNode(ABC):
         none is stored. Per-org tenant-scoped credential resolution lands in B2.
         """
         from adapters.models import AdapterConfig, AdapterCategory, AdapterStatus
-        from nodes.template_utils import get_adapter_credentials_for_tenant
+        from nodes.template_utils import resolve_adapter_credentials
 
         adapter_class = adapter_registry.get_adapter_class(adapter_id)
         if not adapter_class:
             raise ValueError(f"Adapter {adapter_id} not found")
 
-        # Tenant-scoped credentials (B2): the executing org's key → shared
-        # free-tier key → adapter env fallback. Tenant comes from the execution
-        # context the workflow runtime threads into every node.
+        # Credentials resolve by the adapter's declared auth type (resolve_adapter_credentials):
+        #   api_key (default) → tenant-scoped UserAdapterConfig, UNCHANGED (org key → shared
+        #     free-tier key → adapter env fallback); never raises.
+        #   oauth2 → per-user OAuth token, run-as-owner fallback for unattended runs.
+        # All scope inputs come from the execution context the workflow runtime threads in.
         tenant_id = (context or {}).get("tenant_id")
-        credentials = await get_adapter_credentials_for_tenant(adapter_id, tenant_id) or {}
+        user_id = (context or {}).get("user_id")
+        owner_id = (context or {}).get("workflow_owner_id") or (context or {}).get("owner_id")
+        credentials = await resolve_adapter_credentials(
+            adapter_id, adapter_class, tenant_id=tenant_id, user_id=user_id, owner_id=owner_id
+        ) or {}
 
         adapter_config = AdapterConfig(
             name=adapter_id,
@@ -313,7 +319,9 @@ class BaseNode(ABC):
                 raise
 
         try:
-            request = AdapterRequest(capability=capability, parameters=parameters)
+            request = AdapterRequest(
+                capability=capability, parameters=parameters, user_id=user_id
+            )
             response = await adapter.handle_request(request)
         finally:
             try:
