@@ -116,24 +116,36 @@ class AdapterNode(BaseNode):
         input_data: Dict[str, Any],
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Prepare parameters for adapter call."""
-        # Get parameter mapping
+        """Prepare parameters for the adapter call.
+
+        Three sources, combined so adapter nodes are as expressive as notification nodes:
+        - ``params``: literal/static values, with ``{{dotted.path}}`` templates resolved
+          against the accumulated workflow data (e.g. a composed calendar summary, or a
+          fixed QuickBooks expense account_id). The base layer.
+        - ``parameter_mapping``: ``{adapter_param: dotted.path}`` pulled dynamically from
+          input_data. Overlays the static base (mapping wins on conflict).
+        - if neither is set, the raw input_data is passed through (unchanged legacy behaviour).
+        """
+        static_params = self.config.parameters.get("params") or {}
         param_mapping = self.config.parameters.get("parameter_mapping", {})
-        
-        if param_mapping:
-            # Map input data to adapter parameters
-            adapter_params = {}
-            
-            for adapter_param, source_path in param_mapping.items():
-                # Support simple dot notation for nested access
-                value = self._get_nested_value(input_data, source_path)
-                if value is not None:
-                    adapter_params[adapter_param] = value
-            
-            return adapter_params
-        else:
-            # Use input data directly
+
+        if not static_params and not param_mapping:
+            # Use input data directly (unchanged legacy behaviour).
             return input_data
+
+        adapter_params: Dict[str, Any] = {}
+        if static_params:
+            from nodes.template_utils import resolve_templates
+            tmpl_ctx = {"input_data": input_data, **input_data}
+            adapter_params = resolve_templates(dict(static_params), tmpl_ctx)
+
+        for adapter_param, source_path in param_mapping.items():
+            # Support simple dot notation for nested access
+            value = self._get_nested_value(input_data, source_path)
+            if value is not None:
+                adapter_params[adapter_param] = value
+
+        return adapter_params
     
     def _get_nested_value(self, data: Dict[str, Any], path: str) -> Any:
         """Get value from nested dictionary using dot notation."""
