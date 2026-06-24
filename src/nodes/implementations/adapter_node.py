@@ -38,10 +38,27 @@ class AdapterNode(BaseNode):
             raise ValueError("No capability specified")
         
         logger.info(f"Calling adapter {adapter_id} with capability {capability}")
-        
+
         # Prepare adapter parameters
         adapter_params = self._prepare_adapter_params(input_data, context)
-        
+
+        # Dry-run: simulate without touching the external system. Honors the workflow-level
+        # is_dry_run (the runtime threads it into every node) and a node-level is_dry_run/
+        # dry_run. The starters run this way until a real integration is connected.
+        node_dry_run = self.config.parameters.get("is_dry_run")
+        if node_dry_run is None:
+            node_dry_run = self.config.parameters.get("dry_run", False)
+        if (context or {}).get("is_dry_run") or node_dry_run:
+            logger.info(
+                "Adapter node %s dry-run: would call %s/%s", self.config.id, adapter_id, capability
+            )
+            return {
+                "_dry_run": True,
+                "_adapter_called": adapter_id,
+                "_capability_used": capability,
+                "would_send": adapter_params,
+            }
+
         try:
             # Call adapter
             result = await self.call_adapter(
@@ -50,19 +67,39 @@ class AdapterNode(BaseNode):
                 parameters=adapter_params,
                 context=context,
             )
-            
+
             # Process adapter response
             output = self._process_adapter_response(result)
-            
+
             # Add metadata
             output["_adapter_called"] = adapter_id
             output["_capability_used"] = capability
-            
+
             return output
-            
+
         except Exception as e:
+            # "Real when connected, else dry-run": when an opt-in node points at an OAuth
+            # integration the user hasn't connected, simulate instead of failing so the
+            # workflow still completes (the curriculum hands-on before the user connects).
+            from nodes.template_utils import CredentialsUnavailable
+            if (
+                isinstance(e, CredentialsUnavailable)
+                and not getattr(e, "connected", False)
+                and self.config.parameters.get("dry_run_if_unconnected")
+            ):
+                logger.info(
+                    "Adapter node %s: %s not connected -> dry-run fallback",
+                    self.config.id, adapter_id,
+                )
+                return {
+                    "_dry_run": True,
+                    "_not_connected": True,
+                    "_adapter_called": adapter_id,
+                    "_capability_used": capability,
+                    "would_send": adapter_params,
+                }
+
             logger.error(f"Adapter call failed: {str(e)}")
-            
             # Check if we should fail or continue
             if self.config.parameters.get("fail_on_error", True):
                 raise
