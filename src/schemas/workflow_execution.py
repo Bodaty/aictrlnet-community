@@ -141,7 +141,8 @@ class WorkflowCheckpointResponse(BaseModel):
 # Trigger schemas
 class WorkflowTriggerCreate(BaseModel):
     """Schema for creating a workflow trigger."""
-    trigger_type: str = Field(..., description="webhook, event, schedule, condition")
+    trigger_type: str = Field(..., description="manual, webhook, event, schedule, gmail, condition")
+    name: Optional[str] = Field(None, description="Human-readable trigger name; defaulted from the type if omitted")
     config: Dict[str, Any]
     is_active: bool = True
 

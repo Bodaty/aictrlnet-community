@@ -881,6 +881,27 @@ async def create_workflow_trigger(
 ):
     """Create a trigger for a workflow."""
     import uuid
+
+    # Gmail inbound trigger: enrich config so the scheduler can poll run-as-owner.
+    # The Business scheduler's _process_gmail_triggers reads owner_user_id/provider/
+    # query/processed_ids from this config; owner_user_id has no default, so set it
+    # from the authenticated user here.
+    if trigger_data.trigger_type == "gmail":
+        owner_id = get_safe_user_id(current_user)
+        cfg = dict(trigger_data.config or {})
+        cfg.setdefault("owner_user_id", str(owner_id) if owner_id else None)
+        cfg.setdefault("provider", "google_gmail")
+        cfg.setdefault("query", "is:unread")
+        cfg.setdefault("poll_interval_seconds", 300)
+        cfg.setdefault("processed_ids", [])
+        trigger_data.config = cfg
+        if not trigger_data.name:
+            trigger_data.name = "Gmail inbound"
+
+    # The workflow_triggers.name column is NOT NULL — default it from the type.
+    if not trigger_data.name:
+        trigger_data.name = f"{trigger_data.trigger_type.capitalize()} trigger"
+
     execution_service = WorkflowExecutionService(db)
     trigger = await execution_service.create_trigger(
         workflow_id=uuid.UUID(workflow_id),
