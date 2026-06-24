@@ -922,8 +922,24 @@ async def list_workflow_triggers(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_active_user),
 ):
-    """List the triggers configured for a workflow."""
+    """List the triggers configured for a workflow.
+
+    Mirrors the access posture of the rest of this router (e.g. get_workflow):
+    the WorkflowDefinition model carries no owner column, so per-user scoping is
+    not available here — we at least 404 on a non-existent workflow. The trigger
+    ``config`` can hold internal fields (the run-as-owner user id, the dedup
+    cursor of processed message ids), so we return only display-safe keys rather
+    than the raw config.
+    """
     from models.workflow_execution import WorkflowTrigger
+
+    workflow = (
+        await db.execute(
+            select(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id)
+        )
+    ).scalar_one_or_none()
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
 
     try:
         result = await db.execute(
@@ -934,13 +950,15 @@ async def list_workflow_triggers(
         logger.warning(f"Failed to fetch triggers for workflow {workflow_id}: {e}")
         return []
 
+    # Whitelist non-sensitive config keys; drop owner_user_id / processed_ids etc.
+    safe_keys = {"query", "provider", "poll_interval_seconds", "webhook_path", "event_pattern"}
     return [
         {
             "id": str(t.id),
             "workflow_id": str(t.workflow_id),
             "name": t.name,
             "trigger_type": t.trigger_type,
-            "config": t.config,
+            "config": {k: v for k, v in (t.config or {}).items() if k in safe_keys},
             "is_active": t.is_active,
         }
         for t in triggers
