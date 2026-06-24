@@ -861,6 +861,16 @@ class AIProcessNode(BaseNode):
         parsed = _try_parse_llm_json(gen_text)
         if parsed is not None:
             result["parsed_output"] = parsed
+            # Surface the parsed top-level keys directly on the result so that, with the
+            # engine's {**input_data, **output_data} accumulation, downstream templates can
+            # address them as {{proposal.subject}} / {{ap_entry.memo}} / {{classification.intent}}
+            # rather than {{parsed_output.proposal.subject}}. This is what the starter
+            # adapter `params`, `parameter_mapping`, and approval `description_template`
+            # all assume. Never clobber the reserved result keys.
+            if isinstance(parsed, dict):
+                for key, value in parsed.items():
+                    if key not in result:
+                        result[key] = value
         return result
     
     async def _process_sentiment(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
