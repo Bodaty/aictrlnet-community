@@ -819,17 +819,47 @@ class WorkflowTemplateService:
         workflow_definition: Dict[str, Any],
         parameters: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Apply parameters to a workflow definition."""
-        # This is a simplified version - in reality, you'd need to:
-        # 1. Validate parameters against template parameter definitions
-        # 2. Apply conditionals based on parameters
-        # 3. Filter nodes/edges based on conditions
-        # 4. Replace parameter placeholders in prompts/configs
-        
+        """Apply instantiate-time parameters to a workflow definition.
+
+        Substitutes ``{{params.<name>}}`` placeholders throughout the definition's
+        string values (prompts, configs) with the user-supplied value, falling back
+        to each parameter's declared ``default``. The ``params.`` prefix keeps these
+        distinct from the runtime ``{{field}}`` / ``{{dotted.path}}`` templates the
+        execution engine resolves later, so we never disturb those.
+        """
         # Fix position format if needed (convert arrays to objects)
         workflow_def = self._fix_workflow_positions(workflow_definition)
-        
-        return workflow_def
+
+        # Effective values = declared defaults overlaid with the provided values.
+        effective: Dict[str, Any] = {}
+        for param in (workflow_def.get("parameters") or []):
+            key = param.get("name") or param.get("id")
+            if key and param.get("default") is not None:
+                effective[key] = param["default"]
+        for key, value in (parameters or {}).items():
+            if value is not None:
+                effective[key] = value
+
+        if not effective:
+            return workflow_def
+
+        def _subst(text: str) -> str:
+            for name, value in effective.items():
+                placeholder = "{{params.%s}}" % name
+                if placeholder in text:
+                    text = text.replace(placeholder, str(value))
+            return text
+
+        def _walk(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {k: _walk(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_walk(v) for v in obj]
+            if isinstance(obj, str):
+                return _subst(obj)
+            return obj
+
+        return _walk(workflow_def)
     
     def _fix_workflow_positions(self, workflow_def: Dict[str, Any]) -> Dict[str, Any]:
         """Convert position arrays [x, y] to objects {x: x, y: y} for compatibility."""
