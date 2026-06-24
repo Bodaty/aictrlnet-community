@@ -174,3 +174,83 @@ async def get_adapter_credentials_for_tenant(
         )
 
     return None
+
+
+class CredentialsUnavailable(Exception):
+    """An adapter's credentials could not be resolved.
+
+    ``connected`` distinguishes "this OAuth integration isn't connected (yet)" — which a
+    workflow may legitimately treat as a dry-run fallback — from a hard config error.
+    """
+
+    def __init__(self, message: str, *, connected: bool = False):
+        super().__init__(message)
+        self.connected = connected
+
+
+async def resolve_adapter_credentials(
+    adapter_type: str,
+    adapter_class: Any = None,
+    *,
+    tenant_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    owner_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve an adapter's credentials by its declared auth type.
+
+    Auth type is read from the adapter class attribute ``AUTH_TYPE`` (default ``"api_key"``):
+      - ``api_key`` → existing per-tenant lookup (UserAdapterConfig). UNCHANGED behaviour for
+        every adapter that doesn't opt into another type: returns {} when none is stored so the
+        adapter falls back to its env key exactly as before, and never raises.
+      - ``oauth2`` → a per-user OAuth access token (refreshed) from the token manager, flattened
+        with its account_metadata (e.g. QuickBooks ``realm_id``). Provider is read from the
+        class attribute ``OAUTH_PROVIDER``.
+
+    Scope is deliberately a policy HERE, not in the adapters: this takes both ``tenant_id`` and
+    ``user_id`` (+ ``owner_id`` for unattended runs). Today oauth2 resolves per-user (``user_id``,
+    falling back to ``owner_id`` when a workflow runs as "system"); moving to workspace-scoped
+    connections later is a change in THIS function, not in any adapter. Raises
+    ``CredentialsUnavailable(connected=False)`` when an oauth2 integration isn't connected.
+    """
+    auth_type = getattr(adapter_class, "AUTH_TYPE", "api_key") if adapter_class else "api_key"
+
+    if auth_type != "oauth2":
+        # api_key (default): unchanged per-tenant resolution; never raises.
+        return await get_adapter_credentials_for_tenant(adapter_type, tenant_id) or {}
+
+    # oauth2: per-user fresh token, with run-as-owner fallback for unattended/system runs.
+    provider = getattr(adapter_class, "OAUTH_PROVIDER", None) or adapter_type
+    effective_user = user_id if (user_id and user_id != "system") else owner_id
+    if not effective_user:
+        raise CredentialsUnavailable(
+            f"{adapter_type}: no user to resolve an OAuth token for "
+            f"(unattended run with no workflow owner).",
+            connected=False,
+        )
+    try:
+        # Business-only service; optional import keeps Community-only deployments clean.
+        from aictrlnet_business.services.oauth_token_manager import (
+            OAuthNotConnected,
+            OAuthRefreshFailed,
+            OAuthTokenManager,
+        )
+    except Exception as exc:  # community-only: no OAuth integrations available
+        raise CredentialsUnavailable(
+            f"{adapter_type}: OAuth integrations require the Business edition ({exc}).",
+            connected=False,
+        )
+
+    from core.database import get_session_maker
+
+    async with get_session_maker()() as session:
+        try:
+            tok = await OAuthTokenManager(session).get_fresh_token(effective_user, provider)
+        except (OAuthNotConnected, OAuthRefreshFailed) as exc:
+            raise CredentialsUnavailable(str(exc), connected=False) from exc
+
+    creds: Dict[str, Any] = {"access_token": tok["access_token"]}
+    if tok.get("email"):
+        creds["email"] = tok["email"]
+    # Flatten account_metadata (e.g. QuickBooks realm_id) to the top level.
+    creds.update(tok.get("account_metadata") or {})
+    return creds
