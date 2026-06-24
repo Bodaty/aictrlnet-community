@@ -21,6 +21,8 @@ def resolve_templates(value: Any, context: Dict[str, Any]) -> Any:
 
     Supported patterns:
     - ``{{env.VAR}}``        – looked up in ``os.environ``
+    - ``{{today}}`` / ``{{today+Nd}}`` / ``{{today-Nd}}`` – a UTC date (YYYY-MM-DD), N days
+      from today; for relative reminders (e.g. a calendar follow-up "3 days out")
     - ``{{dotted.path}}``    – walked through *context* dict/list
     - ``{{simple_key}}``     – top-level key in *context*
 
@@ -28,6 +30,15 @@ def resolve_templates(value: Any, context: Dict[str, Any]) -> Any:
     detect missing data.
     """
     if isinstance(value, str):
+        # Relative-date tokens first (they contain +/- which the path regex won't match).
+        def _date_replacer(m: "re.Match") -> str:
+            from datetime import datetime, timedelta
+            sign, num = m.group(1), m.group(2)
+            days = (int(num) * (1 if sign == "+" else -1)) if (sign and num) else 0
+            return (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
+
+        value = re.sub(r"\{\{today(?:([+-])(\d+)d)?\}\}", _date_replacer, value)
+
         def _replacer(match: re.Match) -> str:
             path = match.group(1)
 
