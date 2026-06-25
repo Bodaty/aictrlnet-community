@@ -36,7 +36,11 @@ class AICtrlNetApp:
             """Application lifespan manager."""
             # Startup
             logger.info(f"Starting AICtrlNet {self.settings.EDITION} Edition v{self.settings.VERSION}")
-            
+
+            # Refuse to boot a real deployment on the built-in dev JWT signing key.
+            from core.config import validate_secret_for_environment
+            validate_secret_for_environment(self.settings)
+
             # Initialize database
             await init_db()
             logger.info("Database initialized")

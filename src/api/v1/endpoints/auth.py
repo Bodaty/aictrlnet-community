@@ -634,7 +634,7 @@ async def refresh_access_token(
             detail="User not found or inactive"
         )
 
-    # Validate token_version — reject old tokens after rotation
+    # Validate token_version — reject tokens revoked by a password change/reset.
     token_version = payload.get("token_version", 0)
     if token_version != (user.token_version or 0):
         raise HTTPException(
@@ -642,9 +642,13 @@ async def refresh_access_token(
             detail="Token has been revoked"
         )
 
-    # Increment token_version to invalidate the old refresh token
-    user.token_version = (user.token_version or 0) + 1
-    await db.commit()
+    # NOTE: token_version is deliberately NOT incremented here. Rotating it on
+    # every refresh invalidated all of the user's other outstanding tokens, so
+    # two tabs (or one page using several API clients) crossing the access-token
+    # expiry boundary together would knock each other out -> forced-logout
+    # cascade. token_version stays a revoke-all switch flipped only by password
+    # change/reset; refresh just re-issues tokens carrying the current version.
+    current_version = user.token_version or 0
 
     # Create new access token
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -652,16 +656,16 @@ async def refresh_access_token(
         data={
             "sub": user.id,
             "tenant_id": user.tenant_id or payload.get("tenant_id"),
-            "token_version": user.token_version,
+            "token_version": current_version,
         },
         expires_delta=access_token_expires
     )
 
-    # Create new refresh token with updated version
+    # Create new refresh token carrying the current (unchanged) version
     new_refresh_token = create_refresh_token(data={
         "sub": user.id,
         "tenant_id": user.tenant_id or payload.get("tenant_id"),
-        "token_version": user.token_version,
+        "token_version": current_version,
     })
 
     return Token(access_token=access_token, refresh_token=new_refresh_token)

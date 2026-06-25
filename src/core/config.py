@@ -2,7 +2,7 @@
 
 from typing import Optional, Dict, Any
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, PostgresDsn, computed_field
+from pydantic import AliasChoices, Field, PostgresDsn, computed_field
 from functools import lru_cache
 import os
 
@@ -23,7 +23,13 @@ class Settings(BaseSettings):
     EDITION: str = Field(default="community", env="AICTRLNET_EDITION")
     
     # Security
-    SECRET_KEY: str = Field(default="dev-secret-key-change-in-production")
+    # Accept the env var names the infra already sets. docker-compose uses
+    # JWT_SECRET_KEY and the GCP deploy passes JWT_SECRET; before this the code
+    # only read SECRET_KEY, so prod silently fell back to the dev default below.
+    SECRET_KEY: str = Field(
+        default="dev-secret-key-change-in-production",
+        validation_alias=AliasChoices("SECRET_KEY", "JWT_SECRET_KEY", "JWT_SECRET"),
+    )
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
@@ -214,6 +220,31 @@ class Settings(BaseSettings):
     # are removed in the stabilization PR after PR 4 lands.
     APPROVALS_STRICT_LOCKING: bool = Field(default=True, env="APPROVALS_STRICT_LOCKING")
     APPROVALS_FAIL_CLOSED: bool = Field(default=True, env="APPROVALS_FAIL_CLOSED")
+
+
+DEV_DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production"
+# Environments that represent a real deployment and must not run on the dev key.
+# Intentionally an allow-list: "test"/"ci"/"development" keep the built-in default.
+_DEPLOY_ENVIRONMENTS = {"production", "prod", "staging", "stage"}
+
+
+def validate_secret_for_environment(settings: "Settings") -> None:
+    """Refuse to boot a real deployment with the built-in dev JWT signing key.
+
+    Call this once from app startup (lifespan), NOT as a Pydantic validator —
+    Settings() is constructed all over the test suite (with ENVIRONMENT=test and
+    the dev default), and a raising validator would break those.
+    """
+    if (
+        settings.ENVIRONMENT.lower() in _DEPLOY_ENVIRONMENTS
+        and settings.SECRET_KEY == DEV_DEFAULT_SECRET_KEY
+    ):
+        raise RuntimeError(
+            f"SECRET_KEY is the built-in development default in a "
+            f"'{settings.ENVIRONMENT}' deployment. Set SECRET_KEY (or JWT_SECRET / "
+            f"JWT_SECRET_KEY) to a real secret — refusing to start with a "
+            f"predictable JWT signing key."
+        )
 
 
 def get_settings() -> Settings:
