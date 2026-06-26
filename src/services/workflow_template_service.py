@@ -150,10 +150,21 @@ class WorkflowTemplateService:
     async def _load_template_definition(self, definition_path: str) -> Dict[str, Any]:
         """Load the full template definition from a file."""
         try:
-            # Try multiple potential paths
+            # Try multiple potential paths. Definition paths are stored relative
+            # (e.g. "workflow-templates/system/finance/invoice-intake-starter.json")
+            # and the file may live under any edition's tree. The current edition
+            # roots MUST be tried — the legacy "/workspace/aictrlnet-fastapi*" paths
+            # below predate the edition split and no longer exist, so without these
+            # the detail/preview load silently fails on enterprise/business
+            # containers (workflow_definition=None, parameters=[]), which breaks the
+            # template preview and the instantiate "Configure Template Parameters"
+            # dialog (no editable fields render).
             paths_to_try = [
                 Path(definition_path),
                 self.base_template_dir.parent / definition_path,
+                Path("/workspace/editions/community") / definition_path,
+                Path("/workspace/editions/business") / definition_path,
+                Path("/workspace/editions/enterprise") / definition_path,
                 Path("/workspace/aictrlnet-fastapi") / definition_path,
                 Path("/workspace/aictrlnet-fastapi-business") / definition_path,
                 Path("/workspace/aictrlnet-fastapi-enterprise") / definition_path,
