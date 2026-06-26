@@ -221,8 +221,32 @@ class LLMGenerationEngine:
         # System-default tier selection (no user preferences — use task-type mapping)
         # This ensures tool_use, workflow_generation, etc. get the right model size
         if not request.user_settings:
-            from llm.tier_resolver import get_dynamic_system_default_for_tier
+            from llm.tier_resolver import (
+                get_dynamic_system_default_for_tier,
+                get_environment_default_model,
+                is_ollama_model,
+            )
             tier = self._determine_tier_for_task(request)
+
+            # Prefer the environment-configured default model (DEFAULT_LLM_MODEL) for
+            # ALL system-default tiers when it is a non-Ollama model (vLLM / hosted API).
+            # System/background calls (the template enhancement pipeline, NL-to-workflow,
+            # classification, etc.) carry no user_settings, so without this they
+            # auto-select the largest available *local Ollama* model per tier — e.g.
+            # 'quality' -> deepseek-r1:32b, a slow reasoning model that makes template
+            # instantiate ~300s and diverges from the fast model the runtime executor
+            # already uses (settings.DEFAULT_LLM_MODEL). Defaulting to the env model keeps
+            # the whole box on one model (vLLM Qwen3-30B on the Beast) while the settings
+            # page still overrides above. Ollama-only dev (DEFAULT_LLM_MODEL=llama3.x)
+            # keeps the existing tier discovery since is_ollama_model() is True there.
+            env_default = get_environment_default_model()
+            if env_default and not is_ollama_model(env_default):
+                logger.info(
+                    f"Using environment default model for {tier.value} tier: "
+                    f"{env_default} (task_type={request.task_type})"
+                )
+                return env_default, tier
+
             try:
                 available_models = await self._get_ollama_models()
                 # Try dynamic default (picks best available model for tier)
