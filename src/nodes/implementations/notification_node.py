@@ -236,7 +236,37 @@ class NotificationNode(BaseNode):
         adapter_class = adapter_registry.get_adapter_class(adapter_id)
         if not adapter_class:
             raise ValueError(f"Email adapter '{adapter_id}' not found")
-        
+
+        # dry-run-if-unconnected (opt-in): when this node sets dry_run_if_unconnected and
+        # the tenant has NO credentials for the email adapter, simulate instead of letting
+        # EmailAdapter raise "SMTP username and password are required". This lets the same
+        # template send for real on a tenant with a configured email adapter (Bodaty /
+        # SendGrid) and safely no-op for tenants without one (the cohort room-of-20),
+        # mirroring the `adapter` node's dry_run_if_unconnected behaviour.
+        if self.config.parameters.get("dry_run_if_unconnected"):
+            creds = await get_adapter_credentials_for_tenant(
+                adapter_id, getattr(self, "_tenant_id", None)
+            ) or {}
+            if not creds:
+                to_addresses = [r.get("address") or r.get("email") for r in recipients]
+                to_addresses = [addr for addr in to_addresses if addr]
+                logger.info(
+                    "Notification node %s: email adapter '%s' not configured for tenant -> dry-run",
+                    self.config.id, adapter_id,
+                )
+                return {
+                    "channel": "email",
+                    "_dry_run": True,
+                    "_not_connected": True,
+                    "sent_to": [],
+                    "would_send": {
+                        "to": to_addresses,
+                        "subject": message["subject"],
+                        "body": message["body"],
+                    },
+                    "adapters_used": [adapter_id],
+                }
+
         # Create adapter instance
         adapter = await self._create_adapter(adapter_class, adapter_id)
         

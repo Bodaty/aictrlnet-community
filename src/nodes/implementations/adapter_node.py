@@ -87,6 +87,59 @@ class AdapterNode(BaseNode):
                 and not getattr(e, "connected", False)
                 and self.config.parameters.get("dry_run_if_unconnected")
             ):
+                # gmail-primary, tenant-email fallback. When the opt-in primary adapter
+                # (e.g. a user's Gmail OAuth) isn't connected, prefer the tenant's
+                # configured fallback adapter (e.g. the SendGrid `email` adapter) so a
+                # tenant that has a shared email sender but no personal inbox (Bodaty)
+                # actually sends — while a tenant with NEITHER still simulates safely (the
+                # cohort room-of-20). The "from your own inbox" pitch is preserved: gmail
+                # stays primary and only this not-connected path consults the fallback.
+                fallback_adapter_id = self.config.parameters.get("fallback_adapter_id")
+                if fallback_adapter_id:
+                    from nodes.template_utils import get_adapter_credentials_for_tenant
+                    tenant_id = (context or {}).get("tenant_id")
+                    try:
+                        fallback_creds = await get_adapter_credentials_for_tenant(
+                            fallback_adapter_id, tenant_id
+                        )
+                    except Exception:  # pragma: no cover - cred lookup must not crash the node
+                        fallback_creds = None
+                    if fallback_creds:
+                        logger.info(
+                            "Adapter node %s: %s not connected -> falling back to %s",
+                            self.config.id, adapter_id, fallback_adapter_id,
+                        )
+                        try:
+                            result = await self.call_adapter(
+                                adapter_id=fallback_adapter_id,
+                                capability=capability,
+                                parameters=adapter_params,
+                                context=context,
+                            )
+                        except Exception as fb_err:
+                            # The fallback genuinely failed to send (e.g. SMTP error).
+                            # Respect fail_on_error like the primary path — never crash a
+                            # governed run silently; surface it or record it in the audit.
+                            logger.error(
+                                "Adapter node %s fallback %s failed: %s",
+                                self.config.id, fallback_adapter_id, fb_err,
+                            )
+                            if self.config.parameters.get("fail_on_error", True):
+                                raise
+                            return {
+                                "error": str(fb_err),
+                                "_adapter_called": fallback_adapter_id,
+                                "_capability_used": capability,
+                                "_fallback_adapter": fallback_adapter_id,
+                                "_failed": True,
+                            }
+                        output = self._process_adapter_response(result)
+                        output["_adapter_called"] = fallback_adapter_id
+                        output["_capability_used"] = capability
+                        output["_fallback_adapter"] = fallback_adapter_id
+                        return output
+
+                # No usable fallback -> simulate (the existing safe behaviour).
                 logger.info(
                     "Adapter node %s: %s not connected -> dry-run fallback",
                     self.config.id, adapter_id,
