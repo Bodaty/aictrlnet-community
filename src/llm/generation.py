@@ -1302,8 +1302,8 @@ Return ONLY the JSON array, no other text or explanation."""
         then any pulled Ollama model as graceful degradation. Returns None if
         Ollama has nothing available.
         """
-        from llm.tier_resolver import get_environment_default_model, is_ollama_model
-
+        # get_environment_default_model + is_ollama_model are already imported at
+        # module scope (top of file); the local re-import shadowed them (ruff F811).
         available = await self._get_ollama_models()
         if not available:
             return None

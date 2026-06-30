@@ -431,6 +431,12 @@ async def get_workflow_status(
                 "started_at": row.started_at,
                 "completed_at": row.completed_at,
                 "duration_ms": row.duration_ms,
+                # inputs + outputs let the run view show what fed each node and
+                # what it produced (incl. the aiProcess draft). Both are real
+                # persisted data and are present even in dry-run: only
+                # side-effect nodes are simulated, and the per-node row keeps
+                # whatever the node actually returned. See node-output drawer.
+                "inputs": row.inputs or {},
                 "outputs": row.outputs or {},
                 "error": (row.error_details or {}).get("error") if row.error_details else None,
             }
