@@ -596,6 +596,7 @@ async def check_server_health(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
+        assert_mcp_mutate(server, current_user)
 
     try:
         mcp_client = await get_mcp_client()
@@ -719,6 +720,7 @@ async def test_server_connection(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
+        assert_mcp_mutate(server, current_user)
     
     try:
         # Create test task
@@ -1112,6 +1114,7 @@ async def list_server_tools(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
+        assert_mcp_read(server, current_user)
 
     try:
         mcp_client = await get_mcp_client()
@@ -1203,6 +1206,7 @@ async def call_mcp_tool(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
+        assert_mcp_mutate(server, current_user)
 
     try:
         mcp_client = await get_mcp_client()
@@ -1304,6 +1308,7 @@ async def list_server_resources(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
+        assert_mcp_read(server, current_user)
 
     try:
         mcp_client = await get_mcp_client()

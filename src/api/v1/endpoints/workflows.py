@@ -65,6 +65,20 @@ from schemas.workflow_node import (
 router = APIRouter()
 
 
+async def _authorize_workflow(db, workflow_id, current_user):
+    """Load a workflow by id and enforce tenant ownership (404 on miss/mismatch).
+
+    Shared by the by-id endpoints so tenant scoping is applied uniformly.
+    """
+    wf = (await db.execute(
+        select(WorkflowDefinition).filter(WorkflowDefinition.id == str(workflow_id))
+    )).scalar_one_or_none()
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    assert_tenant_access(wf, current_user, resource_name="Workflow")
+    return wf
+
+
 @router.get("/create")
 async def get_workflow_create_info(
     db: AsyncSession = Depends(get_db),
@@ -879,6 +893,7 @@ async def list_workflow_executions(
     current_user: dict = Depends(get_current_active_user),
 ):
     """List executions of a workflow."""
+    await _authorize_workflow(db, workflow_id, current_user)
     execution_service = WorkflowExecutionService(db)
     executions = await execution_service.list_executions(
         workflow_id=workflow_id,
@@ -896,6 +911,14 @@ async def get_execution_details(
 ):
     """Get detailed execution information."""
     import uuid
+    # Scope by the parent workflow's tenant — this returns per-node inputs/outputs
+    # (draft text, recipients, PII), so a cross-tenant read here is the NEW-Z1 leak.
+    exec_row = (await db.execute(
+        select(WorkflowExecution).filter(WorkflowExecution.id == execution_id)
+    )).scalar_one_or_none()
+    if not exec_row:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    await _authorize_workflow(db, exec_row.workflow_id, current_user)
     execution_service = WorkflowExecutionService(db)
     try:
         details = await execution_service.get_execution_details(
@@ -915,6 +938,10 @@ async def create_workflow_trigger(
 ):
     """Create a trigger for a workflow."""
     import uuid
+
+    # NEW-Z2: only the workflow's tenant may attach a trigger (otherwise an
+    # attacker binds a run-as-owner Gmail poller to another tenant's workflow).
+    await _authorize_workflow(db, workflow_id, current_user)
 
     # Gmail inbound trigger: enrich config so the scheduler can poll run-as-owner.
     # The Business scheduler's _process_gmail_triggers reads owner_user_id/provider/
@@ -1010,6 +1037,7 @@ async def get_workflow_schedules(
 ):
     """Get all schedules for a workflow."""
     from models.workflow_execution import WorkflowSchedule
+    await _authorize_workflow(db, workflow_id, current_user)
 
     try:
         result = await db.execute(
@@ -1222,8 +1250,9 @@ async def create_webhook_trigger(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Create a webhook trigger for workflow (Business/Enterprise only)."""
+    await _authorize_workflow(db, workflow_id, current_user)
     scheduler = WorkflowScheduler(db)
-    
+
     # Try to create webhook trigger
     result = await scheduler.create_webhook_trigger(
         workflow_id=workflow_id,
@@ -1247,8 +1276,9 @@ async def create_event_trigger(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Create an event trigger for workflow (Business/Enterprise only)."""
+    await _authorize_workflow(db, workflow_id, current_user)
     scheduler = WorkflowScheduler(db)
-    
+
     # Try to create event trigger
     result = await scheduler.create_event_trigger(
         workflow_id=workflow_id,
@@ -1282,6 +1312,7 @@ async def trigger_workflow_manual(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Manually trigger a workflow execution."""
+    await _authorize_workflow(db, workflow_id, current_user)
     scheduler = WorkflowScheduler(db)
 
     import uuid

@@ -7,8 +7,10 @@ import asyncio
 import logging
 from datetime import datetime
 
-from jose import jwt
+from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import get_settings
+from core.database import get_db
+from core.security import verify_token
 from core.tenant_context import get_current_tenant_id
 from events.event_bus import event_bus
 from schemas.workflow_node import WorkflowExecutionUpdate
@@ -124,42 +126,29 @@ event_bus.subscribe("workflow.node.*", handle_workflow_event)
 async def workflow_execution_websocket(
     websocket: WebSocket,
     execution_id: str,
-    token: Optional[str] = Query(None)
+    token: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
 ):
     """WebSocket endpoint for workflow execution updates.
-    
+
     Connect with: ws://localhost:8001/ws/workflows/{execution_id}?token={jwt_token}
     """
-    # Authenticate user
+    # Authenticate user — full DB verification (existence, is_active,
+    # token_version, non-access-type rejection, gated dev token). The previous
+    # bare jwt.decode ignored revocation/type and let deactivated users connect.
     if not token:
         await websocket.close(code=4001, reason="Authentication required")
         return
-    
-    try:
-        settings = get_settings()
-        user = None
 
-        # DEV_ONLY_START
-        # Development token for testing - removed in production builds
-        if settings.ENVIRONMENT == "development" and token == "dev-token-for-testing":
-            user = {
-                "email": "dev@aictrlnet.com",
-                "user_id": "dev-user-123",
-                "tenant_id": get_current_tenant_id()
-            }
-        # DEV_ONLY_END
-
-        if user is None:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-            user = {
-                "email": payload.get("sub"),
-                "user_id": payload.get("user_id", payload.get("sub")),
-                "tenant_id": payload.get("tenant_id") or get_current_tenant_id()
-            }
-    except Exception as e:
-        logger.error(f"Authentication error: {e}")
+    user_info = await verify_token(token, db=db)
+    if not user_info:
         await websocket.close(code=4001, reason="Authentication failed")
         return
+    user = {
+        "email": user_info.get("email"),
+        "user_id": user_info.get("id"),
+        "tenant_id": user_info.get("tenant_id") or get_current_tenant_id(),
+    }
 
     # Connect
     await manager.connect(websocket, execution_id, user)
@@ -202,43 +191,28 @@ async def workflow_execution_websocket(
 
 async def workflow_catalog_websocket(
     websocket: WebSocket,
-    token: Optional[str] = Query(None)
+    token: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
 ):
     """WebSocket endpoint for workflow catalog updates.
-    
+
     Notifies when new nodes/adapters/agents become available.
     Connect with: ws://localhost:8001/ws/workflows/catalog?token={jwt_token}
     """
-    # Authenticate user
+    # Authenticate user — full DB verification via verify_token (see execution ws).
     if not token:
         await websocket.close(code=4001, reason="Authentication required")
         return
-    
-    try:
-        settings = get_settings()
-        user = None
 
-        # DEV_ONLY_START
-        # Development token for testing - removed in production builds
-        if settings.ENVIRONMENT == "development" and token == "dev-token-for-testing":
-            user = {
-                "email": "dev@aictrlnet.com",
-                "user_id": "dev-user-123",
-                "tenant_id": get_current_tenant_id()
-            }
-        # DEV_ONLY_END
-
-        if user is None:
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-            user = {
-                "email": payload.get("sub"),
-                "user_id": payload.get("user_id", payload.get("sub")),
-                "tenant_id": payload.get("tenant_id") or get_current_tenant_id()
-            }
-    except Exception as e:
-        logger.error(f"Authentication error: {e}")
+    user_info = await verify_token(token, db=db)
+    if not user_info:
         await websocket.close(code=4001, reason="Authentication failed")
         return
+    user = {
+        "email": user_info.get("email"),
+        "user_id": user_info.get("id"),
+        "tenant_id": user_info.get("tenant_id") or get_current_tenant_id(),
+    }
 
     await websocket.accept()
     
