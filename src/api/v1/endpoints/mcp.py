@@ -18,6 +18,7 @@ import json
 
 from core.database import get_db
 from core.security import get_current_active_user
+from core.dependencies import require_superuser
 from schemas.mcp import (
     MCPServerCreate,
     MCPServerResponse,
@@ -420,9 +421,17 @@ async def update_mcp_server(
     server_id: str,
     update_data: MCPServerUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
+    _admin: None = Depends(require_superuser),
 ):
-    """Update an MCP server."""
+    """Update an MCP server.
+
+    Admin-only. ``MCPServer`` has no owner/tenant column yet, so a by-id lookup
+    is an IDOR: any authenticated user could rewrite another server's
+    ``command``/``args``/``env_vars``/``url`` and, for stdio transport, hijack
+    what subprocess gets executed. Until per-owner scoping lands (tracked for
+    the authz/tenancy phase), mutation is restricted to superusers.
+    """
     result = await db.execute(
         select(MCPServer).filter_by(id=server_id)
     )

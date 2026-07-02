@@ -87,6 +87,11 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
     to_encode.update({"exp": expire})
+    # Stamp the token purpose so single-purpose tokens (password_reset,
+    # email_verification, refresh) can never be replayed as an access token.
+    # Callers that mint a single-purpose token pass an explicit "type"; only
+    # default it to "access" when the caller did not set one.
+    to_encode.setdefault("type", "access")
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
@@ -175,6 +180,15 @@ async def get_current_user(
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         user_id: str = payload.get("sub")
         if user_id is None:
+            raise credentials_exception
+        # Reject single-purpose tokens presented as access tokens. A
+        # password-reset / email-verification / refresh JWT must never
+        # authenticate a protected endpoint (they reuse SECRET_KEY and were
+        # otherwise indistinguishable from an access token). Missing "type"
+        # is treated as "access" for backward compatibility with tokens
+        # issued before this claim existed.
+        token_type = payload.get("type", "access")
+        if token_type not in ("access",):
             raise credentials_exception
     except JWTError:
         # JWT decode failed — try OAuth2 access token (Business+ feature).
