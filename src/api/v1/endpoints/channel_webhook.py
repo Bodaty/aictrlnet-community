@@ -68,9 +68,19 @@ async def channel_webhook(
 
     # --- Platform-specific verification challenges ---
 
-    # Slack URL verification
+    # Slack signature verification + URL verification
     if channel_type == "slack":
-        body = await request.json()
+        raw_body = await request.body()
+        slack_secret = getattr(settings, "SLACK_SIGNING_SECRET", "")
+        if slack_secret:
+            sig = request.headers.get("X-Slack-Signature", "")
+            ts = request.headers.get("X-Slack-Request-Timestamp", "")
+            if not normalizer.validate_slack_signature(raw_body, ts, sig, slack_secret):
+                raise HTTPException(status_code=401, detail="Invalid Slack signature")
+        try:
+            body = json.loads(raw_body) if raw_body else {}
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid payload")
         if body.get("type") == "url_verification":
             return {"challenge": body.get("challenge", "")}
 
@@ -95,6 +105,37 @@ async def channel_webhook(
         email_secret = getattr(settings, "EMAIL_WEBHOOK_SECRET", "")
         if email_secret and not normalizer.validate_email_webhook(token, email_secret):
             raise HTTPException(status_code=401, detail="Invalid email webhook signature")
+
+    # WhatsApp (Meta) X-Hub-Signature-256 validation
+    if channel_type == "whatsapp":
+        wa_secret = getattr(settings, "WHATSAPP_APP_SECRET", "")
+        if wa_secret:
+            raw_body = await request.body()
+            sig = request.headers.get("X-Hub-Signature-256", "")
+            if not normalizer.validate_whatsapp_signature(raw_body, sig, wa_secret):
+                raise HTTPException(status_code=401, detail="Invalid WhatsApp signature")
+
+    # Telegram secret-token header validation
+    if channel_type == "telegram":
+        tg_secret = getattr(settings, "TELEGRAM_SECRET_TOKEN", "")
+        if tg_secret:
+            token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if not normalizer.validate_telegram_secret(token, tg_secret):
+                raise HTTPException(status_code=401, detail="Invalid Telegram secret token")
+
+    # Twilio X-Twilio-Signature validation (HMAC over the full URL + POST params).
+    # Reconstruct the externally-visible URL via X-Forwarded-Proto so verification
+    # works behind the Cloud Run / nginx TLS terminator.
+    if channel_type == "twilio":
+        tw_token = getattr(settings, "TWILIO_AUTH_TOKEN", "")
+        if tw_token:
+            form = await request.form()
+            params = {k: str(v) for k, v in form.items()}
+            sig = request.headers.get("X-Twilio-Signature", "")
+            proto = request.headers.get("X-Forwarded-Proto", request.url.scheme)
+            url = str(request.url.replace(scheme=proto))
+            if not normalizer.validate_twilio_signature(url, params, sig, tw_token):
+                raise HTTPException(status_code=401, detail="Invalid Twilio signature")
 
     # --- Parse payload ---
     try:
