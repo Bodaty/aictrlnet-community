@@ -3,7 +3,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 import json
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -1603,21 +1603,33 @@ async def get_webhook_stats(
 @router.post("/webhooks/incoming/{platform}", response_model=Dict[str, Any])
 async def receive_platform_webhook(
     platform: PlatformType,
-    request: WebhookEventRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
-    """Receive incoming webhook from platform"""
+    """Receive incoming webhook from platform.
+
+    Signature headers and the signed body MUST come from the real HTTP transport,
+    not from a JSON envelope in the request body — otherwise the caller supplies
+    both the signature and the bytes it's computed over, making verification
+    decorative, and legitimate providers (which send real headers + raw body)
+    would never verify.
+    """
     from services.platform_webhook_service import PlatformWebhookService
-    
+
     webhook_service = PlatformWebhookService(db)
-    
+
     from services.platform_webhook_service import WebhookVerificationError
+
+    # Transport-sourced headers (lower-cased to match handler lookups) and the
+    # exact raw body bytes the provider signed.
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    raw_body = await request.body()
 
     try:
         result = await webhook_service.process_webhook(
             platform=platform,
-            headers=request.headers,
-            body=request.body.encode() if isinstance(request.body, str) else json.dumps(request.body).encode()
+            headers=headers,
+            body=raw_body,
         )
 
         return result

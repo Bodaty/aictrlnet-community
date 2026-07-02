@@ -48,6 +48,24 @@ _NORMALIZERS = {
 # Regex to detect a linking command: "/link 123456" or "link 123456"
 _LINK_PATTERN = re.compile(r"^/?link\s+(\d{6})$", re.IGNORECASE)
 
+# Per-channel signing-secret setting names. In a deploy environment the relevant
+# secret MUST be set, otherwise inbound webhooks are unauthenticated and anyone
+# could forge messages — so we fail closed rather than fall through to the
+# "if secret:" verification branches below (which silently skip when unset).
+_CHANNEL_SECRET_ATTR = {
+    "slack": "SLACK_SIGNING_SECRET",
+    "discord": "DISCORD_PUBLIC_KEY",
+    "email": "EMAIL_WEBHOOK_SECRET",
+    "whatsapp": "WHATSAPP_APP_SECRET",
+    "telegram": "TELEGRAM_SECRET_TOKEN",
+    "twilio": "TWILIO_AUTH_TOKEN",
+}
+_DEPLOY_ENVIRONMENTS = {"production", "prod", "staging", "stage"}
+
+
+def _is_deploy_env() -> bool:
+    return (getattr(settings, "ENVIRONMENT", "") or "").strip().lower() in _DEPLOY_ENVIRONMENTS
+
 
 @router.post("/channels/{channel_type}/webhook")
 async def channel_webhook(
@@ -65,6 +83,17 @@ async def channel_webhook(
     """
     if channel_type not in _NORMALIZERS:
         raise HTTPException(status_code=400, detail=f"Unsupported channel: {channel_type}")
+
+    # Fail closed in deploy environments: no signing secret => cannot verify
+    # authenticity => refuse the webhook. Development keeps the permissive path
+    # so local testing without secrets still works.
+    secret_attr = _CHANNEL_SECRET_ATTR.get(channel_type)
+    if _is_deploy_env() and secret_attr and not getattr(settings, secret_attr, ""):
+        logger.error(
+            "Rejecting %s webhook: %s is not configured in a deploy environment",
+            channel_type, secret_attr,
+        )
+        raise HTTPException(status_code=503, detail="Channel webhook signing secret not configured")
 
     # --- Platform-specific verification challenges ---
 

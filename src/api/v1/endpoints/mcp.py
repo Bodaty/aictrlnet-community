@@ -11,7 +11,7 @@ See: https://modelcontextprotocol.io/specification/2025-03-26
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, false
 from typing import List, Optional, Dict, Any
 import logging
 import json
@@ -103,6 +103,37 @@ def assert_mcp_mutate(server: "MCPServer", current_user) -> None:
         return
     # 404 (not 403) to avoid disclosing existence of others' / system servers.
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP server not found")
+
+
+async def _authorize_task(db, task, current_user) -> None:
+    """Authorize access to an async task.
+
+    Accessible to: a superuser, the client that created the task, or the owner
+    of the task's parent MCP server. Otherwise 404 (no existence disclosure).
+    Without this, any authenticated user could read/mutate/delete another
+    tenant's task records (and their request params / results) by token.
+    """
+    if _is_superuser(current_user):
+        return
+    caller = _mcp_owner_id(current_user)
+    if caller and str(getattr(task, "client_id", "") or "") == caller:
+        return
+    if getattr(task, "server_id", None):
+        res = await db.execute(select(MCPServer).filter_by(id=task.server_id))
+        server = res.scalar_one_or_none()
+        owner = getattr(server, "owner_user_id", None) if server else None
+        if owner is not None and str(owner) == caller:
+            return
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+
+
+async def _owned_server_ids(db, current_user) -> list:
+    """Return MCP server ids owned by the caller (for scoping task lists)."""
+    caller = _mcp_owner_id(current_user)
+    if not caller:
+        return []
+    res = await db.execute(select(MCPServer.id).filter_by(owner_user_id=caller))
+    return [row[0] for row in res.all()]
 
 
 # Module-level MCP client adapter instance for real MCP connections
@@ -1414,6 +1445,9 @@ async def create_async_task(
                 detail="MCP server not found"
             )
 
+        # Only a caller who can use this server may create tasks against it.
+        assert_mcp_read(server, current_user)
+
         # Generate unique task token
         task_token = f"task_{uuid.uuid4().hex}"
 
@@ -1487,6 +1521,20 @@ async def list_async_tasks(
         per_page: Items per page
     """
     try:
+        # Tenant scoping: a non-superuser may only see tasks they created OR that
+        # belong to an MCP server they own. Without this the list leaks every
+        # tenant's task records.
+        scope_clause = None
+        if not _is_superuser(current_user):
+            caller = _mcp_owner_id(current_user)
+            owned = await _owned_server_ids(db, current_user)
+            conditions = []
+            if caller:
+                conditions.append(MCPAsyncTask.client_id == caller)
+            if owned:
+                conditions.append(MCPAsyncTask.server_id.in_(owned))
+            scope_clause = or_(*conditions) if conditions else false()
+
         # Build query
         query = select(MCPAsyncTask)
 
@@ -1496,12 +1544,17 @@ async def list_async_tasks(
         if state:
             query = query.filter_by(state=MCPTaskStateModel(state.value))
 
+        if scope_clause is not None:
+            query = query.where(scope_clause)
+
         # Get total count
         count_query = select(func.count()).select_from(MCPAsyncTask)
         if server_id:
             count_query = count_query.filter_by(server_id=server_id)
         if state:
             count_query = count_query.filter_by(state=MCPTaskStateModel(state.value))
+        if scope_clause is not None:
+            count_query = count_query.where(scope_clause)
         total_result = await db.execute(count_query)
         total = total_result.scalar()
 
@@ -1579,6 +1632,9 @@ async def get_active_tasks_for_server(
             detail="MCP server not found"
         )
 
+    # Only a caller who can read this server may view its active tasks.
+    assert_mcp_read(server, current_user)
+
     # Get active tasks
     result = await db.execute(
         select(MCPAsyncTask)
@@ -1644,6 +1700,8 @@ async def get_async_task(
             detail="Task not found"
         )
 
+    await _authorize_task(db, task, current_user)
+
     return MCPAsyncTaskResponse(
         id=task.id,
         task_token=task.task_token,
@@ -1691,6 +1749,8 @@ async def update_async_task(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found"
         )
+
+    await _authorize_task(db, task, current_user)
 
     # Update fields
     update_dict = update_data.model_dump(exclude_unset=True)
@@ -1755,6 +1815,8 @@ async def cancel_async_task(
             detail="Task not found"
         )
 
+    await _authorize_task(db, task, current_user)
+
     # Can only cancel working tasks
     if task.state != MCPTaskStateModel.WORKING:
         raise HTTPException(
@@ -1815,6 +1877,8 @@ async def delete_async_task(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Task not found"
         )
+
+    await _authorize_task(db, task, current_user)
 
     # Cannot delete working tasks
     if task.state == MCPTaskStateModel.WORKING:

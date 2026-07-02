@@ -526,12 +526,19 @@ async def promote_pattern(
     
     Promoted patterns can guide future conversations.
     """
+    # ConversationPattern is a GLOBAL, cross-tenant learning table (no owner
+    # column). Promotion boosts a pattern's confidence and turns it into template
+    # guidance for every tenant — a privileged mutation. Restrict it to superusers
+    # so an ordinary tenant user can't poison the shared learning loop.
+    if not bool(get_safe_attr(current_user, "is_superuser", False)):
+        raise HTTPException(status_code=403, detail="Not authorized to promote patterns")
+
     stmt = select(ConversationPattern).where(
         ConversationPattern.id == pattern_id
     )
     result = await db.execute(stmt)
     pattern = result.scalar_one_or_none()
-    
+
     if not pattern:
         raise HTTPException(status_code=404, detail="Pattern not found")
     

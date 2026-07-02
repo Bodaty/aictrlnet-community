@@ -11,6 +11,15 @@ from urllib.parse import urlparse
 
 import httpx
 
+try:
+    from core.ssrf import validate_outbound_url, SSRFError
+except Exception:  # pragma: no cover - core always importable in-app
+    def validate_outbound_url(url: str) -> str:
+        return url
+
+    class SSRFError(ValueError):
+        pass
+
 from adapters.base_adapter import BaseAdapter
 from adapters.models import (
     AdapterCapability,
@@ -82,6 +91,11 @@ class DeclarativeHTTPAdapter(BaseAdapter):
 
     async def initialize(self) -> None:
         """Initialize httpx async client."""
+        # SSRF guard: block metadata/private/loopback destinations even when no
+        # explicit allowlist is configured (the allowlist is an ADDITIONAL narrowing).
+        if self._base_url:
+            validate_outbound_url(self._base_url)
+
         # Validate base_url against network allowlist
         if self._network_allowlist:
             parsed = urlparse(self._base_url)
@@ -96,7 +110,9 @@ class DeclarativeHTTPAdapter(BaseAdapter):
             base_url=self._base_url,
             headers=headers,
             timeout=self.config.timeout_seconds,
-            follow_redirects=True,
+            # Do not auto-follow redirects: a 3xx to http://169.254.169.254 would
+            # bypass the create-time URL guard. Redirects must be re-validated.
+            follow_redirects=False,
         )
 
     async def shutdown(self) -> None:
@@ -247,16 +263,16 @@ class DeclarativeHTTPAdapter(BaseAdapter):
     # ------------------------------------------------------------------
 
     def _validate_url(self, path: str) -> None:
-        """Ensure the resolved URL stays within the network allowlist."""
-        if not self._network_allowlist:
-            return
-        # For relative paths, the base_url was already validated
+        """Ensure the resolved URL is safe and stays within the network allowlist."""
+        # Absolute paths escape the pre-validated base_url — SSRF-check them.
         if path.startswith("http"):
-            parsed = urlparse(path)
-            if parsed.hostname not in self._network_allowlist:
-                raise ValueError(
-                    f"URL host '{parsed.hostname}' not in network allowlist"
-                )
+            validate_outbound_url(path)
+            if self._network_allowlist:
+                parsed = urlparse(path)
+                if parsed.hostname not in self._network_allowlist:
+                    raise ValueError(
+                        f"URL host '{parsed.hostname}' not in network allowlist"
+                    )
 
     def _interpolate(self, template: str, params: Dict[str, Any]) -> str:
         """Interpolate {param} placeholders in a string."""
