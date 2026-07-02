@@ -505,6 +505,8 @@ class PlatformWebhookService:
         
         # Attempt delivery
         try:
+            from core.ssrf import validate_outbound_url
+            validate_outbound_url(webhook.webhook_url)  # SSRF guard at send time
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     webhook.webhook_url,

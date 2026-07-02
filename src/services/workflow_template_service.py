@@ -1087,7 +1087,10 @@ class WorkflowTemplateService:
         
         import httpx
         import yaml
-        
+        from core.ssrf import validate_outbound_url
+
+        # SSRF guard: template_url is user-supplied — block internal/metadata.
+        validate_outbound_url(source_url)
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.get(source_url)
@@ -1146,7 +1149,12 @@ class WorkflowTemplateService:
     
     def _parse_bpmn(self, xml_content: str) -> Dict[str, Any]:
         """Parse BPMN 2.0 XML into internal workflow template format."""
-        import xml.etree.ElementTree as ET
+        # defusedxml hardens against billion-laughs / external-entity attacks on
+        # user-uploaded BPMN. Falls back to stdlib only if defusedxml is absent.
+        try:
+            import defusedxml.ElementTree as ET
+        except ImportError:  # pragma: no cover
+            import xml.etree.ElementTree as ET
 
         BPMN_NS = {
             "bpmn": "http://www.omg.org/spec/BPMN/20100524/MODEL",
@@ -1214,7 +1222,12 @@ class WorkflowTemplateService:
 
     def _export_bpmn(self, export_data: Dict[str, Any]) -> str:
         """Export workflow template to BPMN 2.0 XML."""
-        import xml.etree.ElementTree as ET
+        # defusedxml hardens against billion-laughs / external-entity attacks on
+        # user-uploaded BPMN. Falls back to stdlib only if defusedxml is absent.
+        try:
+            import defusedxml.ElementTree as ET
+        except ImportError:  # pragma: no cover
+            import xml.etree.ElementTree as ET
 
         BPMN_NS = "http://www.omg.org/spec/BPMN/20100524/MODEL"
         ET.register_namespace("bpmn", BPMN_NS)

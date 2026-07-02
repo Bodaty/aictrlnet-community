@@ -7,6 +7,7 @@ Output: structured dict to next node in the workflow.
 import csv
 import io
 import logging
+import os
 from datetime import datetime
 from typing import Any, Dict
 
@@ -47,8 +48,20 @@ class FileProcessNode(BaseNode):
             if file_id and not file_path:
                 file_path = input_data.get("storage_path") or f"/tmp/aictrlnet/staged_files/{file_id}"
 
+            # Path-traversal containment: file_path/storage_path are user-editable
+            # (workflow input_data), so confine reads to the staged-files base dir.
+            # Without this, a node could read /etc/passwd, /app/.env, or another
+            # tenant's staged file.
+            base_dir = os.path.realpath(
+                os.getenv("STAGED_FILES_DIR")
+                or os.path.join(os.getenv("DATA_PATH", "/tmp/aictrlnet"), "staged_files")
+            )
+            resolved_path = os.path.realpath(file_path)
+            if os.path.commonpath([resolved_path, base_dir]) != base_dir:
+                raise ValueError("file_path is outside the allowed staged-files directory")
+
             # Read raw bytes
-            with open(file_path, "rb") as f:
+            with open(resolved_path, "rb") as f:
                 raw_bytes = f.read()
 
             # Detect content type from extension if not provided
