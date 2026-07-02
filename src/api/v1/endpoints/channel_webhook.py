@@ -75,6 +75,13 @@ async def channel_webhook(
         if slack_secret:
             sig = request.headers.get("X-Slack-Signature", "")
             ts = request.headers.get("X-Slack-Request-Timestamp", "")
+            # Replay protection: reject stale timestamps (Slack guidance: 5 min).
+            import time as _time
+            try:
+                if abs(_time.time() - int(ts)) > 300:
+                    raise HTTPException(status_code=401, detail="Slack request timestamp too old")
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=401, detail="Invalid Slack timestamp")
             if not normalizer.validate_slack_signature(raw_body, ts, sig, slack_secret):
                 raise HTTPException(status_code=401, detail="Invalid Slack signature")
         try:

@@ -222,7 +222,7 @@ class PowerAutomateWebhookHandler(WebhookHandler):
             return False
         
         token = auth_header[7:]  # Remove "Bearer " prefix
-        return token == secret
+        return hmac.compare_digest(token, secret)
     
     async def parse_event(self, headers: Dict[str, str], body: Dict[str, Any]) -> Dict[str, Any]:
         """Parse Power Automate webhook event"""
@@ -263,7 +263,7 @@ class IFTTTWebhookHandler(WebhookHandler):
         """Verify IFTTT webhook signature"""
         # IFTTT uses simple token validation
         webhook_key = headers.get("x-ifttt-key", "")
-        return webhook_key == secret
+        return hmac.compare_digest(webhook_key, secret)
     
     async def parse_event(self, headers: Dict[str, str], body: Dict[str, Any]) -> Dict[str, Any]:
         """Parse IFTTT webhook event"""
