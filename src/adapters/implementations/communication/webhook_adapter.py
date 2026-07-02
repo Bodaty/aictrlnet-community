@@ -10,6 +10,14 @@ import hashlib
 import hmac
 from urllib.parse import urlencode
 
+
+def _adapter_validate_url(u):
+    """SSRF guard for user-supplied webhook target URLs (blocks internal/metadata,
+    re-resolves DNS). Returns the url; raises SSRFError if disallowed."""
+    from core.ssrf import validate_outbound_url
+    return validate_outbound_url(u)
+
+
 from adapters.base_adapter import BaseAdapter
 from adapters.models import (
     AdapterCapability, AdapterRequest, AdapterResponse,
@@ -36,7 +44,9 @@ class WebhookAdapter(BaseAdapter):
         
         # Security settings
         self.verify_ssl = config.credentials.get("verify_ssl", True)
-        self.follow_redirects = config.credentials.get("follow_redirects", True)
+        # SSRF: never auto-follow redirects — a 30x to an internal/metadata host
+        # would bypass the per-request validate_outbound_url check below.
+        self.follow_redirects = False
     
     async def initialize(self) -> None:
         """Initialize the webhook adapter."""
@@ -259,7 +269,7 @@ class WebhookAdapter(BaseAdapter):
         start_time = datetime.utcnow()
         
         try:
-            url = request.parameters["url"]
+            url = _adapter_validate_url(request.parameters["url"])
             method = request.parameters.get("method", "POST").upper()
             headers = request.parameters.get("headers", {})
             body = request.parameters.get("body")
@@ -387,7 +397,7 @@ class WebhookAdapter(BaseAdapter):
             id=request.id,
             capability="send_webhook",
             parameters={
-                "url": request.parameters["url"],
+                "url": _adapter_validate_url(request.parameters["url"]),
                 "method": request.parameters.get("method", "POST"),
                 "headers": {
                     "Content-Type": "application/json",
@@ -406,7 +416,7 @@ class WebhookAdapter(BaseAdapter):
         start_time = datetime.utcnow()
         
         try:
-            url = request.parameters["url"]
+            url = _adapter_validate_url(request.parameters["url"])
             form_data = request.parameters["form_data"]
             method = request.parameters.get("method", "POST").upper()
             headers = request.parameters.get("headers", {})
@@ -454,7 +464,7 @@ class WebhookAdapter(BaseAdapter):
         start_time = datetime.utcnow()
         
         try:
-            url = request.parameters["url"]
+            url = _adapter_validate_url(request.parameters["url"])
             data = request.parameters["data"]
             secret = request.parameters["secret"]
             signature_header = request.parameters.get("signature_header", "X-Webhook-Signature")
@@ -531,7 +541,7 @@ class WebhookAdapter(BaseAdapter):
         start_time = datetime.utcnow()
         
         try:
-            url = request.parameters["url"]
+            url = _adapter_validate_url(request.parameters["url"])
             method = request.parameters.get("method", "GET").upper()
             interval = request.parameters.get("interval", 60)
             max_polls = request.parameters.get("max_polls", 10)
@@ -696,7 +706,7 @@ class WebhookAdapter(BaseAdapter):
         start_time = datetime.utcnow()
         
         try:
-            url = request.parameters["url"]
+            url = _adapter_validate_url(request.parameters["url"])
             headers = request.parameters.get("headers", {})
             chunk_size = request.parameters.get("chunk_size", 8192)
             max_size = request.parameters.get("max_size")
@@ -753,7 +763,7 @@ class WebhookAdapter(BaseAdapter):
         start_time = datetime.utcnow()
         
         try:
-            url = request.parameters["url"]
+            url = _adapter_validate_url(request.parameters["url"])
             file_content = request.parameters["file_content"]
             file_name = request.parameters["file_name"]
             field_name = request.parameters.get("field_name", "file")
@@ -868,7 +878,7 @@ class WebhookAdapter(BaseAdapter):
         start_time = datetime.utcnow()
         
         try:
-            url = request.parameters["url"]
+            url = _adapter_validate_url(request.parameters["url"])
             method = request.parameters.get("method", "GET").upper()
             expected_status = request.parameters.get("expected_status", 200)
             timeout = request.parameters.get("timeout", 10.0)

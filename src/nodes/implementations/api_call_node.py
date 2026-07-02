@@ -186,6 +186,26 @@ class APICallNode(BaseNode):
         
         return params
     
+    async def _request_validated_redirects(self, client, request_kwargs, follow, max_hops=5):
+        """Issue the request and, if redirects are allowed, follow them manually
+        — validating each hop's Location against the SSRF guard so a redirect
+        can't reach an internal/metadata address."""
+        from core.ssrf import validate_outbound_url
+        resp = await client.request(**request_kwargs)
+        hops = 0
+        while follow and resp.is_redirect and hops < max_hops:
+            loc = resp.headers.get("location")
+            if not loc:
+                break
+            next_url = str(resp.url.join(loc))
+            validate_outbound_url(next_url)  # raises SSRFError on internal target
+            method = "GET" if resp.status_code == 303 else request_kwargs["method"]
+            resp = await client.request(
+                method=method, url=next_url, headers=request_kwargs.get("headers")
+            )
+            hops += 1
+        return resp
+
     async def _make_request(
         self,
         method: str,
@@ -204,8 +224,11 @@ class APICallNode(BaseNode):
         max_retries = self.config.parameters.get("max_retries", 0)
         retry_delay = self.config.parameters.get("retry_delay", 1)
         
+        # Never let httpx auto-follow redirects: a 30x to http://169.254.169.254
+        # would bypass the initial SSRF check. We follow manually below and
+        # re-validate every hop.
         async with httpx.AsyncClient(
-            follow_redirects=follow_redirects,
+            follow_redirects=False,
             timeout=timeout
         ) as client:
             
@@ -231,8 +254,10 @@ class APICallNode(BaseNode):
             last_error = None
             for attempt in range(max_retries + 1):
                 try:
-                    response = await client.request(**request_kwargs)
-                    
+                    response = await self._request_validated_redirects(
+                        client, request_kwargs, follow_redirects
+                    )
+
                     # Check if we should retry on this status code
                     retry_on_status = self.config.parameters.get("retry_on_status", [500, 502, 503, 504])
                     if response.status_code in retry_on_status and attempt < max_retries:
