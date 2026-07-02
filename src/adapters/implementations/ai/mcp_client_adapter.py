@@ -599,9 +599,24 @@ class MCPConnection:
                     logger.warning(f"Invalid JSON from server: {e}")
 
         except asyncio.CancelledError:
-            pass
+            raise
         except Exception as e:
             logger.error(f"Error reading from MCP server: {e}")
+        finally:
+            self._fail_pending_requests(
+                RuntimeError(
+                    f"MCP server {self.config.name} closed the connection "
+                    "before responding (process exited or stdout closed)"
+                )
+            )
+
+    def _fail_pending_requests(self, exc: BaseException) -> None:
+        """Fail all in-flight requests: no response can ever arrive once the
+        server's stdout is closed, so waiting out the request timeout only
+        stalls the caller."""
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.set_exception(exc)
 
     async def _handle_message(self, message: Dict[str, Any]) -> None:
         """Handle an incoming JSON-RPC message."""
