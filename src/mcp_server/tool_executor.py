@@ -4413,6 +4413,47 @@ async def _handle_list_license_entitlements(
 # Wave 7 B1.1 — MCP Client (federate external MCP servers)
 # ---------------------------------------------------------------------------
 
+# Stdio MCP servers are launched as local subprocesses from the stored `command`
+# + `args`. An attacker who can register a server could otherwise set
+# command="/bin/sh" args=["-c", "..."] and get RCE the moment the server is
+# probed. Restrict the launcher to the known MCP-server bootstrappers, forbid
+# inline-eval flags, and reject shell metacharacters.
+_STDIO_ALLOWED_COMMANDS = {
+    "npx", "node", "python", "python3", "uv", "uvx", "deno", "bun", "docker",
+}
+_STDIO_INLINE_EVAL_FLAGS = {"-c", "-e", "--eval", "--command"}
+_STDIO_SHELL_METACHARS = set(";|&`$><\n\r")
+
+
+def _validate_stdio_command(command, args) -> None:
+    """Validate a stdio MCP launcher command/args, or raise ToolExecutionError."""
+    import os as _os
+
+    if not command or not isinstance(command, str):
+        raise ToolExecutionError("stdio transport requires a 'command'")
+    base = _os.path.basename(command.strip()).lower()
+    # Strip a trailing extension (e.g. python3.11 -> python3.11 stays; node.exe -> node)
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base not in _STDIO_ALLOWED_COMMANDS:
+        raise ToolExecutionError(
+            f"stdio command '{command}' is not permitted. Allowed launchers: "
+            + ", ".join(sorted(_STDIO_ALLOWED_COMMANDS))
+        )
+    arg_list = args or []
+    if not isinstance(arg_list, (list, tuple)):
+        raise ToolExecutionError("stdio 'args' must be a list")
+    for a in arg_list:
+        s = str(a)
+        if any(ch in _STDIO_SHELL_METACHARS for ch in s):
+            raise ToolExecutionError("stdio args must not contain shell metacharacters")
+        if s.strip().lower() in _STDIO_INLINE_EVAL_FLAGS:
+            raise ToolExecutionError(
+                "inline-eval flags (-c/-e) are not permitted for stdio MCP commands"
+            )
+    if any(ch in _STDIO_SHELL_METACHARS for ch in command):
+        raise ToolExecutionError("stdio command must not contain shell metacharacters")
+
 
 async def _handle_register_mcp_server(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
@@ -4429,6 +4470,11 @@ async def _handle_register_mcp_server(
     tenant = get_current_tenant_id() or "default"
     transport = arguments.get("transport", "http")
     now = time.time()
+
+    # Fail closed on stdio launchers: only known MCP bootstrappers, no inline
+    # eval, no shell metacharacters (prevents command-injection RCE at probe time).
+    if str(transport).lower() == "stdio":
+        _validate_stdio_command(arguments.get("command"), arguments.get("args"))
 
     try:
         await db.execute(
@@ -4490,6 +4536,11 @@ async def _handle_discover_mcp_server_tools(
     except Exception as e:
         return {"status": "feature_pending", "available": False, "message": str(e)}
 
+    # Defense-in-depth: re-validate the stdio launcher at connect time, in case a
+    # server row predates the registration-time gate.
+    if str(row[3]).lower() == "stdio":
+        _validate_stdio_command(row[4], (row[5] or "").split(",") if row[5] else None)
+
     config = MCPServerConfig(
         name=row[1],
         transport=MCPTransportType(row[3]),
@@ -4547,6 +4598,11 @@ async def _handle_invoke_external_mcp_tool(
         )
     except Exception as e:
         return {"status": "feature_pending", "available": False, "message": str(e)}
+
+    # Defense-in-depth: re-validate the stdio launcher at connect time, in case a
+    # server row predates the registration-time gate.
+    if str(row[3]).lower() == "stdio":
+        _validate_stdio_command(row[4], (row[5] or "").split(",") if row[5] else None)
 
     config = MCPServerConfig(
         name=row[1],
