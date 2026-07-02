@@ -280,7 +280,7 @@ def validate_secret_for_environment(settings: "Settings") -> None:
       default in a deploy environment. (Warn-only until keys are provisioned and
       data re-encrypted; see security remediation plan NEW-S1/§2A.)
     """
-    if settings.ENVIRONMENT.lower() not in _DEPLOY_ENVIRONMENTS:
+    if (settings.ENVIRONMENT or "").strip().lower() not in _DEPLOY_ENVIRONMENTS:
         return
 
     if _secret_is_weak(settings.SECRET_KEY):

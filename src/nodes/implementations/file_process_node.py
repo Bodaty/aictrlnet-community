@@ -52,9 +52,11 @@ class FileProcessNode(BaseNode):
             # (workflow input_data), so confine reads to the staged-files base dir.
             # Without this, a node could read /etc/passwd, /app/.env, or another
             # tenant's staged file.
+            # Default MUST match file_upload.UPLOAD_DIR ("/tmp/aictrlnet/staged_files"),
+            # which is where staged uploads actually land. Deriving from DATA_PATH here
+            # would reject legitimate staged reads whenever DATA_PATH != "/tmp/aictrlnet".
             base_dir = os.path.realpath(
-                os.getenv("STAGED_FILES_DIR")
-                or os.path.join(os.getenv("DATA_PATH", "/tmp/aictrlnet"), "staged_files")
+                os.getenv("STAGED_FILES_DIR") or "/tmp/aictrlnet/staged_files"
             )
             resolved_path = os.path.realpath(file_path)
             if os.path.commonpath([resolved_path, base_dir]) != base_dir:
