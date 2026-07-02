@@ -125,9 +125,14 @@ async def get_current_user(
     settings = get_settings()
 
     # DEV_ONLY_START
-    # Development token for fast local development - only enabled in development environment
-    # Check for dev token first, but ONLY in development environment
-    if token == "dev-token-for-testing" and settings.ENVIRONMENT == "development":
+    # Development token for fast local development. Requires BOTH an explicit
+    # development environment AND an explicit ALLOW_DEV_TOKENS opt-in, so a
+    # single misconfigured env var can never re-open the superuser backdoor.
+    if (
+        token == "dev-token-for-testing"
+        and settings.ENVIRONMENT == "development"
+        and settings.ALLOW_DEV_TOKENS
+    ):
         # Check if dev user exists in database
         result = await db.execute(
             select(User).where(User.email == "dev@aictrlnet.com")
@@ -261,9 +266,13 @@ async def verify_token(token: str, db=None) -> Optional[dict]:
     settings = get_settings()
 
     # DEV_ONLY_START
-    # Development token for fast local development - only enabled in development environment
-    # Check for dev token first, but ONLY in development environment
-    if token == "dev-token-for-testing" and settings.ENVIRONMENT == "development":
+    # Development token for fast local development. Requires BOTH an explicit
+    # development environment AND an explicit ALLOW_DEV_TOKENS opt-in.
+    if (
+        token == "dev-token-for-testing"
+        and settings.ENVIRONMENT == "development"
+        and settings.ALLOW_DEV_TOKENS
+    ):
         return {
             "id": "00000000-0000-0000-0000-000000000001",
             "username": "dev_user",

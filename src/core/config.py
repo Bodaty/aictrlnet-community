@@ -192,7 +192,13 @@ class Settings(BaseSettings):
     )
     
     # Environment settings
-    ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT")
+    # Fail-safe default: unless a deployment *explicitly* declares itself as
+    # development, it is treated as production (secret guard armed, dev token
+    # refused). The dev docker-compose sets ENVIRONMENT=development explicitly.
+    ENVIRONMENT: str = Field(default="production", env="ENVIRONMENT")
+    # Explicit opt-in for the static dev bearer token. Never set outside local;
+    # prod/staging leave it false. Enforced together with ENVIRONMENT=development.
+    ALLOW_DEV_TOKENS: bool = Field(default=False, env="ALLOW_DEV_TOKENS")
     USE_CREATE_ALL: bool = Field(default=False, env="USE_CREATE_ALL")  # Default to migrations even in dev
     DATA_PATH: str = Field(default="/tmp/aictrlnet", env="DATA_PATH")
     
@@ -222,29 +228,79 @@ class Settings(BaseSettings):
     APPROVALS_FAIL_CLOSED: bool = Field(default=True, env="APPROVALS_FAIL_CLOSED")
 
 
+import logging as _logging
+
+_config_logger = _logging.getLogger(__name__)
+
 DEV_DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production"
 # Environments that represent a real deployment and must not run on the dev key.
 # Intentionally an allow-list: "test"/"ci"/"development" keep the built-in default.
 _DEPLOY_ENVIRONMENTS = {"production", "prod", "staging", "stage"}
 
+# Minimum acceptable length for a signing/encryption secret in a deployment.
+_MIN_SECRET_LEN = 32
+
+# Committed / well-known weak literals that must never sign or encrypt in a
+# real deployment. Exact-match alone is not enough (staging shipped its own
+# predictable literal), so the guard rejects any of these AND anything shorter
+# than _MIN_SECRET_LEN.
+_DENYLISTED_SECRETS = {
+    DEV_DEFAULT_SECRET_KEY,
+    "staging-jwt-secret-key-change-in-production",
+    "staging-secret-key-change-in-production",
+    "your-secret-key-here",
+    "changeme",
+    "secret",
+}
+
+# Encryption keys whose committed dev defaults are still in the codebase. These
+# are WARN-ONLY for now (prod has historically run on them; hard-failing would
+# block boot until they are provisioned in Secret Manager and existing data is
+# re-encrypted). Flip to hard-fail in the follow-up once rotation is done.
+_ENCRYPTION_KEY_DEFAULTS = {
+    "MFA_ENCRYPTION_KEY": "dev-mfa-encryption-key-32-chars!",
+    "OAUTH2_ENCRYPTION_KEY": "W3sKDBj0Wqrq-Fu9cVMd0cKCC0iF9SiNjHVKcIjRjko=",
+}
+
+
+def _secret_is_weak(value: str) -> bool:
+    return (value or "") in _DENYLISTED_SECRETS or len(value or "") < _MIN_SECRET_LEN
+
 
 def validate_secret_for_environment(settings: "Settings") -> None:
-    """Refuse to boot a real deployment with the built-in dev JWT signing key.
+    """Fail-safe secret validation at startup for real deployments.
 
     Call this once from app startup (lifespan), NOT as a Pydantic validator —
     Settings() is constructed all over the test suite (with ENVIRONMENT=test and
-    the dev default), and a raising validator would break those.
+    the dev defaults), and a raising validator would break those.
+
+    - SECRET_KEY: HARD FAIL if it is a committed/denylisted literal or shorter
+      than 32 chars in a deploy environment (JWT forgery otherwise).
+    - Encryption keys (MFA/OAuth2): WARN LOUDLY if still on the committed dev
+      default in a deploy environment. (Warn-only until keys are provisioned and
+      data re-encrypted; see security remediation plan NEW-S1/§2A.)
     """
-    if (
-        settings.ENVIRONMENT.lower() in _DEPLOY_ENVIRONMENTS
-        and settings.SECRET_KEY == DEV_DEFAULT_SECRET_KEY
-    ):
+    if settings.ENVIRONMENT.lower() not in _DEPLOY_ENVIRONMENTS:
+        return
+
+    if _secret_is_weak(settings.SECRET_KEY):
         raise RuntimeError(
-            f"SECRET_KEY is the built-in development default in a "
+            f"SECRET_KEY is a weak/committed default in a "
             f"'{settings.ENVIRONMENT}' deployment. Set SECRET_KEY (or JWT_SECRET / "
-            f"JWT_SECRET_KEY) to a real secret — refusing to start with a "
-            f"predictable JWT signing key."
+            f"JWT_SECRET_KEY) to a random secret of at least {_MIN_SECRET_LEN} "
+            f"characters — refusing to start with a predictable JWT signing key."
         )
+
+    for field_name, dev_default in _ENCRYPTION_KEY_DEFAULTS.items():
+        value = getattr(settings, field_name, None)
+        if value == dev_default:
+            _config_logger.critical(
+                "SECURITY: %s is the committed development default in a '%s' "
+                "deployment. Data encrypted with it is recoverable from the "
+                "repository. Provision a real key and re-encrypt existing data. "
+                "(This will become a hard startup failure in a follow-up.)",
+                field_name, settings.ENVIRONMENT,
+            )
 
 
 def get_settings() -> Settings:
