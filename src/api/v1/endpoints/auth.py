@@ -382,11 +382,46 @@ async def read_users_me(
     )
 
 
+class LogoutRequest(BaseModel):
+    """Optional logout body carrying the refresh token to revoke."""
+    refresh_token: Optional[str] = None
+
+
 @router.post("/logout")
 async def logout(
+    body: Optional[LogoutRequest] = None,
     current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Logout user (client should discard token)."""
+    """Log the user out for real.
+
+    Previously a no-op (tokens stayed valid for their full lifetime). Now it
+    bumps token_version — the reliable revoke-all switch, so every outstanding
+    access/refresh token for this user stops validating — and, if the client
+    sends its refresh_token, also denylists that token's jti.
+    """
+    # Reliable revoke: bump token_version (access tokens fail get_current_user;
+    # refresh tokens fail the version check at /token/refresh).
+    try:
+        current_user.token_version = (getattr(current_user, "token_version", 0) or 0) + 1
+        await db.commit()
+    except Exception:
+        await db.rollback()
+
+    # Best-effort per-token denylist if the refresh token was supplied.
+    if body and body.refresh_token:
+        try:
+            from jose import jwt as _jwt
+            from core.token_revocation import revoke_refresh_jti
+            settings = get_settings()
+            payload = _jwt.decode(
+                body.refresh_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+            )
+            if payload.get("jti"):
+                await revoke_refresh_jti(payload["jti"])
+        except Exception:
+            pass  # invalid token — nothing to revoke
+
     return {"message": "Successfully logged out"}
 
 
@@ -634,9 +669,19 @@ async def refresh_access_token(
             detail="User not found or inactive"
         )
 
-    # Validate token_version — reject tokens revoked by a password change/reset.
+    # Validate token_version — reject tokens revoked by a password change/reset
+    # (or logout, which bumps it).
     token_version = payload.get("token_version", 0)
     if token_version != (user.token_version or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked"
+        )
+
+    # Reject a refresh token whose jti was explicitly revoked (e.g. logout with
+    # the refresh token supplied). Fails open if the denylist store is down.
+    from core.token_revocation import is_refresh_revoked
+    if await is_refresh_revoked(payload.get("jti")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked"

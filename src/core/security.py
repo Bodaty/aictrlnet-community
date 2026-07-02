@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import uuid
 
 from datetime import datetime, timedelta
 from typing import Optional, Union, TYPE_CHECKING
@@ -108,6 +109,9 @@ def create_refresh_token(data: dict) -> str:
         to_encode["tenant_id"] = DEFAULT_TENANT_ID
 
     expire = datetime.utcnow() + timedelta(days=30)  # 30 days refresh token
+    # Unique token id so an individual refresh token can be revoked (logout) and
+    # checked against the revocation denylist at refresh time.
+    to_encode.setdefault("jti", str(uuid.uuid4()))
     to_encode.update({"exp": expire, "type": "refresh"})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
