@@ -410,10 +410,12 @@ async def create_intent(
 async def list_intents(
     category: Optional[str] = Query(None, description="Filter by category"),
     active_only: bool = Query(True, description="Only return active intents"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    List available conversation intents.
+    List available conversation intents. Requires authentication (previously
+    exposed learned intents to anonymous callers).
     """
     stmt = select(ConversationIntent)
     
@@ -482,10 +484,12 @@ async def list_conversation_patterns(
     min_confidence: float = Query(0.5, ge=0, le=1, description="Minimum confidence score"),
     pattern_type: Optional[str] = Query(None, description="Filter by pattern type"),
     promoted_only: bool = Query(False, description="Only return promoted patterns"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    List learned conversation patterns.
+    List learned conversation patterns. Requires authentication (previously
+    exposed learned behavioral data to anonymous callers).
     
     These patterns help understand common user interaction flows
     and can be used to improve the conversation system.
