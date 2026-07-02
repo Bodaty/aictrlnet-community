@@ -144,6 +144,23 @@ class RedisCache:
             logger.error(f"Redis increment error for key {key}: {e}")
             return 0
     
+    async def incr_with_ttl(self, key: str, ttl_seconds: int) -> int:
+        """Atomically increment a counter, setting its TTL on first creation.
+
+        Returns the post-increment count, or 0 if Redis is unavailable (callers
+        treat 0 as "store down" and fail open). Used for fixed-window rate limits.
+        """
+        if not self._redis_client:
+            return 0
+        try:
+            count = await self._redis_client.incr(key)
+            if count == 1:
+                await self._redis_client.expire(key, ttl_seconds)
+            return count
+        except Exception as e:
+            logger.error(f"Redis incr_with_ttl error for key {key}: {e}")
+            return 0
+
     def cache_key(self, prefix: str, *args, **kwargs) -> str:
         """Generate cache key from prefix and arguments."""
         parts = [prefix]

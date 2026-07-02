@@ -63,6 +63,7 @@ from core.security import (
 )
 from core.config import get_settings
 from core.cache import get_cache
+from core.rate_limit import enforce_rate_limit, client_ip
 from core.tenant_context import DEFAULT_TENANT_ID, get_current_tenant_id
 import logging
 
@@ -439,9 +440,16 @@ class PasswordResetConfirm(BaseModel):
 @router.post("/password-reset/request")
 async def request_password_reset(
     reset_request: PasswordResetRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Request password reset token."""
+    # Throttle reset-token generation per IP and per target email (Redis-backed,
+    # multi-instance; fails open). Stops flooding a mailbox / farming valid tokens.
+    ip = client_ip(request)
+    await enforce_rate_limit("pwreset_req_ip", ip, limit=10, window_seconds=3600)
+    await enforce_rate_limit("pwreset_req_email", reset_request.email, limit=5, window_seconds=3600)
+
     # Find user by email
     result = await db.execute(
         select(User).where(User.email == reset_request.email)
@@ -470,11 +478,15 @@ async def request_password_reset(
 @router.post("/password-reset/confirm")
 async def confirm_password_reset(
     reset_data: PasswordResetConfirm,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Confirm password reset with token."""
     from jose import jwt, JWTError
-    
+
+    # Throttle token-guessing per IP (fails open).
+    await enforce_rate_limit("pwreset_confirm_ip", client_ip(request), limit=20, window_seconds=3600)
+
     try:
         # Decode token
         settings = get_settings()
@@ -634,11 +646,15 @@ class RefreshTokenRequest(BaseModel):
 @router.post("/token/refresh", response_model=Token)
 async def refresh_access_token(
     token_data: RefreshTokenRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> Token:
     """Refresh access token using refresh token."""
     from jose import jwt, JWTError
-    
+
+    # Throttle refresh-token guessing/replay per IP (fails open).
+    await enforce_rate_limit("token_refresh_ip", client_ip(request), limit=60, window_seconds=3600)
+
     try:
         # Decode refresh token
         settings = get_settings()
@@ -723,12 +739,19 @@ async def verify_mfa_login(
 ):
     """Verify MFA code during login."""
     
+    # Throttle MFA-code guessing per session token: a 6-digit code is only 1e6
+    # possibilities, so cap attempts hard within the session window (fails open).
+    await enforce_rate_limit(
+        "mfa_verify", request.session_token, limit=10, window_seconds=600,
+        detail="Too many MFA attempts. Please log in again to get a new code.",
+    )
+
     # Get temporary session from login
     cache = await get_cache()
     session_data = await cache.get(f"mfa_session:{request.session_token}")
     if not session_data:
         raise HTTPException(401, "MFA session expired. Please log in again to get a new verification code.")
-    
+
     service = MFAService(db)
     result = await service.verify_mfa_code(
         session_data["user_id"],

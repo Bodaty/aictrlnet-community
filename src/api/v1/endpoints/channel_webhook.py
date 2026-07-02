@@ -292,6 +292,15 @@ async def _handle_link_command(
 
     Returns a channel-formatted response with the result.
     """
+    # Throttle 6-digit code guessing per channel identity: 1e6 space, so cap
+    # attempts hard (fails open if Redis is down). Without this an attacker could
+    # brute-force a valid, unexpired code from a single channel account.
+    from core.rate_limit import enforce_rate_limit
+    await enforce_rate_limit(
+        "channel_link", f"{channel_type}:{sender_id}", limit=8, window_seconds=900,
+        detail="Too many linking attempts. Please wait and generate a fresh code.",
+    )
+
     # Look up the code
     result = await db.execute(
         select(ChannelLinkCode).filter(
