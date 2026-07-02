@@ -8,7 +8,10 @@ import asyncio
 import logging
 from datetime import datetime
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from core.security import verify_token
+from core.database import get_db
 from core.dependencies import get_edition
 
 router = APIRouter()
@@ -115,11 +118,13 @@ async def websocket_endpoint(
     websocket: WebSocket,
     token: str = Query(..., description="Authentication token"),
     edition: str = Query("community", description="Edition type"),
+    db: AsyncSession = Depends(get_db),
 ):
     """Main WebSocket endpoint for real-time updates."""
-    # Verify token
+    # Verify token against the DB (existence, is_active, token_version) — the
+    # db-less fallback trusts the JWT payload and ignores revocation.
     try:
-        user = await verify_token(token)
+        user = await verify_token(token, db=db)
         if not user:
             await websocket.close(code=1008, reason="Invalid token")
             return

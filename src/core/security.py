@@ -291,6 +291,11 @@ async def verify_token(token: str, db=None) -> Optional[dict]:
         if user_id is None:
             return None
 
+        # Reject single-purpose tokens (refresh/password_reset/…) presented as
+        # access tokens — consistent with get_current_user.
+        if payload.get("type", "access") not in ("access",):
+            return None
+
         # If database session provided, verify user exists and is active
         if db:
             from sqlalchemy import select
@@ -304,6 +309,12 @@ async def verify_token(token: str, db=None) -> Optional[dict]:
 
             if not user.is_active:
                 return None  # User is deactivated
+
+            # Enforce token_version so a password change/reset (which bumps it)
+            # revokes previously-issued tokens — including on the WebSocket path.
+            token_version = payload.get("token_version")
+            if token_version is not None and token_version != (getattr(user, "token_version", 0) or 0):
+                return None
 
             # Return real user data from database
             return {
