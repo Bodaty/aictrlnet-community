@@ -1611,15 +1611,20 @@ async def receive_platform_webhook(
     
     webhook_service = PlatformWebhookService(db)
     
+    from services.platform_webhook_service import WebhookVerificationError
+
     try:
         result = await webhook_service.process_webhook(
             platform=platform,
             headers=request.headers,
             body=request.body.encode() if isinstance(request.body, str) else json.dumps(request.body).encode()
         )
-        
+
         return result
-        
+
+    except WebhookVerificationError as e:
+        # Forged / unsigned inbound webhook — reject.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

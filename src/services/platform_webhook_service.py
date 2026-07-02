@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
 from core.database import get_db
+from core.config import get_settings
 from models.platform_integration import (
     PlatformWebhook, 
     PlatformWebhookDelivery,
@@ -344,7 +345,40 @@ class PlatformWebhookService:
         handler = self.handlers.get(platform)
         if not handler:
             raise ValueError(f"No handler for platform {platform.value}")
-        
+
+        # Signature verification (2I): a forged event must not be able to flip
+        # execution status or fan out webhooks. Verify the HMAC against the
+        # registered secret(s) for this platform BEFORE parsing/acting.
+        secrets = (await self.db.execute(
+            select(PlatformWebhook.secret).where(
+                PlatformWebhook.platform == platform.value,
+                PlatformWebhook.is_active == True,  # noqa: E712
+                PlatformWebhook.secret.isnot(None),
+            )
+        )).scalars().all()
+        verified = False
+        for secret in secrets:
+            try:
+                if secret and await handler.verify_signature(headers, body, secret):
+                    verified = True
+                    break
+            except NotImplementedError:
+                # Handler has no signature scheme — cannot verify this platform.
+                break
+        if not verified:
+            settings = get_settings()
+            deploy = settings.ENVIRONMENT.lower() in {"production", "prod", "staging", "stage"}
+            # Fail closed in a deployment, or whenever a secret IS configured
+            # (a configured secret means signatures are expected).
+            if deploy or secrets:
+                raise WebhookVerificationError(
+                    f"invalid or missing signature for {platform.value} webhook"
+                )
+            logger.warning(
+                "Processing UNVERIFIED %s webhook (no secret configured; dev only)",
+                platform.value,
+            )
+
         # Parse body
         try:
             body_data = json.loads(body)
