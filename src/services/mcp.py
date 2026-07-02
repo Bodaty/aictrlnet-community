@@ -190,6 +190,9 @@ class MCPService:
                     f"MCP server '{server.name}' is configured for HTTP transport "
                     "but has no URL set."
                 )
+            # SSRF guard: server.url is user-supplied; block internal/metadata.
+            from core.ssrf import validate_outbound_url
+            validate_outbound_url(server.url)
             return await self._execute_mcp_tool_http(server, tool, params)
 
         if not server.command:
