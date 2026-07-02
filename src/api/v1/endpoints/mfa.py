@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_active_user
+from core.user_utils import get_safe_attr
 from models.user import User
 from services.mfa_service import MFAService
 from api.v1.endpoints._auth_helpers import is_superuser as check_superuser
@@ -163,16 +164,22 @@ async def reset_mfa(
 async def verify_mfa(
     user_id: str,
     request: MFAVerifyRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user = Depends(get_current_active_user),
 ):
-    """Verify MFA code (for testing/admin purposes)."""
-    
-    # This endpoint is primarily for testing
-    # Real verification happens during login
+    """Verify an MFA code for a user.
+
+    Requires authentication and confines the check to the user's own account
+    (or a superuser). Previously this endpoint took no ``current_user``, making
+    it an unauthenticated oracle: anyone could brute-force any user's TOTP /
+    burn their backup codes and probe whether MFA was enabled.
+    """
+    caller_id = str(get_safe_attr(current_user, "id", None) or get_safe_attr(current_user, "sub", ""))
+    is_admin = bool(get_safe_attr(current_user, "is_superuser", False))
+    if not is_admin and caller_id != str(user_id):
+        raise HTTPException(status_code=403, detail="Not permitted")
+
     service = MFAService(db)
-    
-    # Extract user_id from session token
-    # This is a simplified version - real implementation would validate session
     result = await service.verify_mfa_code(user_id, request.code)
     
     if not result["valid"]:

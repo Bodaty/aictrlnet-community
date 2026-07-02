@@ -16,6 +16,7 @@ from core.security import get_current_active_user
 from core.enforcement import LicenseEnforcer, LimitType
 from core.usage_tracker import get_usage_tracker
 from core.tenant_context import get_current_tenant_id
+from core.authz import assert_tenant_access
 from middleware.enforcement import require_feature
 from core.upgrade_hints import attach_upgrade_hints
 from models.community import WorkflowDefinition, WorkflowInstance
@@ -370,10 +371,11 @@ async def get_workflow(
         select(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id)
     )
     workflow = result.scalar_one_or_none()
-    
+
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    
+    assert_tenant_access(workflow, current_user, resource_name="Workflow")
+
     return WorkflowResponse.model_validate(workflow)
 
 
@@ -397,7 +399,11 @@ async def get_workflow_status(
     if not workflow:
         logger.error(f"Workflow not found: {workflow_id}")
         raise HTTPException(status_code=404, detail="Workflow not found")
-    
+    # Fail-closed tenant scoping: the run-view status payload now exposes
+    # per-node inputs/outputs (draft text, recipients, PII), so a cross-tenant
+    # read here would leak another tenant's execution data.
+    assert_tenant_access(workflow, current_user, resource_name="Workflow")
+
     # Prefer the most recent WorkflowExecution row. The execute endpoint
     # creates these and they carry the live status (running/paused/completed/
     # failed). WorkflowInstance rows are typically seeded once and never
@@ -507,7 +513,8 @@ async def update_workflow(
     
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    
+    assert_tenant_access(workflow, current_user, resource_name="Workflow")
+
     # Update fields
     update_data = workflow_update.model_dump(exclude_unset=True)
 
@@ -555,7 +562,8 @@ async def delete_workflow(
     
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    
+    assert_tenant_access(workflow, current_user, resource_name="Workflow")
+
     # Import models that have foreign keys to workflow_definitions
     from models.workflow_execution import WorkflowExecution, WorkflowTrigger, WorkflowSchedule
     from sqlalchemy import delete
@@ -607,7 +615,8 @@ async def list_workflow_instances(
     
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    
+    assert_tenant_access(workflow, current_user, resource_name="Workflow")
+
     # Get instances
     query = (
         select(WorkflowInstance)
@@ -649,6 +658,7 @@ async def execute_workflow(
 
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    assert_tenant_access(workflow, current_user, resource_name="Workflow")
 
     # Track execution start
     import time
@@ -741,6 +751,12 @@ async def pause_workflow(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Pause a running workflow."""
+    _wf = (await db.execute(
+        select(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id)
+    )).scalar_one_or_none()
+    if not _wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    assert_tenant_access(_wf, current_user, resource_name="Workflow")
     # Get the latest running instance
     result = await db.execute(
         select(WorkflowInstance)
@@ -770,6 +786,12 @@ async def resume_workflow(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Resume a paused workflow."""
+    _wf = (await db.execute(
+        select(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id)
+    )).scalar_one_or_none()
+    if not _wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    assert_tenant_access(_wf, current_user, resource_name="Workflow")
     # Get the latest paused instance
     result = await db.execute(
         select(WorkflowInstance)
@@ -799,6 +821,12 @@ async def cancel_workflow(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Cancel a running workflow."""
+    _wf = (await db.execute(
+        select(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id)
+    )).scalar_one_or_none()
+    if not _wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    assert_tenant_access(_wf, current_user, resource_name="Workflow")
     # Get the latest active instance
     result = await db.execute(
         select(WorkflowInstance)
@@ -946,6 +974,9 @@ async def list_workflow_triggers(
     ).scalar_one_or_none()
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    # NEW-Z2: only the workflow's tenant may attach triggers/schedules to it
+    # (otherwise an attacker binds a run-as-owner Gmail poller to any workflow).
+    assert_tenant_access(workflow, current_user, resource_name="Workflow")
 
     try:
         result = await db.execute(
@@ -1023,6 +1054,13 @@ async def create_workflow_schedule(
 ):
     """Create a schedule for a workflow."""
     import uuid
+    # NEW-Z2: only the workflow's tenant may schedule it.
+    _wf = (await db.execute(
+        select(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id)
+    )).scalar_one_or_none()
+    if not _wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    assert_tenant_access(_wf, current_user, resource_name="Workflow")
     execution_service = WorkflowExecutionService(db)
     schedule = await execution_service.create_schedule(
         workflow_id=uuid.UUID(workflow_id),
@@ -1056,6 +1094,13 @@ async def delete_workflow_schedule(
     schedule = await db.get(WorkflowSchedule, sched_uuid)
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    # NEW-Z2: confine deletion to the owning tenant via the parent workflow.
+    parent = (await db.execute(
+        select(WorkflowDefinition).filter(WorkflowDefinition.id == str(schedule.workflow_id))
+    )).scalar_one_or_none()
+    if not parent:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    assert_tenant_access(parent, current_user, resource_name="Schedule")
 
     await db.delete(schedule)
     await db.commit()
@@ -1080,6 +1125,13 @@ async def delete_workflow_trigger(
     trigger = await db.get(WorkflowTrigger, trig_uuid)
     if not trigger:
         raise HTTPException(status_code=404, detail="Trigger not found")
+    # NEW-Z2: confine deletion to the owning tenant via the parent workflow.
+    parent = (await db.execute(
+        select(WorkflowDefinition).filter(WorkflowDefinition.id == str(trigger.workflow_id))
+    )).scalar_one_or_none()
+    if not parent:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    assert_tenant_access(parent, current_user, resource_name="Trigger")
 
     await db.delete(trigger)
     await db.commit()
@@ -1137,6 +1189,13 @@ async def create_workflow_schedule_via_scheduler(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Create a schedule for workflow execution (Business/Enterprise only)."""
+    # NEW-Z2: only the workflow's tenant may schedule it.
+    _wf = (await db.execute(
+        select(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id)
+    )).scalar_one_or_none()
+    if not _wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    assert_tenant_access(_wf, current_user, resource_name="Workflow")
     scheduler = WorkflowScheduler(db)
     
     # Try to create schedule - will fail with upgrade message if Community
