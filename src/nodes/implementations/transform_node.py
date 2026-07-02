@@ -173,9 +173,11 @@ class TransformNode(BaseNode):
                 # Filter based on condition
                 condition = filter_config.get("condition")
                 if condition:
-                    # Simple condition evaluation
+                    # Simple condition evaluation — safe restricted evaluator
+                    # (eval() here was a sandbox escape).
                     try:
-                        if not eval(condition, {"__builtins__": {}}, output_data):
+                        from core.safe_eval import safe_eval
+                        if not safe_eval(condition, output_data):
                             # Condition not met, return empty or default
                             return filter_config.get("default", {})
                     except:

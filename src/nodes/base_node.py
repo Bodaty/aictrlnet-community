@@ -251,9 +251,10 @@ class BaseNode(ABC):
                 "null": None
             }
             
-            # WARNING: eval is dangerous! Use a safe expression evaluator in production
-            # This is just for demonstration
-            result = eval(condition, {"__builtins__": {}}, context)
+            # Safe restricted evaluator — eval() here was a sandbox escape
+            # (().__class__.__bases__[0].__subclasses__() → RCE).
+            from core.safe_eval import safe_eval
+            result = safe_eval(condition, context)
             return bool(result)
             
         except Exception as e:

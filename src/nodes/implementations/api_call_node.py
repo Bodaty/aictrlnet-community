@@ -195,6 +195,10 @@ class APICallNode(BaseNode):
         params: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Make the HTTP request."""
+        # SSRF guard: block user-supplied URLs that resolve to internal /
+        # metadata addresses (re-resolves DNS to defeat rebinding).
+        from core.ssrf import validate_outbound_url
+        validate_outbound_url(url)
         timeout = self.config.parameters.get("timeout", 30)
         follow_redirects = self.config.parameters.get("follow_redirects", True)
         max_retries = self.config.parameters.get("max_retries", 0)

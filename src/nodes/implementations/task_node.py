@@ -130,8 +130,10 @@ class TaskNode(BaseNode):
                 "round": round
             }
             
-            # WARNING: eval is dangerous! Use a safe expression evaluator in production
-            result = eval(expression, {"__builtins__": {}}, calc_context)
+            # Safe restricted evaluator (whitelisted names/callables only) —
+            # replaces an eval() sandbox escape.
+            from core.safe_eval import safe_eval
+            result = safe_eval(expression, calc_context)
             
             return {
                 "result": result,

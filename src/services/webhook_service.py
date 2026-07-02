@@ -11,6 +11,8 @@ from sqlalchemy import select, and_, desc
 import httpx
 import logging
 
+from core.ssrf import validate_outbound_url
+
 from models import Webhook, WebhookDelivery, User
 from schemas import (
     WebhookCreate, WebhookResponse, WebhookCreateResponse,
@@ -263,7 +265,9 @@ class WebhookService:
         start_time = datetime.utcnow()
         try:
             headers = self._prepare_headers(webhook, payload)
-            
+
+            # SSRF guard at send time (re-resolves DNS to defeat rebinding).
+            validate_outbound_url(webhook.url)
             response = await self.http_client.post(
                 webhook.url,
                 json=payload,
@@ -400,7 +404,9 @@ class WebhookService:
         
         try:
             headers = self._prepare_headers(webhook, payload)
-            
+
+            # SSRF guard at send time (re-resolves DNS to defeat rebinding).
+            validate_outbound_url(webhook.url)
             response = await self.http_client.post(
                 webhook.url,
                 json=payload,
