@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -73,6 +73,7 @@ def _validate_magic_bytes(content: bytes, declared_type: str) -> bool:
 
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     workflow_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
@@ -85,6 +86,15 @@ async def upload_file(
     """
     user_id = get_safe_user_id(current_user) or "unknown"
 
+    # Reject oversized uploads by Content-Length BEFORE reading the body — avoids
+    # buffering a huge (or spooled-to-disk) payload just to measure it (DoS).
+    declared_len = request.headers.get("content-length")
+    if declared_len and declared_len.isdigit() and int(declared_len) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Max size: {MAX_FILE_SIZE // (1024*1024)} MB",
+        )
+
     # Sanitize filename
     safe_filename = _sanitize_filename(file.filename or "unnamed")
 
@@ -96,11 +106,20 @@ async def upload_file(
             detail=f"Unsupported file type: {file.content_type}. Allowed: {', '.join(ALLOWED_TYPES)}",
         )
 
-    # Read and validate size
-    contents = await file.read()
-    if len(contents) > MAX_FILE_SIZE:
-        logger.warning(f"File upload rejected: too large ({len(contents)} bytes) from user {user_id}")
-        raise HTTPException(status_code=400, detail=f"File too large. Max size: {MAX_FILE_SIZE // (1024*1024)} MB")
+    # Read in bounded chunks so a lying/absent Content-Length can't OOM the
+    # process: abort as soon as the running total exceeds the cap.
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)  # 1 MB
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_FILE_SIZE:
+            logger.warning(f"File upload rejected: too large (>{MAX_FILE_SIZE} bytes) from user {user_id}")
+            raise HTTPException(status_code=413, detail=f"File too large. Max size: {MAX_FILE_SIZE // (1024*1024)} MB")
+        chunks.append(chunk)
+    contents = b"".join(chunks)
 
     # Magic-byte validation: verify content matches declared MIME type
     if not _validate_magic_bytes(contents, file.content_type):
