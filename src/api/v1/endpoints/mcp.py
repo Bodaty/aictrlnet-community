@@ -18,7 +18,6 @@ import json
 
 from core.database import get_db
 from core.security import get_current_active_user
-from core.dependencies import require_superuser
 from schemas.mcp import (
     MCPServerCreate,
     MCPServerResponse,
@@ -68,6 +67,43 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# --- Per-owner authorization for MCP servers --------------------------------
+# MCPServer.owner_user_id is nullable: NULL means a pre-existing "shared/system"
+# server (readable by all, mutable only by a superuser); a set owner means the
+# server is mutable by that owner (or a superuser). This replaces the interim
+# admin-only firebreak on update_mcp_server with real per-owner scoping.
+
+def _mcp_owner_id(current_user) -> Optional[str]:
+    uid = getattr(current_user, "id", None) or getattr(current_user, "sub", None)
+    return str(uid) if uid else None
+
+
+def _is_superuser(current_user) -> bool:
+    return bool(getattr(current_user, "is_superuser", False))
+
+
+def assert_mcp_read(server: "MCPServer", current_user) -> None:
+    """Allow reading a server that is shared (no owner) or owned by the caller."""
+    if _is_superuser(current_user):
+        return
+    owner = getattr(server, "owner_user_id", None)
+    if owner is None or str(owner) == _mcp_owner_id(current_user):
+        return
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP server not found")
+
+
+def assert_mcp_mutate(server: "MCPServer", current_user) -> None:
+    """Allow mutating only a server the caller owns (shared servers → superuser)."""
+    if _is_superuser(current_user):
+        return
+    owner = getattr(server, "owner_user_id", None)
+    if owner is not None and str(owner) == _mcp_owner_id(current_user):
+        return
+    # 404 (not 403) to avoid disclosing existence of others' / system servers.
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP server not found")
+
 
 # Module-level MCP client adapter instance for real MCP connections
 _mcp_client: Optional[MCPClientAdapter] = None
@@ -186,6 +222,8 @@ async def register_mcp_server(
             status="registered",
             server_info=json.dumps(server_data.server_metadata) if server_data.server_metadata else None,
             oauth2_provider_id=server_data.oauth2_provider_id,  # SEP-991: OAuth2 integration
+            owner_user_id=_mcp_owner_id(current_user),  # per-owner authorization
+            tenant_id=str(getattr(current_user, "tenant_id", None)) if getattr(current_user, "tenant_id", None) else None,
             created_at=datetime.utcnow().timestamp(),
             updated_at=datetime.utcnow().timestamp()
         )
@@ -293,8 +331,20 @@ async def list_mcp_servers(
     - server_status: Filter by connection status
     """
     try:
+        # Per-owner visibility: a non-superuser sees shared (owner-less/system)
+        # servers plus their own; a superuser sees all.
+        from sqlalchemy import or_ as _or
+        _owner_filter = None
+        if not _is_superuser(current_user):
+            _owner_filter = _or(
+                MCPServer.owner_user_id.is_(None),
+                MCPServer.owner_user_id == _mcp_owner_id(current_user),
+            )
+
         # Build query
         query = select(MCPServer)
+        if _owner_filter is not None:
+            query = query.filter(_owner_filter)
 
         if server_status:
             query = query.filter_by(status=server_status)
@@ -304,6 +354,8 @@ async def list_mcp_servers(
 
         # Get total count
         count_query = select(func.count()).select_from(MCPServer)
+        if _owner_filter is not None:
+            count_query = count_query.filter(_owner_filter)
         if server_status:
             count_query = count_query.filter_by(status=server_status)
         if transport_type:
@@ -390,6 +442,7 @@ async def get_mcp_server(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
+    assert_mcp_read(server, current_user)
 
     # Parse stored JSON fields
     args_list = json.loads(server.args) if server.args else None
@@ -422,15 +475,13 @@ async def update_mcp_server(
     update_data: MCPServerUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
-    _admin: None = Depends(require_superuser),
 ):
     """Update an MCP server.
 
-    Admin-only. ``MCPServer`` has no owner/tenant column yet, so a by-id lookup
-    is an IDOR: any authenticated user could rewrite another server's
-    ``command``/``args``/``env_vars``/``url`` and, for stdio transport, hijack
-    what subprocess gets executed. Until per-owner scoping lands (tracked for
-    the authz/tenancy phase), mutation is restricted to superusers.
+    Per-owner scoped: the caller must own the server (or be a superuser).
+    ``command``/``args``/``env_vars``/``url`` determine what subprocess a stdio
+    server spawns, so a cross-owner write would hijack execution. Shared
+    (owner-less/system) servers remain superuser-only.
     """
     result = await db.execute(
         select(MCPServer).filter_by(id=server_id)
@@ -442,6 +493,7 @@ async def update_mcp_server(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
+    assert_mcp_mutate(server, current_user)
 
     # Update fields
     update_dict = update_data.model_dump(exclude_unset=True)
@@ -502,13 +554,14 @@ async def delete_mcp_server(
         select(MCPServer).filter_by(id=server_id)
     )
     server = result.scalar_one_or_none()
-    
+
     if not server:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
-    
+    assert_mcp_mutate(server, current_user)
+
     # Remove from dispatcher
     dispatcher = create_mcp_dispatcher()
     await dispatcher.remove_server(server.name)
@@ -855,6 +908,7 @@ async def connect_to_mcp_server(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
+    assert_mcp_mutate(server, current_user)
 
     if server.transport_type != "stdio":
         raise HTTPException(
@@ -1003,6 +1057,7 @@ async def disconnect_from_mcp_server(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
+    assert_mcp_mutate(server, current_user)
 
     try:
         mcp_client = await get_mcp_client()

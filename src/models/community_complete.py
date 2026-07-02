@@ -207,6 +207,14 @@ class MCPServer(Base, UUIDMixin):
     # This allows Community to store the reference, Business/Enterprise to use it
     oauth2_provider_id: Mapped[Optional[str]] = mapped_column(String(36))
 
+    # Ownership for per-owner authorization. Nullable so pre-existing rows remain
+    # "shared/system" servers (visible to all, mutable only by a superuser),
+    # while newly-registered servers are stamped with their creator + tenant and
+    # are mutable by that owner (or a superuser). No FK: users live in a
+    # different logical scope across editions.
+    owner_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    tenant_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
     created_at: Mapped[float] = mapped_column(Float, nullable=False, default=lambda: datetime.utcnow().timestamp())
     updated_at: Mapped[float] = mapped_column(Float, nullable=False, default=lambda: datetime.utcnow().timestamp(), onupdate=lambda: datetime.utcnow().timestamp())
     
