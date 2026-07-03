@@ -871,8 +871,75 @@ class AIProcessNode(BaseNode):
                 for key, value in parsed.items():
                     if key not in result:
                         result[key] = value
+        self._apply_escalation_rules(result, parsed if isinstance(parsed, dict) else None)
         return result
-    
+
+    def _apply_escalation_rules(self, result: Dict[str, Any], parsed: Optional[Dict[str, Any]]) -> None:
+        """Deterministically enforce ``needs_human_attention`` from declarative rules.
+
+        Starter prompts instruct the model to set needs_human_attention for
+        complaints / negative sentiment / low confidence, but the flag is
+        LLM-emitted and occasionally comes back false anyway. A node can declare
+        ``escalation_rules`` in its parameters so the gate is computed in code —
+        the model narrates, this decides. Rules only ever force the flag TO true
+        (never to false), and a rule whose field is missing or malformed fires
+        (fail-closed: when the contract broke, a human looks at it).
+
+        Rule shapes:
+          {"field": "classification.sentiment", "in": ["negative"], "reason": "..."}
+          {"field": "classification.confidence", "lt": 0.7, "reason": "..."}
+        Operators: ``in`` (case-insensitive membership), ``lt`` / ``gt`` (numeric;
+        bounds may arrive as strings via {{params.*}} substitution).
+        """
+        rules = self.config.parameters.get("escalation_rules")
+        if not rules or not isinstance(rules, list):
+            return
+
+        def _lookup(path: str) -> Any:
+            current: Any = parsed
+            for part in str(path).split("."):
+                if isinstance(current, dict) and part in current:
+                    current = current[part]
+                else:
+                    return None
+            return current
+
+        reasons: List[str] = []
+        if parsed is None:
+            reasons.append("AI output was not valid JSON — routing to a human")
+        else:
+            for rule in rules:
+                if not isinstance(rule, dict) or "field" not in rule:
+                    continue
+                value = _lookup(rule["field"])
+                reason = rule.get("reason") or f"'{rule['field']}' triggered escalation"
+                if "in" in rule:
+                    allowed = rule["in"] if isinstance(rule["in"], list) else [rule["in"]]
+                    if value is None:
+                        reasons.append(f"{reason} ('{rule['field']}' missing)")
+                    elif str(value).strip().lower() in {str(a).strip().lower() for a in allowed}:
+                        reasons.append(reason)
+                elif "lt" in rule or "gt" in rule:
+                    op = "lt" if "lt" in rule else "gt"
+                    try:
+                        actual, bound = float(value), float(rule[op])
+                    except (TypeError, ValueError):
+                        reasons.append(f"{reason} ('{rule['field']}' missing or not numeric)")
+                        continue
+                    if (op == "lt" and actual < bound) or (op == "gt" and actual > bound):
+                        reasons.append(reason)
+
+        if not reasons or result.get("needs_human_attention"):
+            return
+        forced = "; ".join(reasons)
+        result["needs_human_attention"] = True
+        result["escalation_reason"] = forced
+        result["_escalation_forced"] = True
+        if isinstance(result.get("parsed_output"), dict):
+            result["parsed_output"]["needs_human_attention"] = True
+            result["parsed_output"]["escalation_reason"] = forced
+        logger.info(f"Escalation rules forced needs_human_attention=true: {forced}")
+
     async def _process_sentiment(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process sentiment analysis task."""
         text = input_data.get("text") or self.config.parameters.get("text")
