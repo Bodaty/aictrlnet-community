@@ -87,20 +87,26 @@ class AdapterNode(BaseNode):
                 and not getattr(e, "connected", False)
                 and self.config.parameters.get("dry_run_if_unconnected")
             ):
-                # gmail-primary, tenant-email fallback. When the opt-in primary adapter
-                # (e.g. a user's Gmail OAuth) isn't connected, prefer the tenant's
-                # configured fallback adapter (e.g. the SendGrid `email` adapter) so a
-                # tenant that has a shared email sender but no personal inbox (Bodaty)
-                # actually sends — while a tenant with NEITHER still simulates safely (the
-                # cohort room-of-20). The "from your own inbox" pitch is preserved: gmail
-                # stays primary and only this not-connected path consults the fallback.
+                # gmail-primary, user-email fallback. When the opt-in primary adapter
+                # (e.g. a user's Gmail OAuth) isn't connected, prefer a fallback adapter
+                # (e.g. the SendGrid `email` adapter) the running user (or workflow owner)
+                # configured THEMSELVES — so Bodaty, whose own SendGrid row exists, actually
+                # sends, while everyone else still simulates safely (the cohort room-of-20).
+                # Deliberately NOT the tenant-scoped getter: on multi-tenant SaaS all
+                # self-serve signups share DEFAULT_TENANT, so its shared-row fall-through
+                # would let one stored email credential send on behalf of every tenant.
+                # The send below reuses these exact credentials — the row that justifies
+                # the fallback is the row that sends.
                 fallback_adapter_id = self.config.parameters.get("fallback_adapter_id")
                 if fallback_adapter_id:
-                    from nodes.template_utils import get_adapter_credentials_for_tenant
-                    tenant_id = (context or {}).get("tenant_id")
+                    from nodes.template_utils import (
+                        get_adapter_credentials_for_user,
+                        resolve_send_fallback_user,
+                    )
+                    effective_user = resolve_send_fallback_user(context)
                     try:
-                        fallback_creds = await get_adapter_credentials_for_tenant(
-                            fallback_adapter_id, tenant_id
+                        fallback_creds = await get_adapter_credentials_for_user(
+                            fallback_adapter_id, effective_user
                         )
                     except Exception:  # pragma: no cover - cred lookup must not crash the node
                         fallback_creds = None
@@ -115,6 +121,7 @@ class AdapterNode(BaseNode):
                                 capability=capability,
                                 parameters=adapter_params,
                                 context=context,
+                                credentials=fallback_creds,
                             )
                         except Exception as fb_err:
                             # The fallback genuinely failed to send (e.g. SMTP error).

@@ -267,6 +267,7 @@ class BaseNode(ABC):
         capability: str,
         parameters: Dict[str, Any],
         context: Optional[Dict[str, Any]] = None,
+        credentials: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Helper method to call an adapter.
 
@@ -295,9 +296,13 @@ class BaseNode(ABC):
         tenant_id = (context or {}).get("tenant_id")
         user_id = (context or {}).get("user_id")
         owner_id = (context or {}).get("workflow_owner_id") or (context or {}).get("owner_id")
-        credentials = await resolve_adapter_credentials(
-            adapter_id, adapter_class, tenant_id=tenant_id, user_id=user_id, owner_id=owner_id
-        ) or {}
+        if credentials is None:
+            # Callers that already resolved credentials under a stricter scope
+            # (e.g. the adapter-node send fallback, which is user-owned-row-only)
+            # pass them in so the send uses the row that justified it.
+            credentials = await resolve_adapter_credentials(
+                adapter_id, adapter_class, tenant_id=tenant_id, user_id=user_id, owner_id=owner_id
+            ) or {}
 
         adapter_config = AdapterConfig(
             name=adapter_id,

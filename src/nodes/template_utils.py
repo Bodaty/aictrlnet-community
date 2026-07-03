@@ -187,6 +187,66 @@ async def get_adapter_credentials_for_tenant(
     return None
 
 
+async def get_adapter_credentials_for_user(
+    adapter_type: str, user_id: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Resolve adapter credentials the *user* configured themselves — no shared fallback.
+
+    Outbound-send gates (adapter node ``fallback_adapter_id``, notification
+    ``dry_run_if_unconnected``) must only fire on a credential row the running
+    user (or workflow owner) explicitly configured. The tenant-scoped getter is
+    the wrong test for that on multi-tenant SaaS: every self-serve signup shares
+    DEFAULT_TENANT, so its shared-row fall-through would let one stored email
+    credential send on behalf of every tenant. Returns ``None`` when the user
+    owns no enabled row — callers dry-run.
+    """
+    if not user_id:
+        return None
+    try:
+        from core.database import get_session_maker
+        from models.adapter_config import UserAdapterConfig
+        from core.crypto import decrypt_data
+        from sqlalchemy import select
+
+        async with get_session_maker()() as session:
+            query = (
+                select(UserAdapterConfig)
+                .where(
+                    UserAdapterConfig.adapter_type == adapter_type,
+                    UserAdapterConfig.enabled == True,
+                    UserAdapterConfig.user_id == str(user_id),
+                )
+                .order_by(UserAdapterConfig.updated_at.desc())
+                .limit(1)
+            )
+            config = (await session.execute(query)).scalar_one_or_none()
+            if config and config.credentials:
+                logger.info(
+                    f"Loaded user-owned credentials for adapter '{adapter_type}'"
+                )
+                return decrypt_data(config.credentials)
+
+    except Exception as exc:
+        logger.debug(
+            f"Could not load user credentials for '{adapter_type}'/'{user_id}': {exc}"
+        )
+
+    return None
+
+
+def resolve_send_fallback_user(context: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The identity whose own credentials may satisfy an outbound-send fallback.
+
+    The interactive user when there is one; the workflow owner for unattended
+    ("system") runs — the same run-as-owner rule oauth2 resolution uses.
+    """
+    ctx = context or {}
+    user_id = ctx.get("user_id")
+    if user_id and user_id != "system":
+        return user_id
+    return ctx.get("workflow_owner_id") or ctx.get("owner_id")
+
+
 class CredentialsUnavailable(Exception):
     """An adapter's credentials could not be resolved.
 

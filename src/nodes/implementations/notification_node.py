@@ -34,8 +34,11 @@ class NotificationNode(BaseNode):
     async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the notification node. Returns output dict for BaseNode.run() to wrap."""
         # Stash the executing org for credential resolution in _create_adapter
-        # (the _send_* helpers don't thread context through).
+        # (the _send_* helpers don't thread context through). The send-fallback
+        # user gates dry_run_if_unconnected — user-owned rows only, never shared.
         self._tenant_id = context.get("tenant_id")
+        from ..template_utils import resolve_send_fallback_user
+        self._send_fallback_user = resolve_send_fallback_user(context)
 
         # Build template context and resolve templates in parameters
         tmpl_ctx = {"input_data": input_data, **input_data}
@@ -238,16 +241,20 @@ class NotificationNode(BaseNode):
             raise ValueError(f"Email adapter '{adapter_id}' not found")
 
         # dry-run-if-unconnected (opt-in): when this node sets dry_run_if_unconnected and
-        # the tenant has NO credentials for the email adapter, simulate instead of letting
-        # EmailAdapter raise "SMTP username and password are required". This lets the same
-        # template send for real on a tenant with a configured email adapter (Bodaty /
-        # SendGrid) and safely no-op for tenants without one (the cohort room-of-20),
-        # mirroring the `adapter` node's dry_run_if_unconnected behaviour.
+        # the running user (or workflow owner) has NO credentials of their own for the
+        # email adapter, simulate instead of letting EmailAdapter raise "SMTP username and
+        # password are required". This lets the same template send for real for a user who
+        # configured an email adapter (Bodaty / SendGrid) and safely no-op for everyone
+        # else (the cohort room-of-20), mirroring the `adapter` node's fallback. The gate
+        # is user-owned-row-only — the tenant-scoped getter's shared-row fall-through
+        # would satisfy every self-serve tenant on SaaS (all share DEFAULT_TENANT).
+        gated_creds = None
         if self.config.parameters.get("dry_run_if_unconnected"):
-            creds = await get_adapter_credentials_for_tenant(
-                adapter_id, getattr(self, "_tenant_id", None)
-            ) or {}
-            if not creds:
+            from ..template_utils import get_adapter_credentials_for_user
+            gated_creds = await get_adapter_credentials_for_user(
+                adapter_id, getattr(self, "_send_fallback_user", None)
+            )
+            if not gated_creds:
                 to_addresses = [r.get("address") or r.get("email") for r in recipients]
                 to_addresses = [addr for addr in to_addresses if addr]
                 logger.info(
@@ -267,13 +274,14 @@ class NotificationNode(BaseNode):
                     "adapters_used": [adapter_id],
                 }
 
-        # Create adapter instance
-        adapter = await self._create_adapter(adapter_class, adapter_id)
-        
+        # Create adapter instance. A gated send uses the user-owned credentials
+        # that justified it; ungated sends keep the tenant-scoped resolution.
+        adapter = await self._create_adapter(adapter_class, adapter_id, credentials=gated_creds)
+
         # Prepare email addresses
         to_addresses = [r.get("address") or r.get("email") for r in recipients]
         to_addresses = [addr for addr in to_addresses if addr]  # Filter None values
-        
+
         # Build email request
         request = AdapterRequest(
             capability="send_email",
