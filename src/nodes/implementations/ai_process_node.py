@@ -633,14 +633,24 @@ class AIProcessNode(BaseNode):
             if response.status != "error":
                 _normalize_response_text(response)
                 return response
-        except Exception:
-            pass
+            logger.warning(
+                f"Adapter capability '{capability}' returned error status "
+                f"({getattr(response, 'error', None)}); retrying as chat"
+            )
+        except Exception as primary_error:
+            logger.warning(
+                f"Adapter capability '{capability}' failed "
+                f"({type(primary_error).__name__}: {primary_error}); retrying as chat"
+            )
 
-        # Fallback: convert to chat (works with Ollama, Claude, OpenAI, etc.)
+        # Fallback: retry as the chat-style capability this adapter registers
+        # (chat_completion for Claude/OpenAI/Azure, chat for Ollama/Gemini/Cohere)
+        from llm.generation import resolve_chat_capability
+
         prompt = parameters.get("prompt") or parameters.get("text", "")
         messages = [{"role": "user", "content": prompt}]
         chat_request = AdapterRequest(
-            capability="chat",
+            capability=resolve_chat_capability(adapter),
             parameters={
                 "messages": messages,
                 "model": parameters.get("model"),

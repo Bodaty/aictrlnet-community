@@ -43,6 +43,23 @@ def normalize_model_name(ui_model_name: str) -> str:
     return MODEL_NAME_MAP.get(ui_model_name, ui_model_name)
 
 
+def resolve_chat_capability(adapter) -> str:
+    """Pick the chat-style capability name this adapter actually registers.
+
+    Adapters disagree on the name ('chat_completion' for Claude/OpenAI/Azure,
+    'chat' for Gemini/Cohere/Ollama); sending an unregistered name fails
+    BaseAdapter.validate_request with "Unknown capability".
+    """
+    try:
+        registered = {cap.name for cap in adapter.get_capabilities()}
+    except Exception:
+        return "chat"
+    for name in ("chat_completion", "chat"):
+        if name in registered:
+            return name
+    return "chat"
+
+
 class LLMGenerationEngine:
     """
     Core generation engine that interfaces with existing adapters.
@@ -131,6 +148,7 @@ class LLMGenerationEngine:
         logger.info(f"Generating with {model} ({tier.value}) via {provider.value} for task: {request.task_type}")
 
         # Route to appropriate adapter
+        fallback_used = False
         try:
             # FIX: Check for workflow generation BEFORE provider routing
             # This ensures ALL providers (not just Ollama) get workflow-specific prompts
@@ -146,29 +164,41 @@ class LLMGenerationEngine:
             # On Cloud Run, Ollama is NOT available (no localhost:11434)
             # Only fallback to Ollama if we're NOT on GCP and NOT already using Ollama/vLLM
             if provider not in (ModelProvider.OLLAMA, ModelProvider.VLLM) and not self._is_cloud_environment():
-                fallback_model = await self._pick_fallback_ollama_model()
+                fallback_model = await self._pick_fallback_local_model(exclude=model)
                 if fallback_model:
-                    logger.info(f"Falling back to Ollama with {fallback_model}")
+                    fallback_provider = get_provider_from_model(fallback_model)
+                    logger.info(f"Falling back to local model {fallback_model} via {fallback_provider.value}")
                     try:
-                        response = await self._generate_with_ollama(request, fallback_model)
-                    except Exception as ollama_error:
-                        logger.error(f"Ollama fallback ({fallback_model}) also failed: {ollama_error}")
+                        if fallback_provider == ModelProvider.VLLM:
+                            response = await self._generate_with_adapter(request, fallback_model, fallback_provider)
+                        else:
+                            response = await self._generate_with_ollama(request, fallback_model)
+                    except Exception as fallback_error:
+                        logger.error(f"Local fallback ({fallback_model}) also failed: {fallback_error}")
                         raise e  # Re-raise the original error
+                    fallback_used = True
+                    response.metadata.update({
+                        "requested_model": model,
+                        "fallback_model": fallback_model,
+                        "fallback_reason": f"{type(e).__name__}: {str(e)[:200]}",
+                    })
                 else:
-                    logger.error(f"No Ollama models pulled — cannot fall back from {provider.value} failure")
+                    logger.error(f"No local models available — cannot fall back from {provider.value} failure")
                     raise e
             else:
                 # On Cloud Run, don't try Ollama - just propagate the error
                 logger.error(f"No fallback available in cloud environment. Original error: {e}")
                 raise
-        
-        # Add metadata
-        response.model_used = model
-        response.provider = provider
-        response.tier = tier
+
+        # After a fallback the inner response already carries the honest
+        # model_used/provider/tier — never overwrite them with the requested model.
+        if not fallback_used:
+            response.model_used = model
+            response.provider = provider
+            response.tier = tier
         response.response_time = (datetime.utcnow() - start_time).total_seconds()
-        response.cost = self._calculate_cost(model, response.tokens_used)
-        
+        response.cost = self._calculate_cost(response.model_used, response.tokens_used)
+
         return response
     
     async def _select_model(self, request: LLMRequest) -> Tuple[str, ModelTier]:
@@ -713,7 +743,7 @@ Return ONLY the JSON array, no other text or explanation."""
                     ]
 
                     adapter_request = AdapterRequest(
-                        capability="chat",
+                        capability=resolve_chat_capability(adapter),
                         parameters={
                             "model": model,
                             "messages": messages,
@@ -1098,7 +1128,7 @@ Return ONLY the JSON array, no other text or explanation."""
         messages.append({"role": "user", "content": request.prompt})
 
         adapter_request = AdapterRequest(
-            capability="chat",
+            capability=resolve_chat_capability(adapter),
             parameters={
                 "model": model,
                 "messages": messages,
@@ -1295,24 +1325,39 @@ Return ONLY the JSON array, no other text or explanation."""
         self._vllm_models_cache_time = now - 270
         return self._vllm_models_cache
 
-    async def _pick_fallback_ollama_model(self) -> Optional[str]:
-        """Pick a fallback Ollama model.
+    async def _pick_fallback_local_model(self, exclude: Optional[str] = None) -> Optional[str]:
+        """Pick a locally-served fallback model (vLLM preferred, then Ollama).
 
-        Tries DEFAULT_LLM_MODEL (per LLM_FALLBACK_AND_ORG_SETTINGS_SPEC) first,
-        then any pulled Ollama model as graceful degradation. Returns None if
-        Ollama has nothing available.
+        Preference order per LLM_FALLBACK_AND_ORG_SETTINGS_SPEC:
+        1. Configured DEFAULT_LLM_MODEL when locally servable — a 'vllm:'-prefixed
+           model served by vLLM, or a pulled Ollama model.
+        2. First available vLLM model (returned 'vllm:'-prefixed so it routes
+           through the adapter path unchanged; VLLMAdapter strips the prefix).
+        3. First pulled Ollama model.
+        Never returns `exclude` (the model whose generation just failed).
+        Returns None when nothing local is available.
         """
         # get_environment_default_model + is_ollama_model are already imported at
         # module scope (top of file); the local re-import shadowed them (ruff F811).
-        available = await self._get_ollama_models()
-        if not available:
-            return None
+        vllm_available = await self._get_vllm_models()
+        ollama_available = await self._get_ollama_models()
 
         configured = get_environment_default_model()
-        if configured and is_ollama_model(configured) and configured in available:
-            return configured
+        if configured and configured != exclude:
+            if configured.lower().startswith("vllm:"):
+                if configured.split(":", 1)[1] in vllm_available:
+                    return configured
+            elif is_ollama_model(configured) and configured in ollama_available:
+                return configured
 
-        return available[0]
+        for vllm_model in vllm_available:
+            candidate = f"vllm:{vllm_model}"
+            if candidate != exclude:
+                return candidate
+        for ollama_model in ollama_available:
+            if ollama_model != exclude:
+                return ollama_model
+        return None
 
     def _is_api_model(self, model: str) -> bool:
         """Check if model requires API access (cloud or self-hosted)."""

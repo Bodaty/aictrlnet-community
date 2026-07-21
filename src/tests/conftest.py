@@ -3,7 +3,7 @@
 import pytest
 import asyncio
 import os
-from typing import Generator, AsyncGenerator
+from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -14,16 +14,7 @@ os.environ["EDITION"] = "community"
 
 
 @pytest.fixture(scope="session")
-def event_loop() -> Generator:
-    """Create an event loop for async tests."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    yield loop
-    loop.close()
-
-
-@pytest.fixture(scope="session")
-def test_engine(event_loop):
+def test_engine():
     """Create test database engine."""
     # Use the production database for integration tests (will rollback changes)
     database_url = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@postgres:5432/aictrlnet")
@@ -36,8 +27,8 @@ def test_engine(event_loop):
 
     yield engine
 
-    # Dispose engine synchronously in event loop
-    event_loop.run_until_complete(engine.dispose())
+    # NullPool holds no connections; dispose on a fresh loop at session end.
+    asyncio.new_event_loop().run_until_complete(engine.dispose())
 
 
 @pytest.fixture(scope="function")
