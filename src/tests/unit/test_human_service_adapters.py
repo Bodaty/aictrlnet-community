@@ -1,6 +1,8 @@
 """Unit tests for Human Service Adapters (Upwork, Fiverr)."""
 
 import pytest
+
+pytestmark = pytest.mark.requires_live_keys
 from unittest.mock import Mock, AsyncMock, patch
 import httpx
 

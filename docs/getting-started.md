@@ -318,7 +318,7 @@ ollama serve
 
 # Configure AICtrlNet
 export OLLAMA_URL=http://localhost:11434
-export OLLAMA_MODEL=llama3.1:8b-instruct-q4_K_M
+export DEFAULT_LLM_MODEL=llama3.1:8b-instruct-q4_K_M
 ```
 
 If running AICtrlNet in Docker and Ollama on the host machine, use `host.docker.internal` instead of `localhost`:

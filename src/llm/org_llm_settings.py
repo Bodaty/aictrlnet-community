@@ -9,9 +9,11 @@ Fallback chain: Node-specific → Org default → System default → Error
 import logging
 from typing import Optional, Dict, List, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from llm.tier_resolver import normalize_provider
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,14 @@ SETTINGS_KEY = "llm"
 
 
 class OrgLLMSettings(BaseModel):
-    """LLM configuration for an organization/tenant."""
+    """LLM configuration for an organization/tenant.
+
+    Provider fields are normalized to canonical keys (claude→anthropic, …) on
+    construction AND assignment, so legacy tenant blobs and API writes both
+    come out canonical.
+    """
+
+    model_config = ConfigDict(validate_assignment=True)
 
     # Provider & model preferences
     preferred_provider: Optional[str] = Field(
@@ -65,10 +74,29 @@ class OrgLLMSettings(BaseModel):
         5000, description="Max LLM calls per month (default trial limit)"
     )
 
+    @field_validator("preferred_provider", "fallback_provider", mode="before")
+    @classmethod
+    def _normalize_provider_fields(cls, v):
+        return normalize_provider(v)
+
+    @field_validator("allowed_providers", mode="before")
+    @classmethod
+    def _normalize_provider_list(cls, v):
+        if isinstance(v, list):
+            return [normalize_provider(p) for p in v]
+        return v
+
+    @field_validator("api_key_refs", mode="before")
+    @classmethod
+    def _normalize_key_ref_providers(cls, v):
+        if isinstance(v, dict):
+            return {normalize_provider(k): val for k, val in v.items()}
+        return v
+
     def has_own_key(self, provider: Optional[str] = None) -> bool:
         """Check if the org has configured their own API key."""
         if provider:
-            return provider in self.api_key_refs
+            return normalize_provider(provider) in self.api_key_refs
         return len(self.api_key_refs) > 0
 
 

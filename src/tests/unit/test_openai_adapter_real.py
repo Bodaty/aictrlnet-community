@@ -1,6 +1,8 @@
 """Unit tests for the actual OpenAI adapter implementation."""
 
 import pytest
+
+pytestmark = pytest.mark.requires_live_keys
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 import httpx
 

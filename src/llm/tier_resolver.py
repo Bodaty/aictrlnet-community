@@ -7,28 +7,29 @@ appropriate fallback logic.
 import logging
 import os
 from typing import Optional, Tuple, List
+from core.config import Settings
 from llm.models import ModelTier
 
 logger = logging.getLogger(__name__)
-
-
-# GCP production fallback. Locally, docker-compose.yml sets DEFAULT_LLM_MODEL=llama3.2:3b.
-# core/config.py has a separate default (llama3.1:8b) for running outside Docker.
-DEFAULT_LLM_MODEL = os.environ.get('DEFAULT_LLM_MODEL', 'gemini-2.0-flash-vertex')
 
 
 def get_environment_default_model() -> str:
     """
     Get the environment-configured default LLM model.
 
-    This is the centralized function for getting the DEFAULT_LLM_MODEL,
-    which is used when Ollama is not available (e.g., Cloud Run deployments).
+    Centralized accessor for DEFAULT_LLM_MODEL: the environment variable wins
+    (read per-call so deployments and tests control it), otherwise the single
+    source of truth is the core.config Settings field default — this module
+    carries no literal of its own.
 
     Returns:
-        The DEFAULT_LLM_MODEL environment variable value, or 'gemini-2.0-flash-vertex'
-        if not set.
+        The DEFAULT_LLM_MODEL environment variable value, or the
+        Settings.DEFAULT_LLM_MODEL field default if not set.
     """
-    return os.environ.get('DEFAULT_LLM_MODEL', 'gemini-2.0-flash-vertex')
+    value = os.environ.get('DEFAULT_LLM_MODEL')
+    if value:
+        return value
+    return Settings.model_fields['DEFAULT_LLM_MODEL'].default
 
 
 def get_environment_default_provider() -> str:
@@ -60,6 +61,43 @@ def get_environment_default_provider() -> str:
     if "qwen" in model_lower:
         return "dashscope"
     return "ollama"
+
+
+# Canonical provider vocabulary. User/org/tenant configs and legacy blobs use
+# variant names ("claude", "google"); adapters register under canonical keys.
+# Normalize at every boundary that accepts a provider string.
+PROVIDER_ALIASES = {
+    "claude": "anthropic",
+    "google": "gemini",
+    "vertex-ai": "vertex_ai",
+    "vertexai": "vertex_ai",
+    "google-gemini": "gemini",
+}
+
+# Canonical provider -> adapter registry candidates, best-first. Single source
+# for provider->adapter routing (ai_process_node imports this).
+PROVIDER_TO_ADAPTER = {
+    "ollama": ["ollama"],
+    "vertex_ai": ["llm-service", "vertex_ai", "vertex-ai", "gemini"],
+    "gemini": ["llm-service", "gemini", "google-gemini", "vertex_ai"],
+    "openai": ["openai"],
+    "anthropic": ["claude", "anthropic"],
+    "deepseek": ["deepseek"],
+    "dashscope": ["dashscope"],
+    "vllm": ["vllm"],
+}
+
+
+def normalize_provider(name: Optional[str]) -> Optional[str]:
+    """Map a provider string to its canonical key (case/whitespace-insensitive).
+
+    Unknown names lowercase and pass through so future providers don't need a
+    table entry to keep working. None/empty pass through unchanged.
+    """
+    if not name:
+        return name
+    key = name.strip().lower()
+    return PROVIDER_ALIASES.get(key, key)
 
 
 def is_ollama_model(model: str) -> bool:
@@ -193,7 +231,7 @@ def get_model_for_tier(
 def get_model_with_tier_fallback(
     tier: ModelTier,
     user_preferences: Optional[dict] = None,
-    system_default: str = "llama3.1:8b-instruct-q4_K_M"
+    system_default: Optional[str] = None
 ) -> Tuple[str, str]:
     """
     Get model for tier with complete fallback to system defaults.
@@ -222,8 +260,10 @@ def get_model_with_tier_fallback(
         ('llama3.2:1b', 'user_single_model')
 
         >>> get_model_with_tier_fallback(ModelTier.QUALITY, None)
-        ('llama3.1:8b-instruct-q4_K_M', 'system_default')
+        (<environment default model>, 'system_default')
     """
+    if system_default is None:
+        system_default = get_environment_default_model()
     if not user_preferences:
         return (system_default, "system_default")
 

@@ -18,6 +18,7 @@ from .model_selection import (
     get_enhanced_selector,
     EnhancedModelSelector
 )
+from core.config import get_settings
 from .tier_resolver import (
     get_environment_default_model,
     is_ollama_model
@@ -70,7 +71,7 @@ class LLMGenerationEngine:
     
     def __init__(self):
         """Initialize the generation engine."""
-        self.ollama_url = "http://host.docker.internal:11434"
+        self.ollama_url = get_settings().OLLAMA_URL
         self._available_models_cache = None
         self._models_cache_time = 0
         self.vllm_url = os.environ.get("VLLM_URL", "http://host.docker.internal:8000")

@@ -56,9 +56,10 @@ class UserLLMSettings(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 1000
     stream_responses: bool = False
-    # Default is an Ollama model for local dev; callers via get_user_llm_settings()
-    # override with settings.DEFAULT_LLM_MODEL (which respects the environment).
-    fallback_model: Optional[str] = "llama3.2:3b"
+    # No baked-in fallback: None means "no user-chosen fallback" and the
+    # selection cascade proceeds to the environment default. Only an explicit
+    # user preference belongs here.
+    fallback_model: Optional[str] = None
 
     # Tier-based model preferences (new)
     preferredFastModel: Optional[str] = None      # Fast tier (~1-2s)

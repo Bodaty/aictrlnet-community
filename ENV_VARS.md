@@ -108,7 +108,6 @@ BACKEND_CORS_ORIGINS=https://app.example.com,https://admin.example.com
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `llama2` | Default Ollama model |
 | `DEFAULT_LLM_MODEL` | `llama3.1:8b-instruct-q4_K_M` | Default LLM model ID |
 | `LLM_SERVICE_URL` | - | External LLM service URL (optional) |
 | `ML_SERVICE_URL` | - | ML microservice URL (for AI governance) |

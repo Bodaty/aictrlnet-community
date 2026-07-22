@@ -1,6 +1,8 @@
 """Unit tests for OpenAI adapter."""
 
 import pytest
+
+pytestmark = pytest.mark.requires_live_keys
 import asyncio
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from datetime import datetime

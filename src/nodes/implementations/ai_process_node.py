@@ -361,19 +361,14 @@ class AIProcessNode(BaseNode):
             if settings.trial_mode and not settings.has_own_key():
                 return None
 
-            # Map provider to adapter key
-            provider_to_adapter = {
-                "ollama": ["ollama"],
-                "vertex_ai": ["llm-service", "vertex_ai", "vertex-ai", "gemini"],
-                "gemini": ["llm-service", "gemini", "vertex_ai"],
-                "openai": ["openai"],
-                "anthropic": ["claude", "anthropic"],
-                "deepseek": ["deepseek"],
-            }
+            # Canonical provider->adapter routing lives in tier_resolver
+            from llm.tier_resolver import PROVIDER_TO_ADAPTER, normalize_provider
+
             available = list(adapter_registry._adapter_classes.keys())
-            candidates = provider_to_adapter.get(
-                settings.preferred_provider,
-                [settings.preferred_provider, "llm-service"]
+            preferred = normalize_provider(settings.preferred_provider)
+            candidates = PROVIDER_TO_ADAPTER.get(
+                preferred,
+                [preferred, "llm-service"]
             )
             for c in candidates:
                 if c in available:
@@ -585,25 +580,14 @@ class AIProcessNode(BaseNode):
         3. Fall back to llm-service (bridges to the LLM service which has all providers)
         4. Fall back to any available AI adapter
         """
-        from llm.tier_resolver import get_environment_default_provider
+        from llm.tier_resolver import PROVIDER_TO_ADAPTER, get_environment_default_provider
 
         available = list(adapter_registry._adapter_classes.keys())
         if not available:
             raise ValueError("No AI adapters available")
 
-        # Map provider string to adapter registry keys (handles naming variants)
-        provider_to_adapter = {
-            "ollama": ["ollama"],
-            "vertex_ai": ["llm-service", "vertex_ai", "vertex-ai", "gemini"],
-            "gemini": ["llm-service", "gemini", "google-gemini", "vertex_ai"],
-            "openai": ["openai"],
-            "anthropic": ["claude", "anthropic"],
-            "deepseek": ["deepseek"],
-            "dashscope": ["dashscope"],
-        }
-
         provider = get_environment_default_provider()
-        candidates = provider_to_adapter.get(provider, [provider, "llm-service"])
+        candidates = PROVIDER_TO_ADAPTER.get(provider, [provider, "llm-service"])
 
         for candidate in candidates:
             if candidate in available:

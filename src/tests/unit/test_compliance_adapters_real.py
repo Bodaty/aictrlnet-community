@@ -1,6 +1,8 @@
 """Unit tests for the actual compliance adapter implementations."""
 
 import pytest
+
+pytestmark = pytest.mark.requires_live_keys
 from unittest.mock import Mock, AsyncMock, patch
 import re
 from datetime import datetime

@@ -54,6 +54,7 @@ class TestBaseURLNormalization:
         adapter = VLLMAdapter(_config(base_url="http://example.com:8000/"))
         assert adapter.base_url == "http://example.com:8000/v1"
 
+    @pytest.mark.requires_live_keys
     def test_default_when_no_base_url(self):
         adapter = VLLMAdapter(_config())
         # discovery_only by default in helper, so localhost not translated

@@ -106,7 +106,6 @@ class Settings(BaseSettings):
     
     # Ollama (for AI features)
     OLLAMA_URL: str = Field(default="http://localhost:11434")
-    OLLAMA_MODEL: str = Field(default="llama2")
 
     # Default LLM Model (can be overridden by environment for cloud deployments)
     # Aligned with UI default (llama3.1-local maps to this)
