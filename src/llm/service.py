@@ -258,17 +258,25 @@ class LLMService:
         response_format: str = "text",
         schema: Optional[Dict[str, Any]] = None,
         cache_key: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        org_settings: Optional[Any] = None
     ) -> LLMResponse:
         """
         Generate text using the best available LLM.
-        
-        Model Selection Priority:
+
+        Model Selection Priority (canonical resolve_model() chain, applied in
+        LLMGenerationEngine._select_model):
         1. model_override (explicit override)
-        2. user_settings.selected_model (from UI settings)
-        3. context['mcp_preferred_model'] (MCP tool preference)
-        4. Auto-selection based on task_type and complexity
-        
+        2. user_settings: tier preference (by task_type's resolved tier) →
+           quality-tier backfill → legacy selected_model
+        3. org_settings.preferred_model (trial-gated: skipped in trial_mode
+           unless the org has its own key, and subject to allowed_providers)
+        4. System default (environment DEFAULT_LLM_MODEL / Settings default)
+
+        The resolution source is recorded in response.metadata["model_source"]
+        (one of explicit/user_tier_preference/user_selected_model/org_preferred/
+        system_default).
+
         Args:
             prompt: The prompt to generate from
             user_settings: User's LLM preferences from UI
@@ -283,7 +291,8 @@ class LLMService:
             schema: Schema for structured output
             cache_key: Cache key for response caching
             context: Additional context (e.g., MCP preferences)
-            
+            org_settings: Org's LLM preferences (duck-typed OrgLLMSettings)
+
         Returns:
             LLMResponse with generated text and metadata
         """
@@ -301,7 +310,8 @@ class LLMService:
             response_format=response_format,
             schema=schema,
             cache_key=cache_key,
-            context=context
+            context=context,
+            org_settings=org_settings
         )
         
         # Check cache
@@ -342,7 +352,8 @@ class LLMService:
         system_prompt: Optional[str] = None,
         tool_choice: str = "auto",  # "auto", "required", or specific tool name
         context: Optional[Dict[str, Any]] = None,
-        messages: Optional[List[Dict[str, Any]]] = None  # Multi-turn conversation
+        messages: Optional[List[Dict[str, Any]]] = None,  # Multi-turn conversation
+        org_settings: Optional[Any] = None
     ) -> LLMToolResponse:
         """
         Generate text with tool calling support.
@@ -383,7 +394,8 @@ class LLMService:
             prompt=prompt or "",
             user_settings=user_settings,
             model_override=model_override,
-            task_type=task_type
+            task_type=task_type,
+            org_settings=org_settings
         )
         model, tier = await self.generation_engine._select_model(temp_request)
         provider = get_provider_from_model(model)
@@ -411,13 +423,16 @@ class LLMService:
                 messages=messages
             )
         else:
-            # Fallback to text-based tool calling
+            # Fallback to text-based tool calling. Pin the model already selected
+            # above (org/user/tier-resolved) rather than re-deriving it from the
+            # raw model_override param — the latter drops org precedence since
+            # _generate_with_text_tools's LLMRequest carries no org_settings.
             logger.info("Using text-based tool calling fallback")
             return await self._generate_with_text_tools(
                 prompt=prompt,
                 tools=tools,
                 user_settings=user_settings,
-                model_override=model_override,
+                model_override=model,
                 task_type=task_type,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -441,6 +456,7 @@ class LLMService:
         tool_choice: str = "auto",
         context: Optional[Dict[str, Any]] = None,
         messages: Optional[List[Dict[str, Any]]] = None,
+        org_settings: Optional[Any] = None,
     ):
         """Stream text deltas from tool-augmented generation.
 
@@ -462,6 +478,7 @@ class LLMService:
             user_settings=user_settings,
             model_override=model_override,
             task_type=task_type,
+            org_settings=org_settings,
         )
         model, tier = await self.generation_engine._select_model(temp_request)
         provider = get_provider_from_model(model)
@@ -469,10 +486,11 @@ class LLMService:
         native_supported = self._supports_native_tools(provider, model)
 
         if not native_supported:
-            # Text-based fallback — yield complete result as single event
+            # Text-based fallback — yield complete result as single event.
+            # Pin the already-selected (org/user/tier-resolved) model.
             result = await self._generate_with_text_tools(
                 prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model_override, task_type=task_type,
+                model_override=model, task_type=task_type,
                 temperature=temperature, max_tokens=max_tokens,
                 system_prompt=system_prompt, tool_choice=tool_choice,
                 context=context, start_time=start_time, messages=messages,
@@ -488,7 +506,7 @@ class LLMService:
             if not adapter:
                 result = await self._generate_with_text_tools(
                     prompt=prompt, tools=tools, user_settings=user_settings,
-                    model_override=model_override, task_type=task_type,
+                    model_override=model, task_type=task_type,
                     temperature=temperature, max_tokens=max_tokens,
                     system_prompt=system_prompt, tool_choice=tool_choice,
                     context=context, start_time=start_time, messages=messages,
@@ -543,10 +561,11 @@ class LLMService:
 
         except Exception as e:
             logger.error(f"{provider.value} streaming tool calling failed: {e}")
-            # Fallback to non-streaming
+            # Fallback to non-streaming. Pin the already-selected model (mirrors
+            # _generate_with_native_tools's own exception-fallback pattern).
             result = await self._generate_with_text_tools(
                 prompt=prompt, tools=tools, user_settings=user_settings,
-                model_override=model_override, task_type=task_type,
+                model_override=model, task_type=task_type,
                 temperature=temperature, max_tokens=max_tokens,
                 system_prompt=system_prompt, tool_choice=tool_choice,
                 context=context, start_time=start_time, messages=messages,
@@ -1023,17 +1042,19 @@ Always respond with valid JSON."""
         prompt: str,
         user_settings: Optional[UserLLMSettings] = None,
         context: Optional[Dict[str, Any]] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        org_settings: Optional[Any] = None
     ) -> List[WorkflowStep]:
         """
         Generate workflow steps from natural language.
-        
+
         Args:
             prompt: Natural language description of workflow
             user_settings: User's LLM preferences
             context: Additional context
             model: Optional model override
-            
+            org_settings: Org's LLM preferences (duck-typed OrgLLMSettings)
+
         Returns:
             List of workflow steps
         """
@@ -1148,7 +1169,8 @@ OUTPUT FORMAT for each step:
             task_type="workflow_generation",
             context=context,
             response_format="structured",
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
+            org_settings=org_settings
         )
         
         # Extract steps from response
@@ -1165,24 +1187,26 @@ OUTPUT FORMAT for each step:
         schema: Dict[str, Any],
         model: Optional[str] = None,
         examples: Optional[List[Dict]] = None,
-        user_settings: Optional[UserLLMSettings] = None
+        user_settings: Optional[UserLLMSettings] = None,
+        org_settings: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Generate structured output matching a schema.
-        
+
         Args:
             prompt: The prompt to generate from
             schema: JSON schema or Pydantic model schema
             model: Optional model override
             examples: Optional examples for few-shot learning
             user_settings: User's LLM preferences
-            
+            org_settings: Org's LLM preferences (duck-typed OrgLLMSettings)
+
         Returns:
             Structured data matching the schema
         """
         # Build enhanced prompt with schema
         enhanced_prompt = self._build_structured_prompt(prompt, schema, examples)
-        
+
         response = await self.generate(
             prompt=enhanced_prompt,
             user_settings=user_settings,
@@ -1190,7 +1214,8 @@ OUTPUT FORMAT for each step:
             task_type="structured_generation",
             response_format="json",
             schema=schema,
-            system_prompt="Generate JSON output that matches the provided schema exactly."
+            system_prompt="Generate JSON output that matches the provided schema exactly.",
+            org_settings=org_settings
         )
         
         # Parse and validate JSON with robust extraction

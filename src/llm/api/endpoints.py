@@ -1,19 +1,43 @@
 """API endpoints for LLM module."""
 
+import logging
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.security import get_current_user
-from core.config import get_settings
+from core.database import get_db
+from core.tenant_context import get_current_tenant_id
+from llm.org_llm_settings import get_org_llm_settings
+from services.llm_helpers import get_user_llm_settings
 from models import User
 from ..service import llm_service
 from ..models import (
     LLMRequest, LLMResponse, ModelInfo, CostEstimate,
-    UsageStats, WorkflowStep, UserLLMSettings
+    UsageStats, WorkflowStep
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["llm"])
+
+
+async def _load_llm_context(db: AsyncSession, user_id: str):
+    """User prefs + org settings for canonical resolution.
+
+    Org settings load is wrapped here and never fails the request (falls back
+    to None on any exception). User prefs load (get_user_llm_settings) is not
+    wrapped here — it doesn't need to be, since its own DB fetch is internally
+    guarded and degrades to unset preferences rather than raising.
+    """
+    user_settings = await get_user_llm_settings(db=db, user_id=user_id)
+    org_settings = None
+    try:
+        org_settings = await get_org_llm_settings(get_current_tenant_id(), db)
+    except Exception as e:
+        logger.debug(f"Org LLM settings unavailable: {e}")
+    return user_settings, org_settings
 
 
 class GenerateRequest(BaseModel):
@@ -31,6 +55,7 @@ class WorkflowGenerationRequest(BaseModel):
     """Request for workflow generation."""
     description: str
     context: Optional[Dict[str, Any]] = None
+    model: Optional[str] = None
 
 
 class StructuredGenerationRequest(BaseModel):
@@ -57,11 +82,12 @@ class CostEstimateRequest(BaseModel):
 @router.post("/generate", response_model=LLMResponse)
 async def generate_text(
     request: GenerateRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ) -> LLMResponse:
     """
     Generate text using the best available LLM.
-    
+
     This endpoint:
     - Respects user's model preferences from settings
     - Automatically selects the best model if not specified
@@ -69,16 +95,11 @@ async def generate_text(
     - Tracks usage and costs
     """
     try:
-        settings = get_settings()
-        # Get user's LLM settings if available
-        user_settings = UserLLMSettings(
-            user_id=str(current_user.id),
-            selected_model=request.model or settings.DEFAULT_LLM_MODEL,
-            temperature=request.temperature or 0.7,
-            max_tokens=request.max_tokens or 1000,
-            stream_responses=request.stream
-        )
-        
+        user_settings, org_settings = await _load_llm_context(db, str(current_user.id))
+        user_settings.temperature = request.temperature or user_settings.temperature
+        user_settings.max_tokens = request.max_tokens or user_settings.max_tokens
+        user_settings.stream_responses = request.stream
+
         response = await llm_service.generate(
             prompt=request.prompt,
             user_settings=user_settings,
@@ -87,11 +108,12 @@ async def generate_text(
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             system_prompt=request.system_prompt,
-            stream=request.stream
+            stream=request.stream,
+            org_settings=org_settings
         )
-        
+
         return response
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -156,31 +178,30 @@ async def estimate_cost(
 @router.post("/workflow/generate", response_model=List[WorkflowStep])
 async def generate_workflow_steps(
     request: WorkflowGenerationRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ) -> List[WorkflowStep]:
     """
     Generate workflow steps from natural language description.
-    
+
     This is a specialized endpoint for workflow generation that:
     - Parses natural language into structured workflow steps
     - Identifies agents and templates to use
     - Maintains logical flow and dependencies
     """
     try:
-        settings = get_settings()
-        user_settings = UserLLMSettings(
-            user_id=str(current_user.id),
-            selected_model=settings.DEFAULT_LLM_MODEL,
-        )
-        
+        user_settings, org_settings = await _load_llm_context(db, str(current_user.id))
+
         steps = await llm_service.generate_workflow_steps(
             prompt=request.description,
             user_settings=user_settings,
-            context=request.context
+            context=request.context,
+            model=request.model,
+            org_settings=org_settings
         )
-        
+
         return steps
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -191,26 +212,31 @@ async def generate_workflow_steps(
 @router.post("/structured/generate")
 async def generate_structured(
     request: StructuredGenerationRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """
     Generate structured output matching a JSON schema.
-    
+
     This endpoint:
     - Ensures output matches the provided schema
     - Supports few-shot learning with examples
     - Useful for generating configuration files, specs, etc.
     """
     try:
+        user_settings, org_settings = await _load_llm_context(db, str(current_user.id))
+
         result = await llm_service.generate_structured(
             prompt=request.prompt,
             schema=request.schema_,
             model=request.model,
-            examples=request.examples
+            examples=request.examples,
+            user_settings=user_settings,
+            org_settings=org_settings
         )
-        
+
         return result
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

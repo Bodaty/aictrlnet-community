@@ -200,100 +200,81 @@ class LLMGenerationEngine:
         response.response_time = (datetime.utcnow() - start_time).total_seconds()
         response.cost = self._calculate_cost(response.model_used, response.tokens_used)
 
+        if request.resolution_source:
+            response.metadata.setdefault("model_source", request.resolution_source)
+
         return response
     
     async def _select_model(self, request: LLMRequest) -> Tuple[str, ModelTier]:
         """
-        Select the best model for the request using tier-based selection and enhanced selector.
+        Select the best model for the request, delegating precedence to the
+        canonical llm.tier_resolver.resolve_model().
 
-        Priority order:
-        1. model_override (explicit override from request)
-        2. Tier-based user preferences (preferredFastModel/Balanced/Quality)
-        3. user_settings.selected_model (legacy single model preference)
-        4. context['preferred_model']
-        5. Enhanced auto-selection with scoring
+        1. model_override short-circuits here (explicit, highest priority).
+        2. Otherwise, tier is determined from task_type and resolve_model() is
+           called with user_settings/org_settings/tier/availability — it
+           returns the model plus a source (explicit is unreachable here since
+           it's handled above; practically: user_tier_preference →
+           user_selected_model → org_preferred → system_default).
+        3. When resolve_model() lands on system_default, this method refines
+           it further before returning: a non-Ollama env default is used
+           as-is; an Ollama env default defers to per-tier dynamic discovery
+           against locally available models, then falls back through
+           QUALITY/BALANCED/FAST.
+        4. If that refinement raises, control falls through to the
+           legacy tail below (enhanced selector scoring, then the original
+           selection logic). context['preferred_model'] is consulted ONLY in
+           that legacy fallback tail — it plays no role in the resolve_model()
+           chain above and is not part of the canonical precedence.
         """
-        # Import tier resolver
-        from llm.tier_resolver import get_model_for_tier, get_system_default_for_tier
+        from llm.tier_resolver import (
+            get_environment_default_model,
+            get_dynamic_system_default_for_tier,
+            is_ollama_model,
+            resolve_model,
+        )
 
-        # Handle explicit overrides first
         if request.model_override:
+            request.resolution_source = "explicit"
             return request.model_override, classify_model_tier(request.model_override)
 
-        # NEW: Tier-based model selection for task complexity
-        # This allows users to configure different models for fast/balanced/quality tiers
-        if request.user_settings:
-            # Determine the appropriate tier for this request
-            # We'll use task_type and context to determine tier
-            tier = self._determine_tier_for_task(request)
-
-            # Try to get user's preferred model for this tier
-            user_preferences = request.user_settings.__dict__ if hasattr(request.user_settings, '__dict__') else {}
-            preferred_model = get_model_for_tier(tier, user_preferences)
-
-            if preferred_model:
-                # Normalize the model name (UI names -> actual names)
-                model = normalize_model_name(preferred_model)
-
-                # Verify model is available
-                available_models = await self._get_ollama_models()
-                if model in available_models or self._is_api_model(model):
-                    logger.info(f"Using tier-based preference: {tier.value} tier -> {model}")
-                    return model, tier
-
-        # Legacy: Single model preference (for backward compatibility)
-        if request.user_settings and request.user_settings.selected_model:
-            model = normalize_model_name(request.user_settings.selected_model)
-            # Check if model is available
+        tier = self._determine_tier_for_task(request)
+        try:
             available_models = await self._get_ollama_models()
-            if model in available_models or self._is_api_model(model):
-                return model, classify_model_tier(model)
+        except Exception:
+            available_models = []
 
-        # System-default tier selection (no user preferences — use task-type mapping)
-        # This ensures tool_use, workflow_generation, etc. get the right model size
-        if not request.user_settings:
-            from llm.tier_resolver import (
-                get_dynamic_system_default_for_tier,
-                get_environment_default_model,
-                is_ollama_model,
-            )
-            tier = self._determine_tier_for_task(request)
+        resolution = resolve_model(
+            user_settings=request.user_settings,
+            org_settings=request.org_settings,
+            tier=tier,
+            is_available=lambda m: m in available_models or self._is_api_model(m),
+        )
+        request.resolution_source = resolution.source
+        logger.info(
+            f"Model resolved: {resolution.model} (source={resolution.source}, "
+            f"tier={resolution.tier.value}, task_type={request.task_type})"
+        )
+        if resolution.source != "system_default":
+            return resolution.model, resolution.tier
 
-            # Prefer the environment-configured default model (DEFAULT_LLM_MODEL) for
-            # ALL system-default tiers when it is a non-Ollama model (vLLM / hosted API).
-            # System/background calls (the template enhancement pipeline, NL-to-workflow,
-            # classification, etc.) carry no user_settings, so without this they
-            # auto-select the largest available *local Ollama* model per tier — e.g.
-            # 'quality' -> deepseek-r1:32b, a slow reasoning model that makes template
-            # instantiate ~300s and diverges from the fast model the runtime executor
-            # already uses (settings.DEFAULT_LLM_MODEL). Defaulting to the env model keeps
-            # the whole box on one model (vLLM Qwen3-30B on the Beast) while the settings
-            # page still overrides above. Ollama-only dev (DEFAULT_LLM_MODEL=llama3.x)
-            # keeps the existing tier discovery since is_ollama_model() is True there.
-            env_default = get_environment_default_model()
-            if env_default and not is_ollama_model(env_default):
-                logger.info(
-                    f"Using environment default model for {tier.value} tier: "
-                    f"{env_default} (task_type={request.task_type})"
-                )
-                return env_default, tier
-
-            try:
-                available_models = await self._get_ollama_models()
-                # Try dynamic default (picks best available model for tier)
-                system_model = get_dynamic_system_default_for_tier(tier, available_models)
-                if system_model:
-                    logger.info(f"Using system tier default: {tier.value} tier -> {system_model} (task_type={request.task_type})")
-                    return system_model, tier
-
-                # No model available for exact tier — try adjacent tiers
-                for fallback_tier in [ModelTier.QUALITY, ModelTier.BALANCED, ModelTier.FAST]:
-                    fallback_model = get_dynamic_system_default_for_tier(fallback_tier, available_models)
-                    if fallback_model:
-                        logger.info(f"Using fallback tier: {fallback_tier.value} -> {fallback_model}")
-                        return fallback_model, fallback_tier
-            except Exception:
-                pass  # Fall through to enhanced selector
+        # system_default: keep the engine's refinement — a non-Ollama env default is
+        # used as-is; an Ollama env default defers to dynamic per-tier discovery so
+        # local dev still gets right-sized tier models.
+        env_default = resolution.model
+        if env_default and not is_ollama_model(env_default):
+            return env_default, tier
+        try:
+            system_model = get_dynamic_system_default_for_tier(tier, available_models)
+            if system_model:
+                logger.info(f"Using system tier default: {tier.value} -> {system_model}")
+                return system_model, tier
+            for fallback_tier in [ModelTier.QUALITY, ModelTier.BALANCED, ModelTier.FAST]:
+                fallback_model = get_dynamic_system_default_for_tier(fallback_tier, available_models)
+                if fallback_model:
+                    return fallback_model, fallback_tier
+        except Exception:
+            pass  # Fall through to enhanced selector
 
         # Use enhanced selector for sophisticated routing
         requirements = {
@@ -437,6 +418,14 @@ class LLMGenerationEngine:
             "spec_generation",
             "template_matching",
             "domain_matching",
+            "structured_generation",
+            "planning",
+            "basic_agent",
+            "general",
+            "conversation",
+            "extraction",
+            "data_extraction",
+            "ai_task",
         }
 
         # QUALITY tier tasks: Complex generation and creation (~20-25 seconds)
@@ -466,7 +455,7 @@ class LLMGenerationEngine:
             return ModelTier.QUALITY
 
         # Default to BALANCED for unknown tasks (middle ground)
-        logger.debug(f"Unknown task type '{task_type}', defaulting to BALANCED tier")
+        logger.warning(f"Unknown task type '{task_type}' — defaulting to BALANCED tier; add an explicit mapping in _determine_tier_for_task")
         return ModelTier.BALANCED
 
     async def _generate_with_ollama(self, request: LLMRequest, model: str) -> LLMResponse:

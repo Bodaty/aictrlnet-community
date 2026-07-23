@@ -6,7 +6,7 @@ appropriate fallback logic.
 
 import logging
 import os
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, NamedTuple, Callable, Any
 from core.config import Settings
 from llm.models import ModelTier
 
@@ -346,3 +346,75 @@ def get_dynamic_system_default_for_tier(
         return candidates[0][0]
 
     return None
+
+
+class ModelResolution(NamedTuple):
+    """Result of canonical model resolution — model, provider, tier, and WHY."""
+    model: str
+    provider: str
+    tier: ModelTier
+    source: str  # explicit | user_tier_preference | user_selected_model | org_preferred | system_default
+
+
+def resolve_model(
+    *,
+    explicit_model: Optional[str] = None,
+    user_settings: Optional[Any] = None,
+    org_settings: Optional[Any] = None,
+    tier: Optional[ModelTier] = None,
+    is_available: Optional[Callable[[str], bool]] = None,
+) -> ModelResolution:
+    """Canonical model-selection precedence (Phase 2, model-selection remediation).
+
+    explicit request → user prefs (tier → quality backfill → legacy
+    selected_model) → org preferred_model (gated by trial_mode+has_own_key and
+    allowed_providers) → system default.
+
+    Pure/sync: availability is the caller's predicate (None = don't gate);
+    user_settings/org_settings are duck-typed (UserLLMSettings / OrgLLMSettings)
+    so this module gains no imports from llm.org_llm_settings (which imports us).
+    """
+    from llm.model_selection import classify_model_tier, get_provider_from_model
+    from llm.generation import normalize_model_name
+
+    def _usable(m: str) -> bool:
+        return is_available is None or is_available(m)
+
+    def _result(model: str, source: str, forced_tier: Optional[ModelTier] = None) -> ModelResolution:
+        return ModelResolution(
+            model=model,
+            provider=get_provider_from_model(model).value,
+            tier=forced_tier or classify_model_tier(model),
+            source=source,
+        )
+
+    if explicit_model:
+        return _result(explicit_model, "explicit")
+
+    if user_settings is not None:
+        prefs = {
+            key: getattr(user_settings, key, None)
+            for key in ("preferredFastModel", "preferredBalancedModel", "preferredQualityModel")
+        }
+        tier_pref = get_model_for_tier(tier or ModelTier.BALANCED, prefs)
+        if tier_pref:
+            candidate = normalize_model_name(tier_pref)
+            if _usable(candidate):
+                return _result(candidate, "user_tier_preference", forced_tier=tier)
+        legacy = getattr(user_settings, "selected_model", None)
+        if legacy:
+            candidate = normalize_model_name(legacy)
+            if _usable(candidate):
+                return _result(candidate, "user_selected_model")
+
+    if org_settings is not None:
+        preferred = getattr(org_settings, "preferred_model", None)
+        trial = bool(getattr(org_settings, "trial_mode", False))
+        has_key = getattr(org_settings, "has_own_key", lambda: False)()
+        if preferred and not (trial and not has_key):
+            allowed = [normalize_provider(p) for p in (getattr(org_settings, "allowed_providers", None) or [])]
+            provider = get_provider_from_model(preferred).value
+            if (not allowed or normalize_provider(provider) in allowed) and _usable(preferred):
+                return _result(preferred, "org_preferred")
+
+    return _result(get_environment_default_model(), "system_default")

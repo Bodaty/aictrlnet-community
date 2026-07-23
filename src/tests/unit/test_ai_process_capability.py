@@ -83,3 +83,20 @@ async def test_call_adapter_logs_primary_capability_failure(node, caplog):
         await node._call_adapter(adapter, "generate", {"prompt": "hi", "model": "claude-3-sonnet-20240229"})
 
     assert any("generate" in record.getMessage() for record in caplog.records)
+
+
+async def test_default_model_prefers_org_setting(monkeypatch, node):
+    class Org:
+        preferred_model = "gpt-4o"
+        trial_mode = False
+        allowed_providers = []
+
+        def has_own_key(self, provider=None):
+            return True
+
+    async def fake_load(self):
+        return Org()
+
+    monkeypatch.setattr(type(node), "_load_org_llm_settings", fake_load)
+    model = await node._resolve_default_model()
+    assert model == "gpt-4o"

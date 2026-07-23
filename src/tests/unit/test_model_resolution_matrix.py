@@ -1,10 +1,11 @@
-"""Characterization matrix for model resolution (Phase 0, model-selection remediation).
+"""Characterization matrix for model resolution (model-selection remediation).
 
-Documents TODAY's precedence in LLMGenerationEngine._select_model and encodes the
-Phase 2 target as a strict xfail that must flip green when the canonical
-resolve_model() lands:
+Documents LLMGenerationEngine._select_model's precedence, which delegates to the
+canonical llm.tier_resolver.resolve_model():
   explicit request → user prefs (tier → quality backfill → legacy selected_model)
   → org preferred_model → system default
+These tests guard that precedence contract — a regression here means resolve_model
+or its delegation from _select_model has drifted from the documented order.
 Plan: .claude/plans/llm-generate-fallback-and-model-selection.md
 """
 from unittest.mock import AsyncMock
@@ -90,12 +91,39 @@ async def test_no_user_settings_uses_non_ollama_env_default_for_all_tiers(engine
     assert model == "vllm:Qwen/Qwen3-30B-A3B-Instruct-2507-AWQ-4bit"
 
 
-# --- Phase 2 target (strict xfail: MUST flip green when the phase lands) ----
+# --- canonical resolver contract (resolve_model exists and is delegated to) -
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Phase 2: canonical resolve_model() with org-settings precedence not yet implemented",
-)
 def test_canonical_resolver_exists():
     from llm.tier_resolver import resolve_model  # noqa: F401
+
+
+class _Org:
+    def __init__(self, preferred_model, trial_mode=False, allowed_providers=None):
+        self.preferred_model = preferred_model
+        self.trial_mode = trial_mode
+        self.allowed_providers = allowed_providers or []
+
+    def has_own_key(self, provider=None):
+        return False
+
+
+async def test_org_preferred_model_used_when_no_user_prefs(engine, monkeypatch):
+    monkeypatch.setattr(engine, "_get_ollama_models", AsyncMock(return_value=[]))
+    request = LLMRequest(prompt="hi", org_settings=_Org("gpt-4o"))
+
+    model, _ = await engine._select_model(request)
+
+    assert model == "gpt-4o"
+    assert request.resolution_source == "org_preferred"
+
+
+async def test_trial_org_falls_to_system_default(engine, monkeypatch):
+    monkeypatch.setenv("DEFAULT_LLM_MODEL", "vllm:Qwen/Qwen3-30B-A3B-Instruct-2507-AWQ-4bit")
+    monkeypatch.setattr(engine, "_get_ollama_models", AsyncMock(return_value=[]))
+    request = LLMRequest(prompt="hi", org_settings=_Org("gpt-4o", trial_mode=True))
+
+    model, _ = await engine._select_model(request)
+
+    assert model == "vllm:Qwen/Qwen3-30B-A3B-Instruct-2507-AWQ-4bit"
+    assert request.resolution_source == "system_default"

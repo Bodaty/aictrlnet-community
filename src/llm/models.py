@@ -50,7 +50,7 @@ class ModelInfo(BaseModel):
 class UserLLMSettings(BaseModel):
     """User's LLM preferences from UI settings."""
     user_id: str
-    selected_model: str  # e.g., "llama3.2:1b", "claude-3-haiku" (legacy, set to preferredQualityModel)
+    selected_model: Optional[str] = None  # legacy single-model preference; None = no user choice
     provider: Optional[ModelProvider] = None  # Derived from model name by generation engine
     api_keys: Dict[str, str] = {}  # Provider-specific API keys
     temperature: float = 0.7
@@ -87,6 +87,8 @@ class LLMRequest(BaseModel):
     output_schema: Optional[Dict[str, Any]] = None   # For structured output (renamed from schema)
     cache_key: Optional[str] = None                   # For caching
     context: Optional[Dict[str, Any]] = None         # MCP or other context
+    org_settings: Optional[Any] = None               # OrgLLMSettings (duck-typed; avoids import cycle)
+    resolution_source: Optional[str] = None          # Set by the engine: why this model was picked
 
 
 class LLMResponse(BaseModel):

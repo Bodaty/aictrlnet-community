@@ -380,6 +380,31 @@ class AIProcessNode(BaseNode):
             logger.debug(f"Org adapter resolution failed (using system default): {e}")
             return None
 
+    async def _load_org_llm_settings(self):
+        """Load org LLM settings once per node execution (same source as _resolve_org_adapter)."""
+        if getattr(self, "_org_llm_settings_cache", None) is not None:
+            return self._org_llm_settings_cache
+        try:
+            from core.tenant_context import get_current_tenant_id
+            from core.database import get_session_maker
+            from llm.org_llm_settings import get_org_llm_settings
+
+            tenant_id = get_current_tenant_id()
+            async with get_session_maker()() as db:
+                self._org_llm_settings_cache = await get_org_llm_settings(tenant_id, db)
+        except Exception as e:
+            logger.debug(f"Org LLM settings unavailable for default-model resolution: {e}")
+            self._org_llm_settings_cache = None
+        return self._org_llm_settings_cache
+
+    async def _resolve_default_model(self) -> str:
+        """Default model when the node sets none: org preferred (trial-gated) → env default."""
+        from llm.tier_resolver import resolve_model
+
+        resolution = resolve_model(org_settings=await self._load_org_llm_settings())
+        logger.info(f"aiProcess default model: {resolution.model} (source={resolution.source})")
+        return resolution.model
+
     async def _enforce_trial_restriction(self, adapter_id: str) -> str:
         """In trial mode, override node-specific adapters to system default.
 
@@ -605,11 +630,10 @@ class AIProcessNode(BaseNode):
     async def _call_adapter(self, adapter: Any, capability: str, parameters: dict) -> "AdapterResponse":
         """Call adapter with fallback from generic capabilities to chat."""
         from adapters.models import AdapterRequest
-        from llm.tier_resolver import get_environment_default_model
 
         # Ensure a model is always set — adapters like Ollama require it
         if not parameters.get("model"):
-            parameters["model"] = get_environment_default_model()
+            parameters["model"] = await self._resolve_default_model()
 
         request = AdapterRequest(capability=capability, parameters=parameters)
         try:

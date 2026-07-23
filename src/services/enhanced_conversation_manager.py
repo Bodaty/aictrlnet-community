@@ -1228,7 +1228,8 @@ Response (just the sentence, no quotes):"""
                     prompt=prompt,
                     task_type="response_formatting",
                     temperature=0.3,
-                    max_tokens=50
+                    max_tokens=50,
+                    org_settings=await self._get_org_llm_settings()
                 )
 
                 if llm_response and llm_response.text:
@@ -2219,6 +2220,11 @@ Response (just the sentence, no quotes):"""
                     preferredQualityModel=user_preferences.get('preferredQualityModel'),
                 )
 
+            # Load org LLM settings once (memoized) BEFORE releasing the DB
+            # connection below — the synthesis call further down reuses this
+            # cached value with no further DB access.
+            org_settings = await self._get_org_llm_settings()
+
             # Release DB connection before LLM call (30-120s idle wait).
             # Session will lazily re-acquire a connection on the next DB operation.
             await self.db.close()
@@ -2237,6 +2243,7 @@ Response (just the sentence, no quotes):"""
                 system_prompt=system_prompt,
                 task_type=task_type, temperature=0.4,
                 user_settings=user_settings,
+                org_settings=org_settings,
             ):
                 if event["type"] == "text_delta" and stream and event.get("text"):
                     accumulated_text += event["text"]
@@ -2386,6 +2393,7 @@ Response (just the sentence, no quotes):"""
                 async for event in self._enhanced_llm_service.generate_with_tools_stream(
                     prompt=None, tools=[], messages=synthesis_messages,
                     temperature=0.5, user_settings=user_settings,
+                    org_settings=org_settings,
                 ):
                     if event["type"] == "text_delta" and stream and event.get("text"):
                         accumulated_text += event["text"]

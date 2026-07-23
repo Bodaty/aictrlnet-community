@@ -30,10 +30,13 @@ async def get_user_llm_settings(
     """
     Get LLM settings with proper user preference resolution.
 
-    This function implements the correct priority cascade for model selection:
-    1. Explicit model_override (if provided by caller)
-    2. User's saved preference from database (from Settings UI)
-    3. System default (settings.DEFAULT_LLM_MODEL)
+    This function resolves only the user-level inputs to model selection:
+    1. Explicit model_override (if provided by caller) — returned as-is
+    2. User's saved preference from database (from Settings UI) — tier prefs
+       and/or legacy selected_model, whichever are set
+    3. Neither found — selected_model is left None; the caller's resolution
+       cascade (llm.tier_resolver.resolve_model) applies org preference and
+       the system default, not this function
 
     Args:
         db: Database session for fetching user preferences
@@ -121,11 +124,10 @@ async def get_user_llm_settings(
             logger.warning(f"Could not fetch user preferences for {user_id}: {e}")
             # Continue with fallback
 
-    # Priority 3: Fallback to system default
-    selected_model = user_model or settings.DEFAULT_LLM_MODEL
-
-    if not user_model:
-        logger.info(f"Using system default model: {selected_model}")
+    # Priority 3: No saved preference — leave selected_model unset so the
+    # caller's resolution cascade (resolve_model) applies org/system defaults
+    # instead of a fake user choice.
+    selected_model = user_model
 
     return UserLLMSettings(
         user_id=user_id,
@@ -133,7 +135,6 @@ async def get_user_llm_settings(
         temperature=temperature or 0.7,
         max_tokens=max_tokens or 1000,
         stream_responses=stream_responses,
-        fallback_model=settings.DEFAULT_LLM_MODEL,  # Always use system default as fallback
         preferredFastModel=preferred_fast,
         preferredBalancedModel=preferred_balanced,
         preferredQualityModel=preferred_quality,

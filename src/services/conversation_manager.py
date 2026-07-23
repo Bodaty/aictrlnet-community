@@ -52,7 +52,22 @@ class ConversationManagerService:
         self.llm = llm_service
         self.action_orchestrator = None  # Initialized per session with user edition
         self.smart_defaults = SmartDefaults()
-        
+
+    async def _get_org_llm_settings(self):
+        """Load org LLM settings once per manager instance (manager is instantiated
+        per-request — see conversation.py/channel_webhook.py endpoints — so this
+        cache never crosses tenants)."""
+        if getattr(self, "_org_llm_settings_cache", None) is not None:
+            return self._org_llm_settings_cache
+        try:
+            from core.tenant_context import get_current_tenant_id
+            from llm.org_llm_settings import get_org_llm_settings
+            self._org_llm_settings_cache = await get_org_llm_settings(get_current_tenant_id(), self.db)
+        except Exception as e:
+            logger.debug(f"Org LLM settings unavailable in conversation: {e}")
+            self._org_llm_settings_cache = None
+        return self._org_llm_settings_cache
+
     # === Session Management ===
     
     async def create_session(
@@ -547,7 +562,8 @@ CRITICAL: Respond with ONLY valid JSON, no explanation text before or after.
                 task_type="intent_classification",
                 temperature=0.2,  # Low temperature for consistent classification
                 max_tokens=300,
-                cache_key=f"intent_{session.id}_{hash(content)}"
+                cache_key=f"intent_{session.id}_{hash(content)}",
+                org_settings=await self._get_org_llm_settings()
             )
 
             # Parse the LLM response - try to extract JSON from text
@@ -1231,7 +1247,8 @@ Keep the response concise and friendly."""
                 user_settings=user_settings,
                 task_type="conversation",
                 temperature=0.7,
-                max_tokens=300
+                max_tokens=300,
+                org_settings=await self._get_org_llm_settings()
             )
 
             return llm_response.text
