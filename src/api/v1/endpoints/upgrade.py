@@ -15,9 +15,9 @@ from core.database import get_db
 from core.security import get_current_active_user as get_current_user
 from core.dependencies import get_current_user_safe
 from core.enforcement_simple import LicenseEnforcer, Edition, LimitType
-from core.usage_tracker import get_usage_tracker
 from core.config import get_settings
 from core.tenant_context import get_current_tenant_id
+from api.v1.endpoints._auth_helpers import get_safe_user_id
 from models.enforcement import FeatureTrial, UpgradePrompt, BillingEvent
 from schemas.upgrade import (
     UpgradeOptionsResponse,
@@ -76,8 +76,7 @@ async def get_usage_summary(
     """Get detailed usage summary for billing period."""
     
     tenant_id = current_user.get("tenant_id") or get_current_tenant_id()
-    tracker = await get_usage_tracker(db)
-    
+
     # Determine date range
     now = datetime.utcnow()
     if period == "current":
@@ -608,7 +607,7 @@ async def create_limit_override(
         existing.limit_value = request.limit_value
         existing.reason = request.reason
         existing.expires_at = request.expires_at
-        existing.created_by = current_user["id"]
+        existing.created_by = get_safe_user_id(current_user)
     else:
         # Create new
         override = TenantLimitOverride(
@@ -617,7 +616,7 @@ async def create_limit_override(
             limit_value=request.limit_value,
             reason=request.reason,
             expires_at=request.expires_at,
-            created_by=current_user["id"]
+            created_by=get_safe_user_id(current_user)
         )
         db.add(override)
     

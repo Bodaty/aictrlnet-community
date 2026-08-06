@@ -3,7 +3,11 @@
 import os
 import sys
 
-os.environ.setdefault("ENVIRONMENT", "test")
+# Hard-set, not setdefault: containers preset ENVIRONMENT=development, which
+# silently disabled the enforcement middleware's in-process-test guard
+# (middleware/enforcement.py:104) — its real-session UsageTracker singleton
+# then poisoned later usage-endpoint tests across per-test event loops.
+os.environ["ENVIRONMENT"] = "test"
 os.environ.setdefault("EDITION", "community")
 os.environ.setdefault("AICTRLNET_EDITION", "community")
 

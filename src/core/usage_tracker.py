@@ -1,6 +1,7 @@
 """Usage tracking system for monitoring and recording usage metrics."""
 
 import asyncio
+import contextlib
 import json
 import logging
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from core.config import get_settings
 from core.cache import get_cache
+from core.database import get_session_maker
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,11 @@ class UsageTracker:
     
     def _start_periodic_flush(self):
         """Start background task to periodically flush metrics."""
+        # In-process test harnesses run each test on its own event loop; a
+        # flush task would outlive its loop and die noisily.
+        if self.settings.ENVIRONMENT == "test":
+            return
+
         async def flush_loop():
             while True:
                 try:
@@ -45,8 +52,23 @@ class UsageTracker:
                     await self.flush_buffer()
                 except Exception as e:
                     logger.error(f"Error in periodic flush: {e}")
-        
+
         self._flush_task = asyncio.create_task(flush_loop())
+
+    @contextlib.asynccontextmanager
+    async def _session(self, db: Optional[AsyncSession] = None):
+        """Yield the caller's session, else the bound one, else a fresh one.
+
+        The session-maker fallback is what keeps the module-global tracker
+        safe: it must never run DB work on a session owned by another
+        request (AsyncSession is not concurrency-safe).
+        """
+        session = db if db is not None else self.db
+        if session is not None:
+            yield session
+        else:
+            async with get_session_maker()() as fresh:
+                yield fresh
     
     async def track_usage(
         self,
@@ -85,26 +107,35 @@ class UsageTracker:
     
     async def flush_buffer(self):
         """Flush buffered metrics to database."""
-        
-        if not self.db:
-            logger.warning("No database connection for flushing metrics")
-            return
-        
+
         async with self._buffer_lock:
             if not self._buffer:
                 return
-            
+
             # Copy and clear buffer
             buffer_copy = dict(self._buffer)
             self._buffer.clear()
-        
-        # Process buffered metrics
+
+        if self.db is not None:
+            await self._flush_metrics(self.db, buffer_copy)
+            return
+
+        # Metrics are best-effort: a flush failure (including session
+        # acquisition) must never propagate into a user request.
+        try:
+            async with get_session_maker()() as db:
+                await self._flush_metrics(db, buffer_copy)
+        except Exception as e:
+            logger.error(f"Usage metric flush failed: {e}")
+
+    async def _flush_metrics(self, db: AsyncSession, buffer_copy: Dict[str, Any]):
+        """Persist a copied buffer to the given session."""
         from models.enforcement import UsageMetric
         import uuid
-        
+
         for key, metrics in buffer_copy.items():
             tenant_id, metric_type = key.split(":", 1)
-            
+
             try:
                 # Validate tenant_id is a valid UUID
                 try:
@@ -113,14 +144,14 @@ class UsageTracker:
                     # Skip metrics with invalid tenant_id (like 'default-tenant')
                     logger.debug(f"Skipping metric with invalid tenant_id: {tenant_id}")
                     continue
-                
+
                 # Aggregate metadata if present
                 metadata = {}
                 if "metadata" in metrics and metrics["metadata"]:
                     # Merge all metadata entries
                     for m in metrics["metadata"]:
                         metadata.update(m)
-                
+
                 # Create metric record
                 metric = UsageMetric(
                     tenant_id=tenant_id,
@@ -130,15 +161,15 @@ class UsageTracker:
                     meta_data=metadata,  # Note: changed from metadata to meta_data
                     timestamp=datetime.utcnow()
                 )
-                
-                self.db.add(metric)
-                await self.db.commit()
-                
+
+                db.add(metric)
+                await db.commit()
+
             except IntegrityError:
-                await self.db.rollback()
+                await db.rollback()
                 logger.error(f"Failed to save metric: {key}")
             except Exception as e:
-                await self.db.rollback()
+                await db.rollback()
                 logger.error(f"Error saving metric {key}: {e}")
     
     async def get_usage_summary(
@@ -146,13 +177,11 @@ class UsageTracker:
         tenant_id: str,
         metric_types: Optional[List[str]] = None,
         start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None
+        end_date: Optional[datetime] = None,
+        db: Optional[AsyncSession] = None
     ) -> Dict[str, Any]:
         """Get usage summary for a tenant."""
-        
-        if not self.db:
-            return {"error": "No database connection"}
-        
+
         # Default to current month
         if not start_date:
             start_date = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -177,9 +206,10 @@ class UsageTracker:
         
         if metric_types:
             query = query.where(UsageMetric.metric_type.in_(metric_types))
-        
-        result = await self.db.execute(query)
-        rows = result.all()
+
+        async with self._session(db) as session:
+            result = await session.execute(query)
+            rows = result.all()
         
         summary = {
             "tenant_id": tenant_id,
@@ -204,13 +234,11 @@ class UsageTracker:
         tenant_id: str,
         metric_type: str,
         granularity: str = "day",
-        days: int = 30
+        days: int = 30,
+        db: Optional[AsyncSession] = None
     ) -> List[Dict[str, Any]]:
         """Get usage timeline for visualization."""
-        
-        if not self.db:
-            return []
-        
+
         from models.enforcement import UsageMetric
         
         # Determine date truncation based on granularity
@@ -228,173 +256,177 @@ class UsageTracker:
             interval = timedelta(days=30)
         
         start_date = datetime.utcnow() - timedelta(days=days)
-        
+
         # Query grouped by time period
-        result = await self.db.execute(
-            select(
-                date_trunc.label("period"),
-                func.sum(UsageMetric.value).label("total_value"),
-                func.sum(UsageMetric.count).label("total_count")
-            ).where(
-                and_(
-                    UsageMetric.tenant_id == tenant_id,
-                    UsageMetric.metric_type == metric_type,
-                    UsageMetric.timestamp >= start_date
-                )
-            ).group_by("period").order_by("period")
-        )
-        
+        async with self._session(db) as session:
+            result = await session.execute(
+                select(
+                    date_trunc.label("period"),
+                    func.sum(UsageMetric.value).label("total_value"),
+                    func.sum(UsageMetric.count).label("total_count")
+                ).where(
+                    and_(
+                        UsageMetric.tenant_id == tenant_id,
+                        UsageMetric.metric_type == metric_type,
+                        UsageMetric.timestamp >= start_date
+                    )
+                ).group_by("period").order_by("period")
+            )
+            rows = result.all()
+
         timeline = []
-        for row in result:
+        for row in rows:
             timeline.append({
                 "period": row.period.isoformat(),
                 "value": float(row.total_value or 0),
                 "count": int(row.total_count or 0)
             })
-        
+
         return timeline
     
     async def get_top_users(
         self,
         metric_type: str,
         limit: int = 10,
-        days: int = 30
+        days: int = 30,
+        db: Optional[AsyncSession] = None
     ) -> List[Dict[str, Any]]:
         """Get top users by usage for a metric type."""
-        
-        if not self.db:
-            return []
-        
+
         from models.enforcement import UsageMetric
         from models.community import Tenant
-        
+
         start_date = datetime.utcnow() - timedelta(days=days)
-        
+
         # Query top users
-        result = await self.db.execute(
-            select(
-                UsageMetric.tenant_id,
-                Tenant.name.label("tenant_name"),
-                func.sum(UsageMetric.value).label("total_value"),
-                func.sum(UsageMetric.count).label("total_count")
-            ).select_from(
-                UsageMetric
-            ).join(
-                Tenant, Tenant.id == UsageMetric.tenant_id
-            ).where(
-                and_(
-                    UsageMetric.metric_type == metric_type,
-                    UsageMetric.timestamp >= start_date
-                )
-            ).group_by(
-                UsageMetric.tenant_id, Tenant.name
-            ).order_by(
-                func.sum(UsageMetric.value).desc()
-            ).limit(limit)
-        )
-        
+        async with self._session(db) as session:
+            result = await session.execute(
+                select(
+                    UsageMetric.tenant_id,
+                    Tenant.name.label("tenant_name"),
+                    func.sum(UsageMetric.value).label("total_value"),
+                    func.sum(UsageMetric.count).label("total_count")
+                ).select_from(
+                    UsageMetric
+                ).join(
+                    Tenant, Tenant.id == UsageMetric.tenant_id
+                ).where(
+                    and_(
+                        UsageMetric.metric_type == metric_type,
+                        UsageMetric.timestamp >= start_date
+                    )
+                ).group_by(
+                    UsageMetric.tenant_id, Tenant.name
+                ).order_by(
+                    func.sum(UsageMetric.value).desc()
+                ).limit(limit)
+            )
+            rows = result.all()
+
         top_users = []
-        for row in result:
+        for row in rows:
             top_users.append({
                 "tenant_id": str(row.tenant_id),
                 "tenant_name": row.tenant_name,
                 "total_value": float(row.total_value or 0),
                 "total_count": int(row.total_count or 0)
             })
-        
+
         return top_users
     
-    async def create_monthly_summary(self, month: Optional[datetime] = None):
+    async def create_monthly_summary(
+        self,
+        month: Optional[datetime] = None,
+        db: Optional[AsyncSession] = None
+    ):
         """Create monthly usage summaries for all tenants."""
-        
-        if not self.db:
-            return
-        
+
         from models.enforcement import UsageMetric, UsageSummary
-        
+
         # Default to previous month
         if not month:
             now = datetime.utcnow()
             month = (now.replace(day=1) - timedelta(days=1)).replace(day=1)
-        
+
         start_date = month
         end_date = (month + timedelta(days=32)).replace(day=1) - timedelta(seconds=1)
-        
-        # Get all usage for the month grouped by tenant and metric
-        result = await self.db.execute(
-            select(
-                UsageMetric.tenant_id,
-                UsageMetric.metric_type,
-                func.sum(UsageMetric.value).label("total_value"),
-                func.sum(UsageMetric.count).label("total_count"),
-                func.date_trunc("day", UsageMetric.timestamp).label("day"),
-                func.array_agg(UsageMetric.meta_data).label("metadata_list")
-            ).where(
-                and_(
-                    UsageMetric.timestamp >= start_date,
-                    UsageMetric.timestamp <= end_date
+
+        async with self._session(db) as session:
+            # Get all usage for the month grouped by tenant and metric
+            result = await session.execute(
+                select(
+                    UsageMetric.tenant_id,
+                    UsageMetric.metric_type,
+                    func.sum(UsageMetric.value).label("total_value"),
+                    func.sum(UsageMetric.count).label("total_count"),
+                    func.date_trunc("day", UsageMetric.timestamp).label("day"),
+                    func.array_agg(UsageMetric.meta_data).label("metadata_list")
+                ).where(
+                    and_(
+                        UsageMetric.timestamp >= start_date,
+                        UsageMetric.timestamp <= end_date
+                    )
+                ).group_by(
+                    UsageMetric.tenant_id,
+                    UsageMetric.metric_type,
+                    "day"
                 )
-            ).group_by(
-                UsageMetric.tenant_id,
-                UsageMetric.metric_type,
-                "day"
             )
-        )
-        
-        # Process results into summaries
-        summaries = defaultdict(lambda: defaultdict(lambda: {
-            "total_value": 0,
-            "total_count": 0,
-            "daily_breakdown": {}
-        }))
-        
-        for row in result:
-            key = (str(row.tenant_id), row.metric_type)
-            summaries[key]["total_value"] += float(row.total_value or 0)
-            summaries[key]["total_count"] += int(row.total_count or 0)
-            
-            day_str = row.day.strftime("%Y-%m-%d")
-            summaries[key]["daily_breakdown"][day_str] = {
-                "value": float(row.total_value or 0),
-                "count": int(row.total_count or 0)
-            }
-        
-        # Save summaries
-        for (tenant_id, metric_type), data in summaries.items():
-            try:
-                summary = UsageSummary(
-                    tenant_id=tenant_id,
-                    month=month.date(),
-                    metric_type=metric_type,
-                    total_value=data["total_value"],
-                    total_count=data["total_count"],
-                    daily_breakdown=data["daily_breakdown"]
-                )
-                
-                # Upsert
-                existing = await self.db.execute(
-                    select(UsageSummary).where(
-                        and_(
-                            UsageSummary.tenant_id == tenant_id,
-                            UsageSummary.month == month.date(),
-                            UsageSummary.metric_type == metric_type
+
+            # Process results into summaries
+            summaries = defaultdict(lambda: defaultdict(lambda: {
+                "total_value": 0,
+                "total_count": 0,
+                "daily_breakdown": {}
+            }))
+
+            for row in result:
+                key = (str(row.tenant_id), row.metric_type)
+                summaries[key]["total_value"] += float(row.total_value or 0)
+                summaries[key]["total_count"] += int(row.total_count or 0)
+
+                day_str = row.day.strftime("%Y-%m-%d")
+                summaries[key]["daily_breakdown"][day_str] = {
+                    "value": float(row.total_value or 0),
+                    "count": int(row.total_count or 0)
+                }
+
+            # Save summaries
+            for (tenant_id, metric_type), data in summaries.items():
+                try:
+                    summary = UsageSummary(
+                        tenant_id=tenant_id,
+                        month=month.date(),
+                        metric_type=metric_type,
+                        total_value=data["total_value"],
+                        total_count=data["total_count"],
+                        daily_breakdown=data["daily_breakdown"]
+                    )
+
+                    # Upsert
+                    existing = await session.execute(
+                        select(UsageSummary).where(
+                            and_(
+                                UsageSummary.tenant_id == tenant_id,
+                                UsageSummary.month == month.date(),
+                                UsageSummary.metric_type == metric_type
+                            )
                         )
                     )
-                )
-                existing_summary = existing.scalar_one_or_none()
-                
-                if existing_summary:
-                    existing_summary.total_value = data["total_value"]
-                    existing_summary.total_count = data["total_count"]
-                    existing_summary.daily_breakdown = data["daily_breakdown"]
-                else:
-                    self.db.add(summary)
-                
-                await self.db.commit()
-                
-            except Exception as e:
-                await self.db.rollback()
-                logger.error(f"Failed to create summary for {tenant_id}/{metric_type}: {e}")
+                    existing_summary = existing.scalar_one_or_none()
+
+                    if existing_summary:
+                        existing_summary.total_value = data["total_value"]
+                        existing_summary.total_count = data["total_count"]
+                        existing_summary.daily_breakdown = data["daily_breakdown"]
+                    else:
+                        session.add(summary)
+
+                    await session.commit()
+
+                except Exception as e:
+                    await session.rollback()
+                    logger.error(f"Failed to create summary for {tenant_id}/{metric_type}: {e}")
     
     async def track_api_call(
         self,
@@ -574,13 +606,21 @@ class UsageTracker:
 _usage_tracker: Optional[UsageTracker] = None
 
 
-async def get_usage_tracker(db: AsyncSession) -> UsageTracker:
-    """Get usage tracker instance."""
-    
+async def get_usage_tracker(db: Optional[AsyncSession] = None) -> UsageTracker:
+    """Get the global usage tracker.
+
+    The singleton holds no session of its own — pass ``db`` to the read
+    methods (or let them open one via the session maker). The parameter is
+    accepted for backward compatibility and ignored: binding the first
+    caller's request-scoped session shared one AsyncSession across all
+    concurrent requests.
+    """
+
     global _usage_tracker
     if not _usage_tracker:
-        _usage_tracker = UsageTracker(db)
-    
+        _usage_tracker = UsageTracker()
+        _usage_tracker._start_periodic_flush()
+
     return _usage_tracker
 
 

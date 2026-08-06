@@ -268,9 +268,14 @@ class APICallNode(BaseNode):
                     # Parse response
                     response_data = await self._parse_response(response)
                     
-                    # Add metadata
+                    # Add metadata. Response headers go under response_headers,
+                    # NOT headers: the executor's {**input, **output} accumulation
+                    # feeds this output into the next node's input, and a top-level
+                    # "headers" key would be merged into the next apiCall's REQUEST
+                    # headers by _build_headers (leaked Content-Length broke chained
+                    # GETs live on 2026-08-04).
                     response_data["status_code"] = response.status_code
-                    response_data["headers"] = dict(response.headers)
+                    response_data["response_headers"] = dict(response.headers)
                     
                     # Check for errors
                     if not self.config.parameters.get("ignore_errors", False):

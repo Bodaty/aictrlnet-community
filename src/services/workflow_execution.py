@@ -4,7 +4,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import selectinload
-from datetime import datetime, timedelta
+from datetime import datetime
 import uuid
 import asyncio
 import logging
@@ -23,6 +23,7 @@ from schemas.workflow_execution import (
     WorkflowTriggerCreate, WorkflowScheduleCreate
 )
 from services.iam import IAMService
+from services.schedule_utils import compute_next_run
 from nodes.executor import NodeExecutor
 from nodes.registry import node_registry
 from events.event_bus import event_bus
@@ -910,11 +911,12 @@ class WorkflowExecutionService:
             workflow_id=str(workflow_id),
             **schedule_data.model_dump()
         )
-        
-        # Calculate next run time
-        # This would use a cron parser in production
-        schedule.next_run = datetime.utcnow() + timedelta(hours=1)
-        
+
+        schedule.next_run = compute_next_run(
+            schedule_data.schedule_expression,
+            schedule_data.timezone,
+        )
+
         self.db.add(schedule)
         await self.db.commit()
         await self.db.refresh(schedule)

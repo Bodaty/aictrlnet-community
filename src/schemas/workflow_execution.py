@@ -178,15 +178,6 @@ class WorkflowScheduleCreate(BaseModel):
     execution_config: Optional[Dict[str, Any]] = None
 
 
-class WorkflowScheduleUpdate(BaseModel):
-    """Schema for updating a workflow schedule."""
-    schedule_expression: Optional[str] = None
-    timezone: Optional[str] = None
-    is_active: Optional[bool] = None
-    input_parameters: Optional[Dict[str, Any]] = None
-    execution_config: Optional[Dict[str, Any]] = None
-
-
 class WorkflowScheduleResponse(BaseModel):
     """Response schema for workflow schedule."""
     id: uuid.UUID

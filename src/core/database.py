@@ -28,6 +28,25 @@ def get_engine():
     global _engine
     if _engine is None:
         settings = get_settings()
+        if settings.ENVIRONMENT == "test":
+            # In-process test harnesses run each test on its own event loop;
+            # pooled asyncpg connections are loop-bound and blow up when a
+            # later test checks one out ("attached to a different loop").
+            # NullPool gives every session a fresh same-loop connection —
+            # the same choice the editions' test conftest engines make.
+            from sqlalchemy.pool import NullPool
+            _engine = create_async_engine(
+                str(settings.DATABASE_URL),
+                echo=False,
+                future=True,
+                poolclass=NullPool,
+                connect_args={
+                    "server_settings": {
+                        "app.current_tenant_id": DEFAULT_TENANT_ID,
+                    }
+                },
+            )
+            return _engine
         _engine = create_async_engine(
             str(settings.DATABASE_URL),
             echo=False,

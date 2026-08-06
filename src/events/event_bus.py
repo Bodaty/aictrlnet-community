@@ -24,10 +24,28 @@ class EventBus:
         self._dropped_event_count = 0
     
     async def start(self):
-        """Start the event bus processor."""
-        if self._running:
+        """Start the event bus processor.
+
+        Idempotent, and self-heals when the previous worker died with its
+        event loop (per-test loops in in-process harnesses): a worker task
+        that is done, or bound to a loop other than the current one, is
+        replaced instead of being treated as running.
+        """
+        current_loop = asyncio.get_running_loop()
+        if (
+            self._running
+            and self._task is not None
+            and not self._task.done()
+            and self._task.get_loop() is current_loop
+        ):
             return
-        
+
+        if self._task is not None and self._task.get_loop() is not current_loop:
+            # The queue was pinned to the dead worker's loop (asyncio binds
+            # a Queue on first use) — a new worker on this loop can't await
+            # it. Pending events from the dead loop are dropped.
+            self._event_queue = asyncio.Queue(maxsize=self._event_queue.maxsize)
+
         self._running = True
         self._task = asyncio.create_task(self._process_events())
         logger.info("Event bus started")
@@ -135,6 +153,14 @@ class EventBus:
                 event_name,
                 self._dropped_event_count,
             )
+        except RuntimeError:
+            # A worker that died with its event loop (per-test loops in
+            # in-process harnesses) can leave a getter future pinned to the
+            # closed loop; waking it raises "Event loop is closed". Replace
+            # the queue and re-enqueue — unreachable with one live loop.
+            self._event_queue = asyncio.Queue(maxsize=self._event_queue.maxsize)
+            self._event_queue.put_nowait(event)
+            logger.debug(f"Published event after queue reset: {event_name}")
     
     async def emit(self, event_name: str, data: Any, **kwargs):
         """Alias for publish() — used by state_manager and other node modules."""

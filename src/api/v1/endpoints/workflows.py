@@ -1090,10 +1090,13 @@ async def create_workflow_schedule(
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(_wf, current_user, resource_name="Workflow")
     execution_service = WorkflowExecutionService(db)
-    schedule = await execution_service.create_schedule(
-        workflow_id=uuid.UUID(workflow_id),
-        schedule_data=schedule_data
-    )
+    try:
+        schedule = await execution_service.create_schedule(
+            workflow_id=uuid.UUID(workflow_id),
+            schedule_data=schedule_data
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {
         "id": str(schedule.id),
         "workflow_id": str(schedule.workflow_id),

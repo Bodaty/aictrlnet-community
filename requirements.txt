@@ -35,6 +35,9 @@ websockets==12.0
 aiohttp==3.9.1
 aiosmtplib==3.0.1
 
+# Scheduling
+croniter>=1.4.1
+
 # Billing and payments
 stripe==7.0.0
 

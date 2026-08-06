@@ -118,11 +118,12 @@ async def get_current_usage(
     limits = enforcer.EDITION_LIMITS.get(edition, {})
     
     # Get usage tracker for current metrics
-    tracker = await get_usage_tracker(db)
+    tracker = await get_usage_tracker()
     usage_summary = await tracker.get_usage_summary(
         tenant_id=tenant_id,
         start_date=period_start,
-        end_date=now
+        end_date=now,
+        db=db
     )
     
     # Count actual resources
@@ -203,14 +204,15 @@ async def get_usage_history(
     start_date = end_date - timedelta(days=days)
     
     # Get usage tracker
-    tracker = await get_usage_tracker(db)
-    
+    tracker = await get_usage_tracker()
+
     # Get timeline data
     timeline = await tracker.get_usage_timeline(
         tenant_id=tenant_id,
         metric_type="executions",
         granularity="day",
-        days=days
+        days=days,
+        db=db
     )
     
     # Build daily data points

@@ -171,14 +171,43 @@ class RedisCache:
 
 # Global cache instance
 _cache: Optional[RedisCache] = None
+_cache_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def get_connected_client() -> Optional[aioredis.Redis]:
+    """The already-connected redis client, or None.
+
+    Only returns it when it belongs to the current running loop — redis
+    connections are loop-bound, and a client left over from another loop
+    raises "Event loop is closed" on use. Sync helper for callers that
+    cannot await get_cache().
+    """
+    try:
+        if (
+            _cache is not None
+            and _cache._redis_client is not None
+            and _cache_loop is asyncio.get_running_loop()
+        ):
+            return _cache._redis_client
+    except RuntimeError:
+        pass
+    return None
 
 
 async def get_cache() -> RedisCache:
-    """Get global cache instance."""
-    global _cache
-    if _cache is None:
+    """Get global cache instance.
+
+    Rebuilt when called from a different event loop than the one it
+    connected on: redis connections are loop-bound, so a client surviving
+    a per-test loop would raise "Event loop is closed" everywhere. In
+    production there is one loop, so this connects exactly once.
+    """
+    global _cache, _cache_loop
+    loop = asyncio.get_running_loop()
+    if _cache is None or _cache_loop is not loop:
         _cache = RedisCache()
         await _cache.connect()
+        _cache_loop = loop
     return _cache
 
 
