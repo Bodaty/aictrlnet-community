@@ -1,5 +1,6 @@
 """File upload endpoint for staging files for workflow processing."""
 
+import asyncio
 import logging
 import os
 import re
@@ -175,10 +176,14 @@ async def upload_file(
 
     # Store file
     file_id = uuid.uuid4()
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
     storage_path = os.path.join(UPLOAD_DIR, str(file_id))
-    with open(storage_path, "wb") as f:
-        f.write(contents)
+
+    def _write_upload():
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        with open(storage_path, "wb") as f:
+            f.write(contents)
+
+    await asyncio.to_thread(_write_upload)
 
     # Create DB record
     staged = StagedFile(

@@ -35,6 +35,18 @@ from core.config import get_settings
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+_DEPLOY_ENVIRONMENTS = {"production", "prod", "staging", "stage"}
+
+
+def _is_deploy_env() -> bool:
+    settings = get_settings()
+    return (getattr(settings, "ENVIRONMENT", "") or "").strip().lower() in _DEPLOY_ENVIRONMENTS
+
+
+def _is_live_stripe_key() -> bool:
+    key = getattr(get_settings(), "STRIPE_SECRET_KEY", "") or ""
+    return key.startswith(("sk_live_", "rk_live_"))
+
 
 @router.get("/portal", response_model=BillingPortalResponse)
 async def get_billing_portal(
@@ -290,6 +302,11 @@ async def stripe_webhook(
         except Exception as e:
             logger.error(f"Webhook signature verification failed: {e}")
             raise HTTPException(status_code=400, detail="Invalid signature")
+    elif _is_deploy_env():
+        # Fail closed in deploy environments: an unverifiable webhook must not
+        # mutate subscription state. Development keeps the permissive path.
+        logger.error("Rejecting Stripe webhook: STRIPE_WEBHOOK_SECRET is not configured in a deploy environment")
+        raise HTTPException(status_code=503, detail="Stripe webhook secret not configured")
     else:
         # Dev mode (no secret configured) — parse body directly
         import json
@@ -297,6 +314,10 @@ async def stripe_webhook(
             event = json.loads(body)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    if _is_live_stripe_key() and event.get("livemode") is False:
+        logger.warning(f"Ignoring test-mode Stripe event {event.get('id')} on live-configured deployment")
+        return {"received": True, "ignored": "livemode_mismatch"}
 
     event_type = event.get("type", "")
     event_data = event.get("data", {}).get("object", event.get("data", {}))

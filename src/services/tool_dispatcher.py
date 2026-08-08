@@ -1803,8 +1803,8 @@ class ToolDispatcher:
 
             # Workflow template service
             try:
-                from services.workflow_template_service import WorkflowTemplateService
-                self._services['template_service'] = WorkflowTemplateService()
+                from services.workflow_template_service import create_workflow_template_service
+                self._services['template_service'] = create_workflow_template_service()
             except ImportError:
                 logger.warning("[v4] Template service not available")
 

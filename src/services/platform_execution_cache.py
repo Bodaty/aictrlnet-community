@@ -364,7 +364,7 @@ class PlatformExecutionCache:
         stats["hits"] += 1
         stats["last_hit"] = datetime.utcnow().isoformat()
         
-        await self.cache.set(stats_key, stats, ttl=86400 * 7)  # 7 days
+        await self.cache.set(stats_key, stats, expire=86400 * 7)  # 7 days
     
     async def _record_cache_miss(self, platform: PlatformType, workflow_id: str):
         """Record cache miss statistics"""
@@ -377,7 +377,7 @@ class PlatformExecutionCache:
         stats["misses"] += 1
         stats["last_miss"] = datetime.utcnow().isoformat()
         
-        await self.cache.set(stats_key, stats, ttl=86400 * 7)  # 7 days
+        await self.cache.set(stats_key, stats, expire=86400 * 7)  # 7 days
     
     async def _get_workflow_cache_keys(
         self,

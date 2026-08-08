@@ -100,10 +100,11 @@ class _StubDB:
                 return _Result(None)
             key = (params["tenant_id"], params["meter"])
             self.counters[key] = self.counters.get(key, 0) + int(params["qty"])
-            return _Result(_Row(self.counters[key], None))
+            # RETURNING counter, period_end, effective_limit
+            return _Result(_Row(self.counters[key], None, int(params.get("default_limit", 0))))
         if "SELECT counter, period_end" in sql:
             key = (params["tenant_id"], params["meter"])
-            return _Result(_Row(self.counters.get(key, 0), None))
+            return _Result(_Row(self.counters.get(key, 0), None, int(params.get("default_limit", 0))))
         if "SELECT meter, counter, limit_override" in sql:
             # Trial-status handler: list every meter for the tenant
             tenant = params["t"]
@@ -223,7 +224,9 @@ async def test_pipeline_tools_call_plan_denied_returns_method_not_found(monkeypa
     resp = await _call_tool(h, "evaluate_policy",
                             {"policy_id": "p1", "content": "x"})
     assert "error" in resp
-    assert resp["error"]["code"] == -32602
+    # -32601 Method not found — indistinguishable from a nonexistent tool,
+    # per the v11 claim-audit (no tool-existence leak across tiers).
+    assert resp["error"]["code"] == -32601
     assert "Unknown tool" in resp["error"]["message"]
 
 
@@ -334,7 +337,8 @@ async def test_pipeline_community_caller_cannot_probe_enterprise_tool():
 
     resp = await _call_tool(h, "query_analytics", {"metric_type": "tasks"})
     assert "error" in resp
-    assert resp["error"]["code"] == -32602
+    # -32601: enterprise tool invisible to community caller (no existence leak)
+    assert resp["error"]["code"] == -32601
     # Message must match the exact same shape as "tool doesn't exist"
     assert "Unknown tool" in resp["error"]["message"]
 
@@ -608,6 +612,15 @@ async def test_approval_flow_approve_then_list_updated(monkeypatch):
     mod = types.ModuleType("aictrlnet_business.services.approval")
     mod.ApprovalService = _StubApprovalSvc
     monkeypatch.setitem(sys.modules, "aictrlnet_business.services.approval", mod)
+    # The handler also imports the typed exceptions module; without a stub
+    # the ImportError surfaces as "requires Business edition".
+    exc_mod = types.ModuleType("aictrlnet_business.services.approval_exceptions")
+    for _name in ("RequestNotFound", "ApprovalStateError", "IdentityError",
+                  "Forbidden", "TenantMismatchError"):
+        setattr(exc_mod, _name, type(_name, (Exception,), {}))
+    monkeypatch.setitem(
+        sys.modules, "aictrlnet_business.services.approval_exceptions", exc_mod
+    )
 
     h = MCPProtocolHandler(
         tools_registry=_full_registry(),

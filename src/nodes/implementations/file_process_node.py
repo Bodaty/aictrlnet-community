@@ -4,6 +4,7 @@ Supports PDF (pdfplumber), Excel (openpyxl), and CSV (stdlib).
 Output: structured dict to next node in the workflow.
 """
 
+import asyncio
 import csv
 import io
 import logging
@@ -55,16 +56,20 @@ class FileProcessNode(BaseNode):
             # Default MUST match file_upload.UPLOAD_DIR ("/tmp/aictrlnet/staged_files"),
             # which is where staged uploads actually land. Deriving from DATA_PATH here
             # would reject legitimate staged reads whenever DATA_PATH != "/tmp/aictrlnet".
-            base_dir = os.path.realpath(
-                os.getenv("STAGED_FILES_DIR") or "/tmp/aictrlnet/staged_files"
-            )
-            resolved_path = os.path.realpath(file_path)
-            if os.path.commonpath([resolved_path, base_dir]) != base_dir:
-                raise ValueError("file_path is outside the allowed staged-files directory")
+            # Containment check and read happen together in the worker thread so
+            # the path cannot change between them, and so neither the realpath
+            # syscalls nor the read block the event loop.
+            def _validate_and_read():
+                base_dir = os.path.realpath(
+                    os.getenv("STAGED_FILES_DIR") or "/tmp/aictrlnet/staged_files"
+                )
+                resolved = os.path.realpath(file_path)
+                if os.path.commonpath([resolved, base_dir]) != base_dir:
+                    raise ValueError("file_path is outside the allowed staged-files directory")
+                with open(resolved, "rb") as f:
+                    return f.read()
 
-            # Read raw bytes
-            with open(resolved_path, "rb") as f:
-                raw_bytes = f.read()
+            raw_bytes = await asyncio.to_thread(_validate_and_read)
 
             # Detect content type from extension if not provided
             if not content_type:

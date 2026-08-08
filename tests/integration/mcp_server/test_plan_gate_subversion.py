@@ -71,10 +71,11 @@ class _StubDB:
         if "INSERT INTO mcp_meters" in sql:
             key = (params["tenant_id"], params["meter"])
             self.counters[key] = self.counters.get(key, 0) + int(params["qty"])
-            return _Result(_Row(self.counters[key], None))
+            # RETURNING counter, period_end, effective_limit
+            return _Result(_Row(self.counters[key], None, int(params.get("default_limit", 0))))
         if "SELECT counter, period_end" in sql:
             key = (params["tenant_id"], params["meter"])
-            return _Result(_Row(self.counters.get(key, 0), None))
+            return _Result(_Row(self.counters.get(key, 0), None, int(params.get("default_limit", 0))))
         if "SELECT response_json" in sql:
             row = self.idem_rows.get(
                 (params["tenant_id"], params["tool_name"], params["key"])
@@ -192,7 +193,7 @@ async def test_A2_compliance_failsafe_under_enterprise_plan(monkeypatch):
             pass  # doesn't matter for this test
 
     mod = types.ModuleType("aictrlnet_enterprise.services.mcp_compliance")
-    mod.MCPComplianceService = _BoomSvc
+    mod.MCPComplianceManager = _BoomSvc
     monkeypatch.setitem(sys.modules, "aictrlnet_enterprise.services.mcp_compliance", mod)
     monkeypatch.setenv("MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE", "true")
 
@@ -219,7 +220,7 @@ async def test_A2_compliance_failsafe_off_for_business(monkeypatch):
             raise RuntimeError("still down")
 
     mod = types.ModuleType("aictrlnet_enterprise.services.mcp_compliance")
-    mod.MCPComplianceService = _BoomSvc
+    mod.MCPComplianceManager = _BoomSvc
     monkeypatch.setitem(sys.modules, "aictrlnet_enterprise.services.mcp_compliance", mod)
 
     from mcp_server.tool_executor import _enforce_compliance_if_enterprise
@@ -497,7 +498,7 @@ async def test_A12_audit_failure_fails_enterprise_tool(monkeypatch):
             return True, None  # pass the gate
 
     mod = types.ModuleType("aictrlnet_enterprise.services.mcp_compliance")
-    mod.MCPComplianceService = _BoomAudit
+    mod.MCPComplianceManager = _BoomAudit
     monkeypatch.setitem(sys.modules, "aictrlnet_enterprise.services.mcp_compliance", mod)
     monkeypatch.setenv("MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE", "true")
 
@@ -529,7 +530,7 @@ async def test_A12_audit_failure_is_warning_for_business(monkeypatch):
             raise RuntimeError("still down")
 
     mod = types.ModuleType("aictrlnet_enterprise.services.mcp_compliance")
-    mod.MCPComplianceService = _BoomAudit
+    mod.MCPComplianceManager = _BoomAudit
     monkeypatch.setitem(sys.modules, "aictrlnet_enterprise.services.mcp_compliance", mod)
 
     from mcp_server.tool_executor import _audit_if_enterprise

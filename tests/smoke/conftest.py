@@ -11,6 +11,19 @@ os.environ["ENVIRONMENT"] = "test"
 os.environ.setdefault("EDITION", "community")
 os.environ.setdefault("AICTRLNET_EDITION", "community")
 
+# Redirect every filesystem-writing path at a throwaway dir BEFORE the app is
+# imported. The schema-derived body probe actually executes create handlers, and
+# a mocked DB does not stop them writing real files — control-plane components,
+# staged files, state entries and personal workflow templates all landed in the
+# container (and the repo) and then broke unrelated tests on the next run.
+import tempfile as _tempfile
+
+_smoke_data = _tempfile.mkdtemp(prefix="smoke-data-")
+os.environ["DATA_PATH"] = _smoke_data
+os.environ["STAGED_FILES_DIR"] = os.path.join(_smoke_data, "staged_files")
+os.environ["AICTRLNET_TEMPLATE_DIR"] = os.path.join(_smoke_data, "workflow-templates")
+os.environ["UPLOAD_DIR"] = os.path.join(_smoke_data, "uploads")
+
 # smoke_common resolution, most-specific first:
 # 1. Edition-local tests dir (Community ships its own tests/smoke_common/)
 # 2. Repo-root tests/ (where Business/Enterprise pull it from)

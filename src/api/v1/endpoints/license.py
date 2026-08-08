@@ -214,8 +214,10 @@ async def stripe_webhook(
     
     # Get the webhook payload
     payload = await request.body()
-    
+
     # Verify webhook signature
+    if not stripe_signature:
+        raise HTTPException(status_code=400, detail="Missing Stripe-Signature header")
     try:
         event = stripe.Webhook.construct_event(
             payload, stripe_signature, settings.STRIPE_WEBHOOK_SECRET
@@ -226,7 +228,11 @@ async def stripe_webhook(
     except stripe.error.SignatureVerificationError:
         # Invalid signature
         raise HTTPException(status_code=400, detail="Invalid signature")
-    
+
+    if (settings.STRIPE_SECRET_KEY or "").startswith(("sk_live_", "rk_live_")) and event.get("livemode") is False:
+        logger.warning(f"Ignoring test-mode Stripe event {event.get('id')} on live-configured deployment")
+        return {"status": "success", "ignored": "livemode_mismatch"}
+
     # Handle the event
     stripe_service = StripeService(db)
     

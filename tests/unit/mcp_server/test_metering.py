@@ -75,12 +75,17 @@ class _StubSession:
             if limit > 0 and current + qty > limit:
                 return _Result(None)
             self.counters[(tenant, meter)] = current + qty
-            return _Result(_Row(current + qty, None))
+            # RETURNING counter, period_end, effective_limit
+            return _Result(_Row(current + qty, None, limit))
 
         if "SELECT counter, period_end" in sql:
             tenant = params["tenant_id"]
             meter = params["meter"]
-            return _Result(_Row(int(self.counters.get((tenant, meter), 0)), None))
+            return _Result(_Row(
+                int(self.counters.get((tenant, meter), 0)),
+                None,
+                int(params.get("default_limit", 0)),
+            ))
 
         if "UPDATE mcp_meters" in sql:
             tenant = params["tenant_id"]

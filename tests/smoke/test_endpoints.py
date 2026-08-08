@@ -13,6 +13,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 
 from smoke_common.discovery import (
+    quarantined_for,
     discover_routes,
     discover_streaming_routes,
     discover_file_upload_routes,
@@ -22,6 +23,7 @@ from smoke_common.discovery import (
 from smoke_common.runner import (
     apply_overrides,
     smoke_one,
+    smoke_one_with_body,
     smoke_one_streaming,
     smoke_one_file_upload,
     apply_external_service_patches,
@@ -97,3 +99,57 @@ async def test_external_service_no_500(spec):
         status, passed, detail = await smoke_one(client, spec)
 
     assert passed, f"{spec.method} {spec.path} -> {status}\n{detail}"
+
+
+# Endpoints that take a JSON body get a second, stronger probe: a
+# schema-derived body so the handler body actually executes. The plain `{}`
+# probe 422s at validation first, which is how a broken handler stayed green
+# for months.
+_body_specs = [s for s in _specs if s.method in ("POST", "PUT", "PATCH")]
+_quarantined = quarantined_for("community")
+_openapi = _app.openapi()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec", _body_specs, ids=[s.test_id for s in _body_specs])
+async def test_no_500_with_synthesized_body(spec):
+    """Assert the handler does not 5xx when given a minimally valid body."""
+    if spec.test_id in _quarantined:
+        pytest.skip(f"quarantined: {spec.test_id} (see SMOKE_BODY_QUARANTINE_BY_EDITION)")
+
+    transport = ASGITransport(app=_app)
+    async with AsyncClient(transport=transport, base_url="http://smoke", timeout=15.0) as client:
+        status, passed, detail = await smoke_one_with_body(client, spec, _openapi)
+
+    assert passed, (
+        f"{spec.test_id} -> {status} with a schema-valid body.\n"
+        f"The empty-body probe passes because validation rejects it first; "
+        f"this one reaches the handler.\n{detail}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_quarantine_only_shrinks():
+    """A quarantined endpoint that now passes must be removed from the set.
+
+    Without this the quarantine rots: entries stay after the underlying bug or
+    mock gap is fixed, silently shrinking coverage again. Any name listed here
+    that now survives a schema-derived body is reported so it can be deleted.
+    """
+    quarantined = [s for s in _body_specs if s.test_id in _quarantined]
+    if not quarantined:
+        pytest.skip("no quarantined endpoints for this edition")
+
+    now_passing = []
+    transport = ASGITransport(app=_app)
+    async with AsyncClient(transport=transport, base_url="http://smoke", timeout=15.0) as client:
+        for spec in quarantined:
+            status, passed, _ = await smoke_one_with_body(client, spec, _openapi)
+            if passed:
+                now_passing.append(f"{spec.test_id} (-> {status})")
+
+    assert not now_passing, (
+        "These endpoints pass now and must be removed from "
+        "SMOKE_BODY_QUARANTINE_BY_EDITION in tests/smoke_common/discovery.py:\n  "
+        + "\n  ".join(sorted(now_passing))
+    )

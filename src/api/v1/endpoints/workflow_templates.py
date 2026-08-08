@@ -138,30 +138,32 @@ async def get_template_health(
         total_result = await db.execute(total_query)
         total_count = total_result.scalar() or 0
         
-        # Check template directories
-        import os
+        # Check template directories. Runs off the event loop: probing a stalled
+        # VirtioFS mount from the loop is what wedges workers into D-state, and
+        # health checks are exactly what gets hit while the mount is degraded.
+        import asyncio
         from pathlib import Path
-        
+
         template_dirs = {
             'community': Path('/app/workflow-templates/system'),
-            'business': Path('/workspace/aictrlnet-fastapi-business/workflow-templates/system'),
-            'enterprise': Path('/workspace/aictrlnet-fastapi-enterprise/workflow-templates/system'),
+            'business': Path('/workspace/editions/business/workflow-templates/system'),
+            'enterprise': Path('/workspace/editions/enterprise/workflow-templates/system'),
         }
-        
-        directory_status = {}
-        for edition, path in template_dirs.items():
-            if path.exists():
-                json_count = len(list(path.rglob('*.json')))
-                directory_status[edition] = {
-                    'exists': True,
-                    'json_files': json_count
-                }
-            else:
-                directory_status[edition] = {
-                    'exists': False,
-                    'json_files': 0
-                }
-        
+
+        def _probe_dirs():
+            status = {}
+            for edition, path in template_dirs.items():
+                if path.exists():
+                    status[edition] = {
+                        'exists': True,
+                        'json_files': len(list(path.rglob('*.json')))
+                    }
+                else:
+                    status[edition] = {'exists': False, 'json_files': 0}
+            return status
+
+        directory_status = await asyncio.to_thread(_probe_dirs)
+
         return {
             'status': 'healthy' if total_count > 0 else 'warning',
             'total_templates': total_count,

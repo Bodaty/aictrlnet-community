@@ -16,6 +16,7 @@ Each handler receives ``(arguments, db, user_id)`` and returns a plain
 dict. The protocol layer wraps the result in MCP content format.
 """
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict, List, Optional, Set
@@ -44,6 +45,24 @@ logger = logging.getLogger(__name__)
 
 class ToolExecutionError(Exception):
     pass
+
+
+def _require(arguments: Dict[str, Any], *fields: str) -> None:
+    """Fail loudly when a required tool argument is missing.
+
+    Call this BEFORE the handler's own try/except. Handlers that read required
+    arguments with bracket access inside their try block turned the resulting
+    KeyError into a successful-looking empty payload (isError: false), which
+    hid the failure from callers and from audit_mcp_tool_registry.py alike.
+
+    Reports every missing field at once — reporting only the first means the
+    caller fixes one, retries, and discovers the next.
+    """
+    missing = [f for f in fields if arguments.get(f) in (None, "")]
+    if missing:
+        raise ToolExecutionError(
+            f"missing required argument(s): {', '.join(missing)}"
+        )
 
 
 class ScopeError(Exception):
@@ -2603,6 +2622,8 @@ async def _handle_mark_notification_read(
 async def _handle_query_knowledge(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    _require(arguments, "query")
+
     from services.knowledge.knowledge_retrieval_service import KnowledgeRetrievalService
 
     svc = KnowledgeRetrievalService(db)
@@ -2781,11 +2802,15 @@ async def _handle_upload_file(
         raise ToolExecutionError("Invalid filename")
 
     storage_dir = os.environ.get("STAGED_FILES_DIR", "/tmp/aictrlnet/staged_files")
-    os.makedirs(storage_dir, exist_ok=True)
     file_id = str(uuid.uuid4())
     storage_path = os.path.join(storage_dir, file_id)
-    with open(storage_path, "wb") as f:
-        f.write(raw)
+
+    def _write_upload():
+        os.makedirs(storage_dir, exist_ok=True)
+        with open(storage_path, "wb") as f:
+            f.write(raw)
+
+    await asyncio.to_thread(_write_upload)
 
     staged = StagedFile(
         id=file_id,
@@ -2873,9 +2898,12 @@ async def _handle_get_staged_file(
         "created_at": str(getattr(f, "created_at", "")),
     }
     if arguments.get("include_content"):
-        try:
+        def _read_content():
             with open(f.storage_path, "rb") as fh:
-                out["content_base64"] = base64.b64encode(fh.read()).decode("ascii")
+                return base64.b64encode(fh.read()).decode("ascii")
+
+        try:
+            out["content_base64"] = await asyncio.to_thread(_read_content)
         except Exception as e:
             raise ToolExecutionError(f"Could not read file content: {e}") from e
     return out
@@ -3640,8 +3668,12 @@ async def _handle_list_industry_packs(
     plan."""
     _ensure_business_sys_path()
     try:
-        mod = _load_industry_pack_loader()
-        loader = mod.get_industry_pack_loader()
+        # First call reads the loader module off disk and parses ~41 pack
+        # JSONs; keep that off the event loop.
+        def _build_loader():
+            return _load_industry_pack_loader().get_industry_pack_loader()
+
+        loader = await asyncio.to_thread(_build_loader)
     except Exception as e:
         return {
             "packs": [],
@@ -3666,8 +3698,12 @@ async def _handle_detect_industry(
     generic template)."""
     _ensure_business_sys_path()
     try:
-        mod = _load_industry_pack_loader()
-        loader = mod.get_industry_pack_loader()
+        # First call reads the loader module off disk and parses ~41 pack
+        # JSONs; keep that off the event loop.
+        def _build_loader():
+            return _load_industry_pack_loader().get_industry_pack_loader()
+
+        loader = await asyncio.to_thread(_build_loader)
     except Exception as e:
         return {
             "industry": None,
@@ -4847,6 +4883,8 @@ async def _handle_rotate_credential(
 async def _handle_validate_credential(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    _require(arguments, "platform", "credential_id")
+
     svc = _credential_service(db)
     if svc is None:
         return {"status": "feature_pending", "available": False}
@@ -5468,6 +5506,8 @@ async def _handle_get_execution_framework_trace(
 async def _handle_match_agents_to_task(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    _require(arguments, "task")
+
     _ensure_business_sys_path()
     try:
         from aictrlnet_business.services.intelligent_matching_utils import match_agents  # type: ignore
@@ -6015,6 +6055,8 @@ async def _handle_list_permissions(
 async def _handle_create_template(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    _require(arguments, "name", "category")
+
     try:
         from services.workflow_template_service import create_workflow_template_service
         svc = create_workflow_template_service()
@@ -6038,6 +6080,8 @@ async def _handle_create_template(
 async def _handle_update_template(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    _require(arguments, "template_id")
+
     try:
         from services.workflow_template_service import create_workflow_template_service
         svc = create_workflow_template_service()
@@ -6059,6 +6103,8 @@ async def _handle_update_template(
 async def _handle_delete_template(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    _require(arguments, "template_id")
+
     try:
         from services.workflow_template_service import create_workflow_template_service
         svc = create_workflow_template_service()
@@ -6395,6 +6441,8 @@ async def _handle_get_org_discovery_logs(
 async def _handle_list_discovered_adapters_by_capability(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    _require(arguments, "capability")
+
     try:
         from services.adapter import AdapterService
         svc = AdapterService(db)

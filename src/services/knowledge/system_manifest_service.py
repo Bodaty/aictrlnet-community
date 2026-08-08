@@ -14,6 +14,7 @@ Key Principles:
 4. Real-time Accuracy - Query actual databases and filesystems
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -31,6 +32,20 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 logger = logging.getLogger(__name__)
+
+
+def _count_template_files(template_dir: str) -> int:
+    """Count template JSON files in a directory tree.
+
+    Synchronous — async callers MUST reach this via asyncio.to_thread. This
+    walks a bind-mounted tree on every chat message (the manifest feeds the
+    action planner), and a blocking walk on the event loop is what parks
+    workers in unkillable D-state when the mount stalls.
+    """
+    if not os.path.exists(template_dir):
+        return 0
+    json_files = Path(template_dir).rglob("*.json")
+    return sum(1 for f in json_files if not f.name.endswith('.metadata.json'))
 
 
 class SystemManifestService:
@@ -237,25 +252,19 @@ class SystemManifestService:
         for edition in self.accessible_editions:
             template_dirs = self.TEMPLATE_DIRS.get(edition, [])
             for template_dir in template_dirs:
-                if os.path.exists(template_dir):
-                    try:
-                        # Count JSON files
-                        json_files = list(Path(template_dir).rglob("*.json"))
-                        # Filter out metadata files
-                        template_files = [f for f in json_files if not f.name.endswith('.metadata.json')]
+                try:
+                    count = await asyncio.to_thread(_count_template_files, template_dir)
+                    if count > 0:
+                        if edition not in template_manifest["by_edition"]:
+                            template_manifest["by_edition"][edition] = 0
+                        template_manifest["by_edition"][edition] += count
+                        template_manifest["total_count"] += count
 
-                        count = len(template_files)
-                        if count > 0:
-                            if edition not in template_manifest["by_edition"]:
-                                template_manifest["by_edition"][edition] = 0
-                            template_manifest["by_edition"][edition] += count
-                            template_manifest["total_count"] += count
+                        if f"filesystem_{edition}" not in template_manifest["sources"]:
+                            template_manifest["sources"].append(f"filesystem_{edition}")
 
-                            if f"filesystem_{edition}" not in template_manifest["sources"]:
-                                template_manifest["sources"].append(f"filesystem_{edition}")
-
-                    except Exception as e:
-                        logger.warning(f"[Manifest] Error scanning {template_dir}: {e}")
+                except Exception as e:
+                    logger.warning(f"[Manifest] Error scanning {template_dir}: {e}")
 
         self.manifest["templates"] = template_manifest
 

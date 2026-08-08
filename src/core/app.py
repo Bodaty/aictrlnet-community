@@ -69,14 +69,14 @@ class AICtrlNetApp:
             # Initialize workflow templates (retry with backoff for fresh deploys where
             # migrations may not have run yet when the service starts)
             try:
-                from services.workflow_template_service import WorkflowTemplateService
+                from services.workflow_template_service import create_workflow_template_service
                 from .database import get_session_maker
                 import asyncio as _asyncio
 
                 for attempt in range(5):
                     try:
                         async with get_session_maker()() as db:
-                            template_service = WorkflowTemplateService()
+                            template_service = create_workflow_template_service()
                             count = await template_service.initialize_system_templates(db)
                             logger.info(f"Initialized {count} Community workflow templates")
                             break
@@ -89,7 +89,21 @@ class AICtrlNetApp:
                             logger.error(f"Failed to initialize workflow templates after 5 attempts: {tmpl_err}")
             except Exception as e:
                 logger.error(f"Failed to initialize workflow templates: {e}")
-            
+
+            # Warm the prompt loaders and the LLM service here so the first
+            # chat message does not pay their filesystem reads (and, for the
+            # LLM service, its import tree) on the event loop.
+            try:
+                from services.system_prompt_assembler import _get_template_loader
+                from nodes.implementations.ai_process_node import _get_prompt_loader
+                from services.enhanced_conversation_manager import _get_llm_service
+                _get_template_loader()
+                _get_prompt_loader()
+                _get_llm_service()
+                logger.info("Prompt loaders and LLM service warmed up at startup")
+            except Exception as e:
+                logger.warning(f"Failed to warm prompt/LLM singletons: {e}")
+
             # Register all adapter classes (not instances) for discovery
             try:
                 from adapters.factory import AdapterFactory

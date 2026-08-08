@@ -42,6 +42,43 @@ from core.exceptions import NotFoundError, ForbiddenError, ValidationError
 logger = logging.getLogger(__name__)
 
 
+# Synchronous filesystem primitives. Async callers MUST reach these through
+# asyncio.to_thread: a blocking syscall on the event loop parks the whole
+# worker in uninterruptible D-state whenever the VirtioFS mount stalls, and a
+# D-state task cannot be killed — not by gunicorn's timeout, not by SIGKILL,
+# not by `docker kill`.
+def _read_json(path: Path) -> Dict[str, Any]:
+    with open(path, 'r') as f:
+        return json.load(f)
+
+
+def _write_json(path: Path, content: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w') as f:
+        json.dump(content, f, indent=2)
+
+
+def _copy_json(source: Path, dest: Path) -> None:
+    content = _read_json(source)
+    _write_json(dest, content)
+
+
+def _list_category_json_files(system_dir: Path, categories: Optional[set] = None) -> List[tuple]:
+    """Return (category_dir, [template files]) for each category directory."""
+    if not system_dir.exists():
+        return []
+    found = []
+    for category_dir in sorted(system_dir.iterdir()):
+        if not category_dir.is_dir():
+            continue
+        if categories is not None and category_dir.name not in categories:
+            continue
+        files = [f for f in sorted(category_dir.glob("*.json"))
+                 if not f.name.endswith('.metadata.json')]
+        found.append((category_dir, files))
+    return found
+
+
 class WorkflowTemplateService:
     """Service for managing workflow templates."""
     
@@ -51,7 +88,6 @@ class WorkflowTemplateService:
         # Try multiple locations in order of preference, but be explicit about Community templates
         community_template_paths = [
             Path("/app/workflow-templates"),  # Community container
-            Path("/workspace/aictrlnet-fastapi/workflow-templates"),  # Business/Enterprise containers
             Path("/workflow-templates"),  # Volume mount
             Path("workflow-templates")  # Development
         ]
@@ -148,43 +184,47 @@ class WorkflowTemplateService:
             return None
     
     async def _load_template_definition(self, definition_path: str) -> Dict[str, Any]:
-        """Load the full template definition from a file."""
+        """Load the full template definition from a file, off the event loop.
+
+        Subclasses override the sync body, not this wrapper — a blocking file
+        read on the loop is what wedges workers when the mount stalls.
+        """
+        return await asyncio.to_thread(self._load_template_definition_sync, definition_path)
+
+    def _load_template_definition_sync(self, definition_path: str) -> Dict[str, Any]:
+        """Synchronous file read — call via asyncio.to_thread from async methods."""
         try:
             # Try multiple potential paths. Definition paths are stored relative
             # (e.g. "workflow-templates/system/finance/invoice-intake-starter.json")
             # and the file may live under any edition's tree. The current edition
-            # roots MUST be tried — the legacy "/workspace/aictrlnet-fastapi*" paths
-            # below predate the edition split and no longer exist, so without these
-            # the detail/preview load silently fails on enterprise/business
-            # containers (workflow_definition=None, parameters=[]), which breaks the
-            # template preview and the instantiate "Configure Template Parameters"
-            # dialog (no editable fields render).
+            # roots MUST be tried, or the detail/preview load silently fails on
+            # enterprise/business containers (workflow_definition=None,
+            # parameters=[]), which breaks the template preview and the
+            # instantiate "Configure Template Parameters" dialog (no editable
+            # fields render).
             paths_to_try = [
                 Path(definition_path),
                 self.base_template_dir.parent / definition_path,
                 Path("/workspace/editions/community") / definition_path,
                 Path("/workspace/editions/business") / definition_path,
                 Path("/workspace/editions/enterprise") / definition_path,
-                Path("/workspace/aictrlnet-fastapi") / definition_path,
-                Path("/workspace/aictrlnet-fastapi-business") / definition_path,
-                Path("/workspace/aictrlnet-fastapi-enterprise") / definition_path,
             ]
-            
+
             template_file = None
             for path in paths_to_try:
                 if path.exists():
                     template_file = path
                     break
-            
+
             if not template_file:
                 raise FileNotFoundError(f"Template file not found: {definition_path}")
-            
+
             with open(template_file, 'r') as f:
                 return json.load(f)
         except Exception as e:
             logger.error(f"Error loading template definition from {definition_path}: {e}")
             raise
-    
+
     async def list_templates(
         self,
         db: AsyncSession,
@@ -422,7 +462,11 @@ class WorkflowTemplateService:
         # Load definition if available
         try:
             if template.definition_path:
-                definition = await self._load_template_definition(Path(template.definition_path))
+                # str, not Path: the Business/Enterprise sync bodies branch on
+                # file_path.startswith('/'), which a Path object doesn't have —
+                # the AttributeError was swallowed below, silently leaving
+                # workflow_definition None on those editions.
+                definition = await self._load_template_definition(str(template.definition_path))
                 response.workflow_definition = definition
                 response.parameters = definition.get("parameters", [])
         except Exception as e:
@@ -462,36 +506,6 @@ class WorkflowTemplateService:
         await db.refresh(template)
         
         return WorkflowTemplateResponse.model_validate(template)
-    
-    async def delete_template(
-        self,
-        db: AsyncSession,
-        template_id: UUID,
-        user_id: str
-    ) -> None:
-        """Delete a workflow template."""
-        # Get template
-        query = select(WorkflowTemplate).where(WorkflowTemplate.id == template_id)
-        result = await db.execute(query)
-        template = result.scalar_one_or_none()
-        
-        if not template:
-            raise NotFoundError(f"Template {template_id} not found")
-        
-        # Check permissions
-        if not await self._can_delete_template(db, template, user_id):
-            raise ForbiddenError("You don't have permission to delete this template")
-        
-        # Delete file
-        try:
-            if os.path.exists(template.definition_path):
-                os.remove(template.definition_path)
-        except Exception as e:
-            logger.error(f"Failed to delete template file: {e}")
-        
-        # Delete record
-        await db.delete(template)
-        await db.commit()
     
     async def instantiate_template(
         self,
@@ -801,9 +815,7 @@ class WorkflowTemplateService:
     async def _create_template_file(self, file_path: Path, content: Dict[str, Any]) -> None:
         """Create a template file."""
         try:
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(file_path, 'w') as f:
-                json.dump(content, f, indent=2)
+            await asyncio.to_thread(_write_json, file_path, content)
         except Exception as e:
             logger.error(f"Failed to create template file: {e}")
             raise ValidationError(f"Failed to create template file: {str(e)}")
@@ -958,90 +970,10 @@ class WorkflowTemplateService:
     ) -> None:
         """Copy a template definition file."""
         try:
-            source_file = Path(source_path)
-            dest_file = Path(dest_path)
-            
-            # Create destination directory
-            dest_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Copy file
-            with open(source_file, 'r') as src:
-                content = json.load(src)
-            
-            with open(dest_file, 'w') as dst:
-                json.dump(content, dst, indent=2)
-                
+            await asyncio.to_thread(_copy_json, Path(source_path), Path(dest_path))
         except Exception as e:
             logger.error(f"Failed to copy template: {e}")
             raise ValidationError(f"Failed to copy template: {str(e)}")
-    
-    async def initialize_system_templates(self, db: AsyncSession) -> int:
-        """Initialize system templates from the filesystem."""
-        count = 0
-        
-        if not self.system_dir.exists():
-            logger.warning(f"System template directory does not exist: {self.system_dir}")
-            return 0
-        
-        for category_dir in self.system_dir.iterdir():
-            if category_dir.is_dir():
-                for template_file in category_dir.glob("*.json"):
-                    # Skip metadata files
-                    if template_file.name.endswith('.metadata.json'):
-                        continue
-                    
-                    try:
-                        # Load template definition
-                        with open(template_file, 'r') as f:
-                            template_data = json.load(f)
-                        
-                        # Check if this is a Community template
-                        template_edition = template_data.get('edition', 'community')
-                        if template_edition != 'community':
-                            # Skip non-community templates in Community edition
-                            continue
-                        
-                        # Check if template already exists
-                        existing = await db.execute(
-                            select(WorkflowTemplate).where(
-                                and_(
-                                    WorkflowTemplate.name == template_data.get('name'),
-                                    WorkflowTemplate.is_system == True
-                                )
-                            )
-                        )
-                        if existing.scalar_one_or_none():
-                            logger.debug(f"Template already exists: {template_data.get('name')}")
-                            continue
-                        
-                        # Create template record
-                        template = WorkflowTemplate(
-                            name=template_data.get('name'),
-                            description=template_data.get('description'),
-                            category=category_dir.name,
-                            tags=template_data.get('tags', []),
-                            edition='community',
-                            is_public=True,
-                            is_system=True,
-                            version=int(template_data.get('version', '1.0').replace('.', '')),
-                            definition_path=str(template_file.relative_to(self.base_template_dir.parent)),
-                            complexity=template_data.get('metadata', {}).get('complexity', 'moderate'),
-                            estimated_duration=template_data.get('metadata', {}).get('estimatedDuration'),
-                            required_adapters=template_data.get('metadata', {}).get('requiredAdapters', []),
-                            required_capabilities=template_data.get('metadata', {}).get('requiredCapabilities', []),
-                            usage_count=0
-                        )
-                        
-                        db.add(template)
-                        count += 1
-                        logger.info(f"Added Community template: {template.name}")
-                        
-                    except Exception as e:
-                        logger.error(f"Error loading template {template_file}: {e}")
-        
-        await db.commit()
-        logger.info(f"Initialized {count} Community system templates")
-        return count
     
     async def get_templates_by_ids(
         self,
@@ -1411,83 +1343,75 @@ class WorkflowTemplateService:
         logger.info(f"Community service initializing templates for categories: {community_categories}")
         
         # Scan system template directory, but ONLY Community categories
-        if self.system_dir.exists():
-            for category_dir in self.system_dir.iterdir():
-                if category_dir.is_dir() and category_dir.name in community_categories:
-                    logger.info(f"Processing Community category: {category_dir.name}")
-                    for template_file in category_dir.glob("*.json"):
-                        # Skip metadata files
-                        if template_file.name.endswith('.metadata.json'):
-                            continue
-                        
-                        try:
-                            # Load template definition
-                            with open(template_file, 'r') as f:
-                                template_data = json.load(f)
-                            
-                            # Validate template schema
-                            schema_errors = self._validate_template_schema(template_data, template_file)
-                            if schema_errors:
-                                error_msg = f"Schema validation failed for {template_file}: {'; '.join(schema_errors)}"
-                                logger.error(error_msg)
-                                errors.append(error_msg)
-                                continue
-                                
-                            # Check if template already exists
-                            existing = await db.execute(
-                                select(WorkflowTemplate).where(
-                                    and_(
-                                        WorkflowTemplate.name == template_data.get('name'),
-                                        WorkflowTemplate.is_system == True
-                                    )
-                                )
-                            )
-                            if existing.scalar_one_or_none():
-                                logger.debug(f"Template already exists: {template_data.get('name')}")
-                                skipped += 1
-                                continue
-                            
-                            # Force edition to 'community' for all templates loaded by this method
-                            template = WorkflowTemplate(
-                                name=template_data.get('name'),
-                                description=template_data.get('description', ''),
-                                category=template_data.get('category', category_dir.name),
-                                tags=template_data.get('tags', []),
-                                edition='community',  # Force Community edition
-                                is_public=True,
-                                is_system=True,
-                                version=int(template_data.get('version', '1.0.0').split('.')[0]),
-                                definition_path=str(template_file.relative_to(self.base_template_dir.parent)),
-                                complexity=template_data.get('complexity', 'moderate'),
-                                estimated_duration=template_data.get('estimatedDuration'),
-                                required_adapters=template_data.get('requiredAdapters', []),
-                                required_capabilities=template_data.get('requiredCapabilities', []),
-                                usage_count=0
-                            )
-                            
-                            try:
-                                async with db.begin_nested():
-                                    db.add(template)
-                                    await db.flush()
-                                count += 1
-                                logger.info(f"Initialized Community template: {template.name}")
-                            except IntegrityError:
-                                logger.debug(f"Template already exists (constraint): {template_data.get('name')}")
+        scanned = await asyncio.to_thread(
+            _list_category_json_files, self.system_dir, community_categories
+        )
+        for category_dir, template_files in scanned:
+            logger.info(f"Processing Community category: {category_dir.name}")
+            for template_file in template_files:
+                try:
+                    # Load template definition
+                    template_data = await asyncio.to_thread(_read_json, template_file)
 
-                        except json.JSONDecodeError as e:
-                            error_msg = f"JSON syntax error in {template_file}: Line {e.lineno}, Col {e.colno}: {e.msg}"
-                            logger.error(error_msg)
-                            errors.append(error_msg)
-                        except Exception as e:
-                            error_msg = f"Error loading template {template_file}: {type(e).__name__}: {str(e)}"
-                            logger.error(error_msg)
-                            errors.append(error_msg)
-                else:
-                    # Log skipped categories to help debugging
-                    if category_dir.is_dir():
-                        logger.debug(f"Skipping non-Community category: {category_dir.name}")
-            
-            await db.commit()
+                    # Validate template schema
+                    schema_errors = self._validate_template_schema(template_data, template_file)
+                    if schema_errors:
+                        error_msg = f"Schema validation failed for {template_file}: {'; '.join(schema_errors)}"
+                        logger.error(error_msg)
+                        errors.append(error_msg)
+                        continue
+                        
+                    # Check if template already exists
+                    existing = await db.execute(
+                        select(WorkflowTemplate).where(
+                            and_(
+                                WorkflowTemplate.name == template_data.get('name'),
+                                WorkflowTemplate.is_system == True
+                            )
+                        )
+                    )
+                    if existing.scalar_one_or_none():
+                        logger.debug(f"Template already exists: {template_data.get('name')}")
+                        skipped += 1
+                        continue
+                    
+                    # Force edition to 'community' for all templates loaded by this method
+                    template = WorkflowTemplate(
+                        name=template_data.get('name'),
+                        description=template_data.get('description', ''),
+                        category=template_data.get('category', category_dir.name),
+                        tags=template_data.get('tags', []),
+                        edition='community',  # Force Community edition
+                        is_public=True,
+                        is_system=True,
+                        version=int(template_data.get('version', '1.0.0').split('.')[0]),
+                        definition_path=str(template_file.relative_to(self.base_template_dir.parent)),
+                        complexity=template_data.get('complexity', 'moderate'),
+                        estimated_duration=template_data.get('estimatedDuration'),
+                        required_adapters=template_data.get('requiredAdapters', []),
+                        required_capabilities=template_data.get('requiredCapabilities', []),
+                        usage_count=0
+                    )
+                    
+                    try:
+                        async with db.begin_nested():
+                            db.add(template)
+                            await db.flush()
+                        count += 1
+                        logger.info(f"Initialized Community template: {template.name}")
+                    except IntegrityError:
+                        logger.debug(f"Template already exists (constraint): {template_data.get('name')}")
+
+                except json.JSONDecodeError as e:
+                    error_msg = f"JSON syntax error in {template_file}: Line {e.lineno}, Col {e.colno}: {e.msg}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                except Exception as e:
+                    error_msg = f"Error loading template {template_file}: {type(e).__name__}: {str(e)}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+        
+        await db.commit()
         
         # Summary logging
         logger.info("Community template initialization complete:")
@@ -1702,13 +1626,38 @@ class WorkflowTemplateService:
         }
 
 
+_service_cache: Dict[str, 'WorkflowTemplateService'] = {}
+
+
+def reset_workflow_template_service_cache() -> None:
+    """Drop memoised services so a later call re-reads the template directories."""
+    _service_cache.clear()
+
+
 def create_workflow_template_service() -> 'WorkflowTemplateService':
     """Factory function to create the appropriate WorkflowTemplateService based on edition.
-    
+
     This enables the accretive model where Business and Enterprise editions extend Community.
+
+    The instance is memoised per edition. Construction walks the template trees
+    (~380 filesystem syscalls across the Community/Business/Enterprise __init__
+    chain); doing that per request put workers in unkillable D-state whenever the
+    VirtioFS mount stalled. Services are stateless after __init__ — every method
+    takes its db session as an argument — so one instance per process is safe.
+    Editions warm this at lifespan startup, where sync I/O is acceptable.
     """
     edition = os.getenv('AICTRLNET_EDITION', 'community').lower()
-    
+
+    cached = _service_cache.get(edition)
+    if cached is not None:
+        return cached
+
+    service = _construct_workflow_template_service(edition)
+    _service_cache[edition] = service
+    return service
+
+
+def _construct_workflow_template_service(edition: str) -> 'WorkflowTemplateService':
     if edition == 'business':
         try:
             # Import Business service that extends Community

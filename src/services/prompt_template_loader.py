@@ -1,8 +1,10 @@
 """Prompt Template Loader — loads .md prompt files with caching and variable substitution.
 
 Provides a file-based prompt template system for the Community edition.
-Templates are loaded at startup and cached with file-modification-time
-invalidation for development convenience.
+Templates are loaded once at startup and served from memory. Set
+AICTRLNET_PROMPT_HOT_RELOAD=1 to re-stat each file per lookup so prompt edits
+apply without a restart — off by default because those lookups run on the event
+loop during chat and would block on a stalled mount.
 """
 
 import os
@@ -11,6 +13,8 @@ import logging
 from typing import Dict, Optional, List
 
 logger = logging.getLogger(__name__)
+
+_HOT_RELOAD = os.environ.get("AICTRLNET_PROMPT_HOT_RELOAD", "").lower() in ("1", "true", "yes")
 
 # Only these variable names are allowed in {{variable}} substitutions.
 # Arbitrary user input never reaches template substitution.
@@ -133,6 +137,15 @@ class PromptTemplateLoader:
     def _get_cached(self, name: str) -> Optional[str]:
         """Return cached content for *name*, reloading if the file changed."""
         entry = self._cache.get(name)
+
+        if not _HOT_RELOAD:
+            # Pure in-memory hit — no syscalls. get_section() runs several times
+            # per chat turn from synchronous assembler code on the event loop;
+            # stat+read against a stalled mount there parks the worker in
+            # unkillable D-state. Set AICTRLNET_PROMPT_HOT_RELOAD=1 to edit
+            # prompt files without restarting the service.
+            return entry[1] if entry else None
+
         full_path = os.path.join(self._prompts_dir, f"{name}.md")
 
         if not os.path.isfile(full_path):

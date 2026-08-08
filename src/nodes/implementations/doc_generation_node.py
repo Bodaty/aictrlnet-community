@@ -3,6 +3,7 @@
 Output: StagedFile reference that can be downloaded or sent via channels.
 """
 
+import asyncio
 import io
 import logging
 import os
@@ -55,10 +56,14 @@ class DocGenerationNode(BaseNode):
 
             # Stage the generated file
             file_id = uuid.uuid4()
-            os.makedirs(STAGED_DIR, exist_ok=True)
             storage_path = os.path.join(STAGED_DIR, str(file_id))
-            with open(storage_path, "wb") as f:
-                f.write(file_bytes)
+
+            def _write_staged():
+                os.makedirs(STAGED_DIR, exist_ok=True)
+                with open(storage_path, "wb") as f:
+                    f.write(file_bytes)
+
+            await asyncio.to_thread(_write_staged)
 
             duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
 

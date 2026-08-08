@@ -215,7 +215,10 @@ class StripeService:
         tenant_id = metadata.get("tenant_id")
 
         if not user_id or not plan:
-            logger.error("Missing user_id or plan in checkout session metadata")
+            # Checkout sessions created outside the platform (e.g. the
+            # marketing-leads Institute flow) share this live webhook but
+            # carry different metadata — skipping them is expected.
+            logger.info(f"Skipping checkout session {session_data.get('id')}: no user_id/plan metadata (not a platform checkout)")
             return
 
         # Resolve tenant_id from user if not in metadata

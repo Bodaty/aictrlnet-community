@@ -1,4 +1,5 @@
 """Platform Integration API endpoints"""
+import asyncio
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 import json
@@ -1176,9 +1177,17 @@ async def check_credential_backend_health(
         elif backend_type == "file":
             # Check file access
             file_path = os.environ.get("CREDENTIAL_FILE_PATH", "/app/data/credentials.json")
+
+            def _probe_credential_file():
+                return (
+                    os.path.exists(file_path),
+                    os.access(os.path.dirname(file_path), os.W_OK),
+                )
+
+            file_exists, file_writable = await asyncio.to_thread(_probe_credential_file)
             health_info["details"]["file_path"] = file_path
-            health_info["details"]["file_exists"] = os.path.exists(file_path)
-            health_info["details"]["file_writable"] = os.access(os.path.dirname(file_path), os.W_OK)
+            health_info["details"]["file_exists"] = file_exists
+            health_info["details"]["file_writable"] = file_writable
             health_info["details"]["encryption_key_set"] = bool(os.environ.get("CREDENTIAL_ENCRYPTION_KEY"))
             health_info["healthy"] = health_info["details"]["file_writable"]
             
