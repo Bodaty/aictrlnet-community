@@ -38,3 +38,17 @@ if _repo_tests not in sys.path and os.path.isdir(_repo_tests):
     sys.path.insert(0, _repo_tests)
 if "/workspace/tests" not in sys.path and os.path.isdir("/workspace/tests"):
     sys.path.insert(0, "/workspace/tests")
+
+# Block third-party network calls BEFORE the app is imported, for the same
+# reason the filesystem redirects above exist: the schema-derived body probe
+# executes handlers for real. On 2026-08-07 that sent 28 live SendGrid emails to
+# the sales inbox from a container holding a production key. Credentials must be
+# cleared pre-import because modules latch them at module scope (contact.py
+# computes SENDGRID_ENABLED on import, so clearing later has no effect).
+from smoke_common.egress_guard import (  # noqa: E402
+    install_socket_guard,
+    neutralize_outbound_credentials,
+)
+
+neutralize_outbound_credentials()
+install_socket_guard()

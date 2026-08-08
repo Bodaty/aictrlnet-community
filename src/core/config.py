@@ -236,6 +236,24 @@ DEV_DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production"
 # Intentionally an allow-list: "test"/"ci"/"development" keep the built-in default.
 _DEPLOY_ENVIRONMENTS = {"production", "prod", "staging", "stage"}
 
+
+# Environments where the interactive API docs and the OpenAPI schema are served.
+# An allow-list in the other direction from _DEPLOY_ENVIRONMENTS above, and
+# deliberately so: this follows the same fail-safe rule as the ENVIRONMENT field
+# ("unless a deployment explicitly declares itself as development, it is treated
+# as production"). An unset, empty, or unrecognised value therefore hides the
+# docs rather than publishing them.
+_DOCS_ENVIRONMENTS = {"development", "dev", "local", "test", "ci"}
+
+
+def exposes_interactive_docs(settings) -> bool:
+    """True only where the environment explicitly declares itself non-deployed.
+
+    Used by the app factories to decide whether to serve /docs, /redoc and
+    /openapi.json at all.
+    """
+    return (getattr(settings, "ENVIRONMENT", "") or "").strip().lower() in _DOCS_ENVIRONMENTS
+
 # Minimum acceptable length for a signing/encryption secret in a deployment.
 _MIN_SECRET_LEN = 32
 

@@ -331,13 +331,13 @@ async def create_subscription(
 
     # Initialize Stripe if not already done
     if stripe is None:
-        raise HTTPException(status_code=500, detail="Payment processing not available")
+        raise HTTPException(status_code=503, detail="Payment processing not available")
     settings = get_settings()
     if settings.STRIPE_SECRET_KEY:
         stripe.api_key = settings.STRIPE_SECRET_KEY
     else:
         raise HTTPException(
-            status_code=500,
+            status_code=503,
             detail="Payment processing not configured"
         )
     
@@ -516,13 +516,13 @@ async def cancel_subscription(
     }
 
     if stripe is None:
-        raise HTTPException(status_code=500, detail="Payment processing not available")
+        raise HTTPException(status_code=503, detail="Payment processing not available")
     settings = get_settings()
     if settings.STRIPE_SECRET_KEY:
         stripe.api_key = settings.STRIPE_SECRET_KEY
     else:
         raise HTTPException(
-            status_code=500,
+            status_code=503,
             detail="Payment processing not configured"
         )
     

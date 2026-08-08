@@ -14,6 +14,7 @@ from httpx import AsyncClient, ASGITransport
 
 from smoke_common.discovery import (
     quarantined_for,
+    quarantine_shrink_candidates,
     discover_routes,
     discover_streaming_routes,
     discover_file_upload_routes,
@@ -136,7 +137,8 @@ async def test_quarantine_only_shrinks():
     mock gap is fixed, silently shrinking coverage again. Any name listed here
     that now survives a schema-derived body is reported so it can be deleted.
     """
-    quarantined = [s for s in _body_specs if s.test_id in _quarantined]
+    reportable = quarantine_shrink_candidates("community")
+    quarantined = [s for s in _body_specs if s.test_id in reportable]
     if not quarantined:
         pytest.skip("no quarantined endpoints for this edition")
 

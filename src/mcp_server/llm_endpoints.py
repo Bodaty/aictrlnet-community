@@ -1,7 +1,18 @@
-"""MCP endpoints for LLM service integration."""
+"""MCP endpoints for LLM service integration.
 
-from fastapi import APIRouter, Depends, HTTPException, Header
-from typing import Dict, Any, List, Optional
+These call the LLM provider directly, so every request spends paid inference
+quota. They previously declared `authorization: Optional[str] = Header(None)`
+and never read it — the header looked like auth in the signature and the
+OpenAPI schema, but anyone could call them anonymously and bill us for it.
+`get_current_user` was already imported here and simply unused, so the
+intent was clearly to require a token.
+
+The dependency is resolved before the handler body, so the 401 it raises is
+never caught by the broad `except Exception` blocks below.
+"""
+
+from fastapi import APIRouter, Depends, HTTPException
+from typing import Dict, Any, List
 import uuid
 import logging
 from datetime import datetime
@@ -23,7 +34,7 @@ router = APIRouter(prefix="/mcp/v1", tags=["MCP LLM"])
 @router.post("/messages", response_model=MCPLLMResponse)
 async def handle_mcp_messages(
     request: MCPLLMRequest,
-    authorization: Optional[str] = Header(None)
+    current_user=Depends(get_current_user),
 ):
     """
     Handle LLM generation via MCP protocol.
@@ -90,7 +101,7 @@ async def handle_mcp_messages(
 @router.post("/embeddings", response_model=MCPEmbeddingResponse)
 async def handle_mcp_embeddings(
     request: MCPEmbeddingRequest,
-    authorization: Optional[str] = Header(None)
+    current_user=Depends(get_current_user),
 ):
     """Generate embeddings via MCP protocol."""
     try:
@@ -189,7 +200,7 @@ async def get_mcp_models():
 @router.post("/tools/execute")
 async def handle_mcp_tool_execution(
     request: Dict[str, Any],
-    authorization: Optional[str] = Header(None)
+    current_user=Depends(get_current_user),
 ):
     """
     Execute tools/functions via MCP protocol.

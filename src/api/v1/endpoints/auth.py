@@ -65,6 +65,7 @@ from core.config import get_settings
 from core.cache import get_cache
 from core.rate_limit import enforce_rate_limit, client_ip
 from core.tenant_context import DEFAULT_TENANT_ID, get_current_tenant_id
+from core.user_utils import get_safe_attr
 import logging
 
 from models import User
@@ -113,9 +114,29 @@ class TokenData(BaseModel):
 @router.post("/register", response_model=UserResponse)
 async def register(
     user_data: UserCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """Register a new user."""
+    # Every anonymous call here mints a user AND a 14-day Business trial
+    # subscription below — real product quota, no card required. Unthrottled,
+    # a script could mint those indefinitely.
+    #
+    # The per-IP ceiling is deliberately high: Institute cohorts sign up from
+    # one venue, so a workshop room sharing a NAT must not trip it. It still
+    # stops the thousands-of-accounts case, which is the one that costs money.
+    # The global ceiling is set well above any organic signup hour so it only
+    # engages in a runaway, never during a launch.
+    ip = client_ip(request)
+    await enforce_rate_limit(
+        "register_ip", ip, limit=20, window_seconds=3600,
+        detail="Too many accounts created from this network. Please try again later.",
+    )
+    await enforce_rate_limit(
+        "register_global", "global", limit=200, window_seconds=3600,
+        detail="We're processing a high volume of signups right now. Please try again shortly.",
+    )
+
     # Check if user already exists
     result = await db.execute(
         select(User).where(User.email == user_data.email)
@@ -404,7 +425,7 @@ async def logout(
     # Reliable revoke: bump token_version (access tokens fail get_current_user;
     # refresh tokens fail the version check at /token/refresh).
     try:
-        current_user.token_version = (getattr(current_user, "token_version", 0) or 0) + 1
+        current_user.token_version = (get_safe_attr(current_user, "token_version", 0) or 0) + 1
         await db.commit()
     except Exception:
         await db.rollback()

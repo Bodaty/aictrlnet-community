@@ -234,13 +234,22 @@ class AICtrlNetApp:
             await close_db()
             logger.info("Database connections closed")
 
+        # Withhold the interactive docs and the schema on deployed boxes. The
+        # published spec is the whole internal API surface (1,061 paths on GA)
+        # served anonymously, which is both an information disclosure and a
+        # ready-made script for anything unauthenticated on it — the Aug 7
+        # enterprise-inquiry flood replayed the schema's own example payload.
+        # Local and CI keep Swagger, where it earns its keep.
+        from core.config import exposes_interactive_docs
+        _docs = exposes_interactive_docs(self.settings)
+
         self.app = FastAPI(
             title=f"{self.settings.PROJECT_NAME} {self.settings.EDITION.title()} Edition",
             description=self._get_description(),
             version=self.settings.VERSION,
-            openapi_url=f"{self.settings.API_V1_STR}/openapi.json",
-            docs_url=f"{self.settings.API_V1_STR}/docs",
-            redoc_url=f"{self.settings.API_V1_STR}/redoc",
+            openapi_url=f"{self.settings.API_V1_STR}/openapi.json" if _docs else None,
+            docs_url=f"{self.settings.API_V1_STR}/docs" if _docs else None,
+            redoc_url=f"{self.settings.API_V1_STR}/redoc" if _docs else None,
             lifespan=lifespan,
         )
 
@@ -366,8 +375,10 @@ class AICtrlNetApp:
                 "api": {
                     "version": "v1",
                     "base_url": self.settings.API_V1_STR,
-                    "docs_url": f"{self.settings.API_V1_STR}/docs",
-                    "openapi_url": f"{self.settings.API_V1_STR}/openapi.json",
+                    # None on deployed boxes, matching the FastAPI config above —
+                    # advertising routes that 404 is worse than not advertising.
+                    "docs_url": self.app.docs_url,
+                    "openapi_url": self.app.openapi_url,
                 },
                 "edition": self.settings.EDITION,
                 "features": self._get_features(),
