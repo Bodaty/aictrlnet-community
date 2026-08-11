@@ -51,7 +51,9 @@ class WebhookAdapter(BaseAdapter):
     async def initialize(self) -> None:
         """Initialize the webhook adapter."""
         # Create HTTP client with configurable settings
-        self.client = httpx.AsyncClient(
+        # IP-pinned: webhook target URLs are user-supplied.
+        from core.ssrf import pin_outbound_client
+        self.client = pin_outbound_client(httpx.AsyncClient(
             timeout=self.default_timeout,
             verify=self.verify_ssl,
             follow_redirects=self.follow_redirects,
@@ -60,8 +62,8 @@ class WebhookAdapter(BaseAdapter):
                 max_connections=100,
                 keepalive_expiry=30.0
             )
-        )
-        
+        ))
+
         logger.info("Webhook adapter initialized successfully")
     
     async def shutdown(self) -> None:

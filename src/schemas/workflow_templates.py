@@ -79,8 +79,17 @@ class WorkflowTemplateCreate(WorkflowTemplateBase):
     
     @validator('definition_path')
     def validate_definition_path(cls, v):
-        if v is not None and not v.endswith('.json'):
+        if v is None:
+            return v
+        if not v.endswith('.json'):
             raise ValueError('Definition path must point to a JSON file')
+        # Stop a traversal value being stored at all. The loader confines the
+        # resolved path as well (services/workflow_template_service.
+        # load_contained_template) — this is the cheaper, earlier check.
+        if v.startswith('/') or v.startswith('\\') or ':' in v.split('/')[0]:
+            raise ValueError('Definition path must be relative to a template root')
+        if '..' in v.replace('\\', '/').split('/'):
+            raise ValueError("Definition path must not contain '..' segments")
         return v
 
 

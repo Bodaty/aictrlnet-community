@@ -217,7 +217,7 @@ class APICallNode(BaseNode):
         """Make the HTTP request."""
         # SSRF guard: block user-supplied URLs that resolve to internal /
         # metadata addresses (re-resolves DNS to defeat rebinding).
-        from core.ssrf import validate_outbound_url
+        from core.ssrf import validate_outbound_url, pin_outbound_client
         validate_outbound_url(url)
         timeout = self.config.parameters.get("timeout", 30)
         follow_redirects = self.config.parameters.get("follow_redirects", True)
@@ -227,10 +227,12 @@ class APICallNode(BaseNode):
         # Never let httpx auto-follow redirects: a 30x to http://169.254.169.254
         # would bypass the initial SSRF check. We follow manually below and
         # re-validate every hop.
-        async with httpx.AsyncClient(
+        # pin_outbound_client pins the validated IP at connect time, closing
+        # the DNS-rebind window between validate_outbound_url and the connect.
+        async with pin_outbound_client(httpx.AsyncClient(
             follow_redirects=False,
             timeout=timeout
-        ) as client:
+        )) as client:
             
             # Prepare request kwargs
             request_kwargs = {

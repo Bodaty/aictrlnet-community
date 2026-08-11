@@ -28,6 +28,7 @@ python-oauth2==1.1.1
 
 # Async utilities
 httpx==0.26.0
+httpx-secure==1.3.0  # SSRF: pins the validated IP at connect time (core/ssrf.py)
 aiofiles==23.2.1
 aiocache==0.12.2
 redis==5.0.1

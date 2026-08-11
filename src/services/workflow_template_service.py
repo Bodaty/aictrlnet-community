@@ -42,6 +42,54 @@ from core.exceptions import NotFoundError, ForbiddenError, ValidationError
 logger = logging.getLogger(__name__)
 
 
+def load_contained_template(definition_path: str, roots) -> Dict[str, Any]:
+    """Load a template JSON from the first root that contains it.
+
+    Path containment, mirroring FileProcessNode (nodes/implementations/
+    file_process_node.py): resolve with realpath and require the result to sit
+    under the root it was resolved against, so `..` cannot climb out and a
+    symlink cannot point away. Absolute paths are rejected outright — every
+    legitimate stored value is relative to an edition tree.
+
+    All three editions share this. Business and Enterprise previously each
+    carried their own copy that read absolute paths "as-is" and included the
+    process CWD as a search base.
+
+    Raises FileNotFoundError when the template is not found under any root, and
+    ValueError when the path itself is unacceptable.
+    """
+    if not definition_path or not isinstance(definition_path, str):
+        raise ValueError("definition_path is required and must be a string")
+    if os.path.isabs(definition_path) or definition_path.startswith("\\"):
+        raise ValueError(
+            f"definition_path must be relative to a template root: {definition_path!r}"
+        )
+    if os.path.splitdrive(definition_path)[0]:
+        raise ValueError(f"definition_path must not carry a drive: {definition_path!r}")
+
+    for root in roots:
+        if root is None:
+            continue
+        real_root = os.path.realpath(str(root))
+        candidate = os.path.realpath(os.path.join(real_root, definition_path))
+        # commonpath raises on inputs from different drives/roots; treat that as
+        # "not contained" rather than letting it escape as an unrelated error.
+        try:
+            contained = os.path.commonpath([candidate, real_root]) == real_root
+        except ValueError:
+            contained = False
+        if not contained:
+            logger.warning(
+                "Rejected template path %r: resolves outside %s", definition_path, real_root
+            )
+            continue
+        if os.path.isfile(candidate):
+            with open(candidate, "r") as f:
+                return json.load(f)
+
+    raise FileNotFoundError(f"Template file not found: {definition_path}")
+
+
 # Synchronous filesystem primitives. Async callers MUST reach these through
 # asyncio.to_thread: a blocking syscall on the event loop parks the whole
 # worker in uninterruptible D-state whenever the VirtioFS mount stalls, and a
@@ -193,37 +241,21 @@ class WorkflowTemplateService:
 
     def _load_template_definition_sync(self, definition_path: str) -> Dict[str, Any]:
         """Synchronous file read — call via asyncio.to_thread from async methods."""
-        try:
-            # Try multiple potential paths. Definition paths are stored relative
-            # (e.g. "workflow-templates/system/finance/invoice-intake-starter.json")
-            # and the file may live under any edition's tree. The current edition
-            # roots MUST be tried, or the detail/preview load silently fails on
-            # enterprise/business containers (workflow_definition=None,
-            # parameters=[]), which breaks the template preview and the
-            # instantiate "Configure Template Parameters" dialog (no editable
-            # fields render).
-            paths_to_try = [
-                Path(definition_path),
-                self.base_template_dir.parent / definition_path,
-                Path("/workspace/editions/community") / definition_path,
-                Path("/workspace/editions/business") / definition_path,
-                Path("/workspace/editions/enterprise") / definition_path,
-            ]
-
-            template_file = None
-            for path in paths_to_try:
-                if path.exists():
-                    template_file = path
-                    break
-
-            if not template_file:
-                raise FileNotFoundError(f"Template file not found: {definition_path}")
-
-            with open(template_file, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading template definition from {definition_path}: {e}")
-            raise
+        # Definition paths are stored relative
+        # (e.g. "workflow-templates/system/finance/invoice-intake-starter.json")
+        # and the file may live under any edition's tree. The current edition
+        # roots MUST be tried, or the detail/preview load silently fails on
+        # enterprise/business containers (workflow_definition=None,
+        # parameters=[]), which breaks the template preview and the instantiate
+        # "Configure Template Parameters" dialog (no editable fields render).
+        roots = [self.base_template_dir.parent] if self.base_template_dir else []
+        roots += [
+            Path("/app"),
+            Path("/workspace/editions/community"),
+            Path("/workspace/editions/business"),
+            Path("/workspace/editions/enterprise"),
+        ]
+        return load_contained_template(definition_path, roots)
 
     async def list_templates(
         self,

@@ -80,3 +80,55 @@ def validate_outbound_url(url: str) -> str:
             raise SSRFError(f"host {host} resolves to blocked address {resolved}")
 
     return url
+
+
+# ---------------------------------------------------------------------------
+# Connect-time IP pinning.
+#
+# validate_outbound_url resolves and checks, and then httpx resolves AGAIN when
+# it connects — so a DNS record that flips between the two answers (rebinding)
+# is not caught by the check above. Closing that needs the pin to happen at
+# connect time, not at validation time.
+#
+# httpx-secure does exactly that: it captures the peer IP of a real connection
+# via getpeername(), so there is no resolve->connect gap at all, then rewrites
+# the request URL to that IP while preserving the Host header and the TLS SNI
+# hostname (the mechanism documented in httpx's own "connecting to an IP
+# address" guide). It installs as a request event hook, so redirects are
+# covered too.
+#
+# It is additive, not a replacement: its own check is `is_global`, which says
+# nothing about our scheme allowlist, URL length cap, or the metadata/blocked
+# hostname lists. validate_outbound_url stays the pre-flight check, and
+# _pin_validator re-applies the host rules at connect time against the IP that
+# will actually be dialled.
+# ---------------------------------------------------------------------------
+
+def _pin_validator(hostname: str, ip_addr, port: int) -> bool:
+    """Re-apply our host rules against the IP httpx is about to connect to."""
+    host = (hostname or "").lower()
+    if host in METADATA_HOSTS or host in BLOCKED_HOSTNAMES:
+        return False
+    return not _is_blocked_ip(str(ip_addr))
+
+
+def pin_outbound_client(client):
+    """Wrap an httpx.AsyncClient so every request connects to a validated IP.
+
+    Returns the same client. Degrades to an unwrapped client if httpx-secure is
+    unavailable — the caller's validate_outbound_url check still applies, so
+    this weakens to the pre-existing behaviour rather than failing the request.
+    """
+    try:
+        from httpx_secure import httpx_ssrf_protection
+    except ImportError:  # pragma: no cover - dependency gate
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "httpx-secure not installed — outbound requests are validated but "
+            "not IP-pinned, so a DNS rebind between check and connect is not "
+            "caught. Install httpx-secure (see requirements.txt)."
+        )
+        return client
+
+    return httpx_ssrf_protection(client, custom_validator=_pin_validator)
