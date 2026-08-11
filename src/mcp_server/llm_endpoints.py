@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/mcp/v1", tags=["MCP LLM"])
 
+# Used when the caller does not name a model. Matches the value already
+# advertised by get_mcp_models() and openai_adapter's embeddings capability.
+DEFAULT_EMBEDDING_MODEL = "text-embedding-ada-002"
+
 
 @router.post("/messages", response_model=MCPLLMResponse)
 async def handle_mcp_messages(
@@ -103,33 +107,71 @@ async def handle_mcp_embeddings(
     request: MCPEmbeddingRequest,
     current_user=Depends(get_current_user),
 ):
-    """Generate embeddings via MCP protocol."""
+    """Generate embeddings via MCP protocol.
+
+    Routed through the adapter registry rather than LLMClient: embeddings are a
+    distinct adapter capability (see openai_adapter._handle_embeddings), and
+    LLMClient only exposes text generation. When no registered adapter advertises
+    the capability this returns 503 — it never synthesises vectors, because a
+    fabricated embedding is worse than an outage for anything that indexes it.
+    """
+    texts = request.input if isinstance(request.input, list) else [request.input]
+    model = request.model or DEFAULT_EMBEDDING_MODEL
+
     try:
-        llm_client = LLMClient()
-        
-        # Generate embeddings
-        embeddings = await llm_client.generate_embeddings(
-            texts=request.input if isinstance(request.input, list) else [request.input],
-            model=request.model
+        from adapters.registry import adapter_registry
+        from adapters.models import AdapterRequest
+
+        adapters = await adapter_registry.get_adapters_by_capability("embeddings")
+        if not adapters:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "No embeddings-capable adapter is registered. Configure an "
+                    "adapter that provides the 'embeddings' capability."
+                ),
+            )
+
+        response = await adapters[0].execute(
+            AdapterRequest(
+                capability="embeddings",
+                parameters={"model": model, "input": texts},
+                user_id=str(getattr(current_user, "id", "")) or None,
+            )
         )
-        
+
+        if response.status != "success":
+            raise HTTPException(
+                status_code=502,
+                detail=f"Embeddings provider error: {response.error or 'unknown'}",
+            )
+
+        payload = response.data or {}
+        # OpenAI-shaped: [{"object": "embedding", "index": i, "embedding": [...]}]
+        rows = payload.get("embeddings") or []
+        usage = payload.get("usage") or {}
+        total_tokens = usage.get("total_tokens") or response.tokens_used or 0
+
         return MCPEmbeddingResponse(
             object="list",
             data=[
                 MCPEmbeddingData(
                     object="embedding",
-                    index=i,
-                    embedding=emb
-                ) for i, emb in enumerate(embeddings)
+                    index=row.get("index", i) if isinstance(row, dict) else i,
+                    embedding=row.get("embedding", []) if isinstance(row, dict) else row,
+                )
+                for i, row in enumerate(rows)
             ],
-            model=request.model or "text-embedding-ada-002",
+            model=model,
             usage=MCPLLMUsage(
-                prompt_tokens=len(request.input) * 4 if isinstance(request.input, str) else sum(len(t) * 4 for t in request.input),
+                prompt_tokens=total_tokens,
                 completion_tokens=0,
-                total_tokens=len(request.input) * 4 if isinstance(request.input, str) else sum(len(t) * 4 for t in request.input)
-            )
+                total_tokens=total_tokens,
+            ),
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"MCP embedding generation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

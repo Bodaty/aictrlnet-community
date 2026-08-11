@@ -23,6 +23,10 @@ from schemas.iam import (
 
 logger = logging.getLogger(__name__)
 
+# Strong references to fire-and-forget delivery tasks. The event loop holds only
+# a weak reference, so an unreferenced task can be garbage-collected mid-flight.
+_BACKGROUND_TASKS: set = set()
+
 
 class IAMService:
     """Service for managing Internal Agent Messaging."""
@@ -154,7 +158,9 @@ class IAMService:
         await self.db.refresh(message)
         
         # Process message delivery asynchronously
-        asyncio.create_task(self._process_message_delivery(message.id))
+        _delivery_task = asyncio.create_task(self._process_message_delivery(message.id))
+        _BACKGROUND_TASKS.add(_delivery_task)
+        _delivery_task.add_done_callback(_BACKGROUND_TASKS.discard)
         
         return IAMMessageResponse.model_validate(message)
     

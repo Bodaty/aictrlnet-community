@@ -22,6 +22,7 @@ from .generation import LLMGenerationEngine
 from .caching import LLMCache
 from .cost_tracking import CostTracker
 from .tier_resolver import get_environment_default_model
+from core.exceptions import UpstreamResponseError
 
 logger = logging.getLogger(__name__)
 
@@ -1257,9 +1258,17 @@ OUTPUT FORMAT for each step:
         # Step 4: Try standard JSON parsing
         try:
             return json.loads(text)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            # Raise, don't `return {}`. Every strategy above has failed, so the
+            # model gave us nothing usable — and an empty dict is
+            # indistinguishable from a legitimately empty result, which let the
+            # endpoint answer 200 while delivering nothing. Callers that can
+            # degrade (services/nlp.py falls back to regex) already catch this.
             logger.error(f"Failed to parse JSON from response: {response.text[:200]}")
-            return {}
+            raise UpstreamResponseError(
+                "The model did not return parseable JSON for the requested schema",
+                details={"response_preview": response.text[:200]},
+            ) from exc
     
     async def get_available_models(self) -> List[ModelInfo]:
         """

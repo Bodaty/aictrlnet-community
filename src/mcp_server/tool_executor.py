@@ -42,6 +42,12 @@ from .tools import TOOL_SCOPES
 
 logger = logging.getLogger(__name__)
 
+# Strong references to background adapter-generation tasks. The event loop holds
+# only a weak reference, so an unreferenced task can be garbage-collected
+# mid-flight — the generation would silently never finish and the poll tool
+# would report a status that never advances.
+_BACKGROUND_TASKS: set = set()
+
 
 class ToolExecutionError(Exception):
     pass
@@ -1221,7 +1227,9 @@ async def _handle_generate_adapter(
         except Exception as e:
             logger.exception("Background generate_adapter failed: %s", e)
 
-    _asyncio.create_task(_run_generation())
+    _gen_task = _asyncio.create_task(_run_generation())
+    _BACKGROUND_TASKS.add(_gen_task)
+    _gen_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     return {
         "adapter_id": adapter_id,
@@ -1293,7 +1301,9 @@ async def _handle_self_extend(
         except Exception as e:
             logger.exception("Background self_extend generation failed: %s", e)
 
-    _asyncio.create_task(_run_generation())
+    _gen_task = _asyncio.create_task(_run_generation())
+    _BACKGROUND_TASKS.add(_gen_task)
+    _gen_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     return {
         "adapter_id": adapter_id,

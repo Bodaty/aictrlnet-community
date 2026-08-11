@@ -14,11 +14,14 @@ class EventBus:
         self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
         self._queue: asyncio.Queue = asyncio.Queue()
         self._running = False
-        
+        # The loop keeps only a weak reference to a task; without this the
+        # processor can be garbage-collected mid-run.
+        self._processor_task = None
+
     async def start(self):
         """Start the event bus processor"""
         self._running = True
-        asyncio.create_task(self._process_events())
+        self._processor_task = asyncio.create_task(self._process_events())
         
     async def stop(self):
         """Stop the event bus processor"""

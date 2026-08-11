@@ -18,6 +18,12 @@ import json
 
 from core.database import get_db
 from core.security import get_current_active_user
+from api.v1.endpoints._auth_helpers import (
+    get_safe_attr,
+    get_safe_tenant_id,
+    get_safe_user_id,
+    is_superuser,
+)
 from schemas.mcp import (
     MCPServerCreate,
     MCPServerResponse,
@@ -76,12 +82,16 @@ router = APIRouter()
 # admin-only firebreak on update_mcp_server with real per-owner scoping.
 
 def _mcp_owner_id(current_user) -> Optional[str]:
-    uid = getattr(current_user, "id", None) or getattr(current_user, "sub", None)
+    # Via the shared helpers, not raw getattr: Business/Enterprise hand these
+    # endpoints a dict rather than a User object, where getattr silently yields
+    # None — which would strip ownership off every server registered there.
+    uid = get_safe_user_id(current_user) or get_safe_attr(current_user, "sub")
     return str(uid) if uid else None
 
 
 def _is_superuser(current_user) -> bool:
-    return bool(getattr(current_user, "is_superuser", False))
+    # is_superuser() also honours is_admin, which the dict shape carries.
+    return bool(is_superuser(current_user))
 
 
 def assert_mcp_read(server: "MCPServer", current_user) -> None:
@@ -254,7 +264,7 @@ async def register_mcp_server(
             server_info=json.dumps(server_data.server_metadata) if server_data.server_metadata else None,
             oauth2_provider_id=server_data.oauth2_provider_id,  # SEP-991: OAuth2 integration
             owner_user_id=_mcp_owner_id(current_user),  # per-owner authorization
-            tenant_id=str(getattr(current_user, "tenant_id", None)) if getattr(current_user, "tenant_id", None) else None,
+            tenant_id=str(get_safe_tenant_id(current_user)) if get_safe_tenant_id(current_user) else None,
             created_at=datetime.utcnow().timestamp(),
             updated_at=datetime.utcnow().timestamp()
         )
@@ -1912,14 +1922,15 @@ async def create_sampling(
     and returns the result to the MCP server.
     """
     try:
-        # Build messages for LLM
-        messages = []
-        if request.system_prompt:
-            messages.append({"role": "system", "content": request.system_prompt})
-
+        # Flatten the conversation into a single prompt. MCPSamplingMessage.role
+        # is Literal["user", "assistant"] — there is no system role — so the
+        # system prompt travels via LLMService's own system_prompt parameter
+        # rather than being faked as a message.
+        turns = []
         for msg in request.messages:
             content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
-            messages.append({"role": msg.role, "content": content})
+            turns.append(f"{msg.role}: {content}")
+        prompt = "\n\n".join(turns)
 
         # Get model preferences
         model_name = None
@@ -1935,19 +1946,33 @@ async def create_sampling(
             from llm.service import LLMService
             llm_service = LLMService()
 
-            result = await llm_service.complete(
-                messages=messages,
-                model=model_name,
+            result = await llm_service.generate(
+                prompt=prompt,
+                system_prompt=request.system_prompt,
+                model_override=model_name,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
-                stop=request.stop_sequences
+                task_type="mcp_sampling",
             )
+
+            # LLMRequest carries no stop-sequence field, so honour
+            # request.stop_sequences here instead of dropping it silently.
+            text = result.text
+            stop_reason = "endTurn"
+            if request.stop_sequences:
+                cut = min(
+                    (i for i in (text.find(s) for s in request.stop_sequences) if i != -1),
+                    default=-1,
+                )
+                if cut != -1:
+                    text = text[:cut]
+                    stop_reason = "stopSequence"
 
             return MCPCreateSamplingResponse(
                 role="assistant",
-                content=result.get("content", ""),
-                model=result.get("model"),
-                stop_reason=result.get("stop_reason", "endTurn")
+                content=text,
+                model=result.model_used,
+                stop_reason=stop_reason
             )
 
         except ImportError:
@@ -1961,7 +1986,10 @@ async def create_sampling(
             )
 
         except Exception as e:
-            logger.warning(f"LLM sampling failed: {e}")
+            # ERROR, not WARNING: an unexpected failure here degrades the
+            # response to a placeholder, and the smoke error sentinel keys on
+            # ERROR to catch exactly that (a swallowed exception behind a 200).
+            logger.error(f"LLM sampling failed: {e}")
             return MCPCreateSamplingResponse(
                 role="assistant",
                 content="Sampling service temporarily unavailable",
@@ -2050,7 +2078,7 @@ async def create_elicitation_request(
             "timeout_seconds": request.timeout_seconds,
             "status": "pending",
             "created_at": datetime.utcnow().isoformat(),
-            "user_id": str(current_user.id) if hasattr(current_user, 'id') else "unknown"
+            "user_id": str(get_safe_user_id(current_user) or "unknown")
         }
 
         # Store in Redis with timeout_seconds as TTL (default 5 min)

@@ -100,16 +100,24 @@ class MCPOrchestrationService:
         for msg in messages:
             role = msg.get("role", "")
             content = msg.get("content", "")
-            
+
             if role == "system":
-                # System messages often contain instructions
-                if "task:" in content.lower():
-                    task_def["name"] = content.split("task:", 1)[1].strip()
-                elif "orchestrate:" in content.lower():
-                    task_def["name"] = content.split("orchestrate:", 1)[1].strip()
-                
+                # System messages often contain instructions.
+                # Match and split case-insensitively against the same string:
+                # testing `"task:" in content.lower()` and then splitting the
+                # original on a lowercase literal raised IndexError on any
+                # capitalised prefix — including this schema's own documented
+                # example, "Task: Analyze customer feedback sentiment".
+                if isinstance(content, str):
+                    lowered = content.lower()
+                    for marker in ("task:", "orchestrate:"):
+                        position = lowered.find(marker)
+                        if position != -1:
+                            task_def["name"] = content[position + len(marker):].strip()
+                            break
+
                 task_def["description"] = content
-                
+
             elif role == "user":
                 # User messages contain the actual task content
                 task_def["payload"]["user_request"] = content

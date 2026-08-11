@@ -74,6 +74,18 @@ class ServiceUnavailableError(BaseAPIException):
         super().__init__(message, 503, details)
 
 
+class UpstreamResponseError(BaseAPIException):
+    """Raised when an upstream provider returns something unusable.
+
+    502, not 500: the fault is the upstream response, not our handler. Used by
+    structured LLM generation, which previously logged the parse failure and
+    returned an empty dict — reporting success while delivering nothing.
+    """
+
+    def __init__(self, message: str = "Upstream returned an unusable response", details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, 502, details)
+
+
 class FeatureNotAvailableError(BaseAPIException):
     """Raised when a feature is not available in the current edition."""
     

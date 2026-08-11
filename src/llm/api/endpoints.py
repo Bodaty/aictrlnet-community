@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.security import get_current_user
 from core.database import get_db
 from core.tenant_context import get_current_tenant_id
+from core.exceptions import UpstreamResponseError
 from llm.org_llm_settings import get_org_llm_settings
 from services.llm_helpers import get_user_llm_settings
 from models import User
@@ -237,6 +238,10 @@ async def generate_structured(
 
         return result
 
+    except UpstreamResponseError as e:
+        # 502: the model returned something unparseable. Previously this path
+        # answered 200 with {} — success reported, nothing delivered.
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=e.message)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

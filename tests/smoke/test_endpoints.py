@@ -15,6 +15,8 @@ from httpx import AsyncClient, ASGITransport
 from smoke_common.discovery import (
     quarantined_for,
     quarantine_shrink_candidates,
+    error_log_quarantined_for,
+    error_log_shrink_candidates,
     discover_routes,
     discover_streaming_routes,
     discover_file_upload_routes,
@@ -25,6 +27,7 @@ from smoke_common.runner import (
     apply_overrides,
     smoke_one,
     smoke_one_with_body,
+    smoke_one_with_body_capturing_errors,
     smoke_one_streaming,
     smoke_one_file_upload,
     apply_external_service_patches,
@@ -154,4 +157,64 @@ async def test_quarantine_only_shrinks():
         "These endpoints pass now and must be removed from "
         "SMOKE_BODY_QUARANTINE_BY_EDITION in tests/smoke_common/discovery.py:\n  "
         + "\n  ".join(sorted(now_passing))
+    )
+
+
+_error_log_quarantined = error_log_quarantined_for("community")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec", _body_specs, ids=[s.test_id for s in _body_specs])
+async def test_no_swallowed_error_with_body(spec):
+    """A 2xx response must not be hiding an ERROR the handler logged.
+
+    "Not 5xx" passes for a handler that catches its own exception, logs it, and
+    returns a 200 error envelope — so the feature fails on every call while the
+    suite stays green. Four MCP handlers did exactly that for months.
+    """
+    if spec.test_id in _quarantined or spec.test_id in _error_log_quarantined:
+        pytest.skip(f"quarantined: {spec.test_id}")
+
+    transport = ASGITransport(app=_app)
+    async with AsyncClient(transport=transport, base_url="http://smoke", timeout=15.0) as client:
+        status, _, _, errors = await smoke_one_with_body_capturing_errors(
+            client, spec, _openapi
+        )
+
+    if not (200 <= status < 300):
+        pytest.skip(f"{spec.test_id} -> {status}; swallowed-error check only applies to 2xx")
+
+    assert not errors, (
+        f"{spec.test_id} returned {status} but logged {len(errors)} ERROR record(s).\n"
+        f"The handler swallowed an exception and answered as if it succeeded:\n  "
+        + "\n  ".join(errors[:5])
+    )
+
+
+@pytest.mark.asyncio
+async def test_error_log_quarantine_only_shrinks():
+    """A swallowed-error entry that now runs clean must be removed.
+
+    Same contract as test_quarantine_only_shrinks: without this the set rots,
+    silently re-opening the gap it was meant to track.
+    """
+    if not _error_log_quarantined:
+        pytest.skip("no swallowed-error quarantine for this edition")
+
+    reportable = error_log_shrink_candidates("community")
+    quarantined = [s for s in _body_specs if s.test_id in reportable]
+    now_clean = []
+    transport = ASGITransport(app=_app)
+    async with AsyncClient(transport=transport, base_url="http://smoke", timeout=15.0) as client:
+        for spec in quarantined:
+            status, _, _, errors = await smoke_one_with_body_capturing_errors(
+                client, spec, _openapi
+            )
+            if 200 <= status < 300 and not errors:
+                now_clean.append(f"{spec.test_id} (-> {status})")
+
+    assert not now_clean, (
+        "These endpoints no longer log errors behind a 2xx and must be removed "
+        "from SMOKE_ERROR_LOG_QUARANTINE_BY_EDITION in "
+        "tests/smoke_common/discovery.py:\n  " + "\n  ".join(sorted(now_clean))
     )

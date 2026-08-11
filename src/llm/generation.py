@@ -161,7 +161,11 @@ class LLMGenerationEngine:
             else:
                 response = await self._generate_with_adapter(request, model, provider)
         except Exception as e:
-            logger.error(f"Generation failed with {provider.value}: {e}")
+            # WARNING, not ERROR: this is one provider failing before we try to
+            # recover. Every terminal path below logs ERROR and re-raises, so
+            # nothing is lost — and a fallback that then succeeds must not leave
+            # an ERROR record behind a 200 response.
+            logger.warning(f"Generation failed with {provider.value}: {e}")
             # On Cloud Run, Ollama is NOT available (no localhost:11434)
             # Only fallback to Ollama if we're NOT on GCP and NOT already using Ollama/vLLM
             if provider not in (ModelProvider.OLLAMA, ModelProvider.VLLM) and not self._is_cloud_environment():
@@ -1089,7 +1093,11 @@ Return ONLY the JSON array, no other text or explanation."""
             logger.error(f"Could not import adapter for {provider.value}: {e}")
             raise ValueError(f"Adapter for {provider.value} not available: {e}")
         except Exception as e:
-            logger.error(f"{provider.value} generation failed: {e}")
+            # WARNING, not ERROR: this re-raises immediately, and the caller
+            # logs the failure at the point where it decides whether the
+            # request is actually lost. Logging ERROR here double-reported
+            # every recovered fallback.
+            logger.warning(f"{provider.value} generation failed: {e}")
             raise
 
     async def _create_direct_adapter(self, provider: ModelProvider):

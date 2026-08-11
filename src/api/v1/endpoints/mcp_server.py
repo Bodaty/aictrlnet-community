@@ -49,9 +49,13 @@ async def handle_mcp_messages(
     try:
         orchestration_service = MCPOrchestrationService(db)
         
-        # Process orchestration request
+        # Process orchestration request.
+        # The service treats messages as plain dicts (msg.get(...)) and persists
+        # them into the task's JSON metadata column, so convert at the boundary.
+        # mode="json" is required: MCPMessage.role is an enum, which the JSON
+        # column cannot serialize.
         result = await orchestration_service.process_orchestration_request(
-            messages=request.messages,
+            messages=[m.model_dump(mode="json") for m in request.messages],
             context={
                 "user_id": str(current_user.id),
                 "execute_immediately": request.execute_immediately,

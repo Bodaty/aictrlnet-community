@@ -33,13 +33,17 @@ class WorkflowService:
         Automatically assigns current tenant_id.
         """
         tenant_id = get_current_tenant_id()
+        # WorkflowDefinition has no `status` column — liveness is `active: bool` —
+        # and its JSON `metadata` column is exposed as `workflow_metadata` because
+        # `metadata` is reserved by SQLAlchemy's declarative base. Passing either
+        # name raised TypeError on every call.
         workflow = Workflow(
             id=str(uuid.uuid4()),
             name=name,
             description=description,
             definition=definition or {},
-            metadata=metadata or {},
-            status="active",
+            workflow_metadata=metadata or {},
+            active=True,
             tenant_id=tenant_id,
             created_at=datetime.utcnow()
         )
@@ -77,7 +81,9 @@ class WorkflowService:
             raise NotFoundError(f"Workflow {workflow_id} not found")
         
         if metadata:
-            workflow.metadata = metadata
+            # Assigning `.metadata` shadows the declarative MetaData on the
+            # instance and never reaches the DB — a silent no-op write.
+            workflow.workflow_metadata = metadata
             workflow.updated_at = datetime.utcnow()
         
         await self.db.commit()
