@@ -422,6 +422,20 @@ class WorkflowTemplateService:
                 else:
                     response.workflow_definition = definition
                 response.parameters = definition.get("parameters", [])
+
+                # Derive the counts from what workflow_definition actually
+                # holds. list_templates has always populated these from the
+                # same file (via _load_template_preview), so a detail response
+                # that left them None disagreed with the list about the same
+                # template — and the preview dialog gates its
+                # "(N nodes, M connections)" caption on both being truthy, so
+                # the caption silently vanished on every template. The nodes
+                # are already in memory here; this costs no extra file read.
+                # Left None on a failed load below: 0 would read as a template
+                # that legitimately has no nodes.
+                if isinstance(response.workflow_definition, dict):
+                    response.node_count = len(response.workflow_definition.get("nodes") or [])
+                    response.edge_count = len(response.workflow_definition.get("edges") or [])
             except Exception as e:
                 logger.error(f"Failed to load template definition: {e}")
                 response.workflow_definition = None
