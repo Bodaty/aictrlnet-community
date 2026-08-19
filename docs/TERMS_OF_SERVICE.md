@@ -2,9 +2,9 @@
 
 **Effective Date:** May 1, 2026
 
-**Last Updated:** May 1, 2026
+**Last Updated:** August 19, 2026
 
-**Version:** 2.0
+**Version:** 2.1
 
 ---
 
@@ -215,7 +215,7 @@ The Service is offered in the following subscription tiers:
 #### 4.1.5 Enterprise Base
 
 - **Price:** Starting at $12,000 per month (contact sales@aictrlnet.com)
-- **Features:** Everything in Business Scale, plus: multi-tenancy, SAML/SSO integration, federation support, HIPAA-ready and GDPR compliance tools, geographic data routing, advanced analytics, dedicated account manager, custom workflow development, white-label options, deploy-anywhere (sovereign / air-gapped / customer-controlled cloud)
+- **Features:** Everything in Business Scale, plus: multi-tenancy, SAML/SSO integration, federation support, GDPR and advanced compliance tooling, geographic data routing, advanced analytics, dedicated account manager, custom workflow development, white-label options, deploy-anywhere (sovereign / air-gapped / customer-controlled cloud)
 - **Support:** Priority support with dedicated account manager, phone support available, weekly customer success touchpoints
 - **SLA:** 99.9% uptime guarantee with financial credits
 - **Users:** Unlimited (within contract terms)
@@ -231,6 +231,8 @@ The Service is offered in the following subscription tiers:
 - **Implementation Services:** 40+ DWY Hours per month (see Section 12)
 
 **Additional Implementation Services Hours.** When DWY Hours included with the Subscription tier are exhausted, Customer may purchase additional hours at $295 per hour, billed in 30-minute minimum increments per Section 12.4(f). Additional hours do not roll over.
+
+**Compliance instruments are not tier-bound.** Data Processing Agreements and Business Associate Agreements are governed by the regulatory relationship between the parties and by the deployment configuration, **not by the Subscription tier**. In particular, a HIPAA Business Associate Agreement is available for on-premises and dedicated deployments in which Protected Health Information is processed locally and is not disclosed to any third-party artificial-intelligence model provider, **including on Business-tier Subscriptions**. Protected Health Information must not be submitted to the multi-tenant hosted Service on any tier unless Bodaty has executed a Business Associate Agreement covering that deployment. Contact privacy@aictrlnet.com.
 
 ### 4.2 Billing and Payment
 
@@ -1220,6 +1222,8 @@ Email: privacy@aictrlnet.com
 |---------|------|-------------|
 | 1.0 | January 29, 2026 | Initial release |
 | 2.0 | May 1, 2026 | Entity correction (Bodaty Technologies, Inc. → Bodaty LLC); governing law changed from Delaware to Illinois (Cook County / Chicago); pricing table refreshed with current Business and Enterprise tier ladder; new Section 12 (Implementation Services / DWY) added; renumbered former Sections 12-21 to 13-22; AI-era updates to Section 6 (model deprecation 6.6, hallucination disclaimer 6.7, autonomous action liability 6.8, EU AI Act cooperation 6.9); new Output IP Indemnification (Section 16.1A/B, Microsoft CCC-style, Business Scale + Enterprise only); new HITL bypass carve-out (Section 15.3(f)); Foundation Model Provider disclosure (Section 9.5). |
+
+| 2.1 | August 19, 2026 | Compliance instruments decoupled from Subscription tier: Section 4.1 now states that DPAs and HIPAA Business Associate Agreements follow the regulatory relationship and deployment configuration rather than the tier, and that a BAA is available for on-premises and dedicated deployments processing PHI locally — including on Business tiers. "HIPAA-ready" removed from the Enterprise Base feature list, where it had implied HIPAA was an Enterprise-only capability. |
 
 ---
 
