@@ -13,11 +13,10 @@ from typing import Any, Dict, List
 
 from ..base_node import BaseNode
 from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from core.config import get_settings
 from events.event_bus import event_bus
 
 logger = logging.getLogger(__name__)
-
-STAGED_DIR = "/tmp/aictrlnet/staged_files"
 
 
 class DocGenerationNode(BaseNode):
@@ -56,10 +55,13 @@ class DocGenerationNode(BaseNode):
 
             # Stage the generated file
             file_id = uuid.uuid4()
-            storage_path = os.path.join(STAGED_DIR, str(file_id))
+            # Read at call time so PHI deployments stage onto the encrypted
+            # volume; the startup guard enforces that it is not under /tmp.
+            staged_dir = get_settings().STAGED_FILES_DIR
+            storage_path = os.path.join(staged_dir, str(file_id))
 
             def _write_staged():
-                os.makedirs(STAGED_DIR, exist_ok=True)
+                os.makedirs(staged_dir, exist_ok=True)
                 with open(storage_path, "wb") as f:
                     f.write(file_bytes)
 

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, R
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from core.config import get_settings
 from core.database import get_db
 from core.security import get_current_user
 from core.tenant_context import get_current_tenant_id
@@ -23,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-UPLOAD_DIR = "/tmp/aictrlnet/staged_files"
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 ALLOWED_TYPES = {
     "application/pdf",
@@ -176,10 +176,14 @@ async def upload_file(
 
     # Store file
     file_id = uuid.uuid4()
-    storage_path = os.path.join(UPLOAD_DIR, str(file_id))
+    # Read at call time, not import time: PHI deployments point this at the
+    # encrypted volume, and the startup guard has already refused to boot if
+    # it still resolves under /tmp.
+    upload_dir = get_settings().STAGED_FILES_DIR
+    storage_path = os.path.join(upload_dir, str(file_id))
 
     def _write_upload():
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        os.makedirs(upload_dir, exist_ok=True)
         with open(storage_path, "wb") as f:
             f.write(contents)
 

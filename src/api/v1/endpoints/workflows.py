@@ -16,7 +16,7 @@ from core.security import get_current_active_user
 from core.enforcement import LicenseEnforcer, LimitType
 from core.usage_tracker import get_usage_tracker
 from core.tenant_context import get_current_tenant_id
-from core.authz import assert_tenant_access
+from core.authz import assert_tenant_access, is_superuser, resolve_caller_tenant
 from middleware.enforcement import require_feature
 from core.upgrade_hints import attach_upgrade_hints
 from models.community import WorkflowDefinition, WorkflowInstance
@@ -143,9 +143,29 @@ async def list_workflows(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_active_user),
 ):
-    """List all workflows."""
+    """List the caller's workflows.
+
+    Tenant-scoped, fail closed. This previously ran an unscoped
+    `select(WorkflowDefinition)` — `current_user` was injected for
+    authentication and never used to scope — so any authenticated user was
+    returned every workflow in the database. Confirmed live on Beast
+    2026-08-19: a `default-tenant` caller received all 40 workflows across two
+    tenants.
+
+    Superusers still see across tenants, matching `assert_tenant_access`, which
+    the admin tooling depends on.
+    """
     attach_upgrade_hints(response, "workflows")
     query = select(WorkflowDefinition)
+
+    if not is_superuser(current_user):
+        caller_tenant = resolve_caller_tenant(current_user)
+        if not caller_tenant:
+            # Fail closed: an underivable tenant denies rather than widening to
+            # everything. core/authz.py — "never default to a shared/permissive
+            # tenant".
+            return []
+        query = query.filter(WorkflowDefinition.tenant_id == caller_tenant)
     
     # WorkflowDefinition has no `category` or `is_template` columns (the model is
     # user-workflows only; templates live in WorkflowTemplate). Accept those

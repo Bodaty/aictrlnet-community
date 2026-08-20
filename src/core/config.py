@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import AliasChoices, Field, PostgresDsn, computed_field
 from functools import lru_cache
+from pathlib import Path
 import os
 
 
@@ -200,6 +201,24 @@ class Settings(BaseSettings):
     ALLOW_DEV_TOKENS: bool = Field(default=False, env="ALLOW_DEV_TOKENS")
     USE_CREATE_ALL: bool = Field(default=False, env="USE_CREATE_ALL")  # Default to migrations even in dev
     DATA_PATH: str = Field(default="/tmp/aictrlnet", env="DATA_PATH")
+    # Explicit opt-in for a deployment that handles PHI. When true, the startup
+    # guard below refuses to boot unless documents can only land on the encrypted
+    # volume and credentials are held by an encrypted backend. Default false, so
+    # deployments that handle no PHI are unaffected.
+    AICTRLNET_PHI_MODE: bool = Field(default=False, env="AICTRLNET_PHI_MODE")
+    # Where uploaded and generated documents are staged. Promoted from a bare
+    # os.environ read so the PHI guard can see it — a guard cannot enforce what
+    # it cannot see. The default must stay this literal rather than deriving from
+    # DATA_PATH: the staged-file read path rejects anything outside it, so
+    # deriving it would break legitimate reads whenever DATA_PATH is set (see the
+    # comment in nodes/implementations/file_process_node.py).
+    STAGED_FILES_DIR: str = Field(
+        default="/tmp/aictrlnet/staged_files", env="STAGED_FILES_DIR"
+    )
+    # Credential storage backend: 'environment' (plaintext env vars), 'file' and
+    # 'database' (both Fernet-encrypted), or 'vault'. The default matches the one
+    # get_credential_service() has always used; PHI mode refuses 'environment'.
+    CREDENTIAL_BACKEND: str = Field(default="environment", env="CREDENTIAL_BACKEND")
     
     # Performance
     # PER-WORKER pool size. With uvicorn `--workers 2` x 3 editions = 6 worker
@@ -318,6 +337,128 @@ def validate_secret_for_environment(settings: "Settings") -> None:
                 "(This will become a hard startup failure in a follow-up.)",
                 field_name, settings.ENVIRONMENT,
             )
+
+
+# Filesystem root that must never hold PHI. Broadly readable, cleared
+# unpredictably, and outside the encrypted volume every BAA Exhibit A commits to.
+_PHI_FORBIDDEN_ROOT = "/tmp"
+
+
+def _resolved(path: str) -> Path:
+    """Real path, with symlinks and '..' collapsed.
+
+    Containment is decided on this, never on the configured string: both
+    "/mnt/phi/../../tmp/aictrlnet" and a symlink pointing into /tmp read like
+    volume paths and land in /tmp, and a relative path resolves against whatever
+    working directory the container happened to start in.
+    """
+    return Path(path or "").expanduser().resolve()
+
+
+def validate_phi_mode(settings: "Settings") -> None:
+    """Refuse to boot a PHI deployment on insecure defaults.
+
+    Call this once from app startup (lifespan), NOT as a Pydantic validator —
+    same reason as validate_secret_for_environment above: Settings() is
+    constructed all over the test suite with the dev defaults, and a raising
+    validator would break those.
+
+    A no-op unless AICTRLNET_PHI_MODE is set, so deployments that handle no PHI
+    behave exactly as before. When it is set, the defaults that would otherwise
+    apply are refused:
+
+    - DATA_PATH and STAGED_FILES_DIR default under /tmp, so documents land off
+      the encrypted volume (risk analysis R-01), and staged files must sit on the
+      PHI volume rather than merely somewhere off /tmp.
+    - CREDENTIAL_BACKEND defaults to 'environment', i.e. plaintext env vars
+      holding the practice's EHR service-account login (R-02). Encrypted 'file',
+      'database' and 'vault' backends already exist.
+    - ALLOW_DEV_TOKENS is true in the dev compose file, and the static dev bearer
+      token would authenticate anyone to a system holding PHI.
+    - ENVIRONMENT must name a real deployment, which also arms the SECRET_KEY
+      guard above on the same box.
+
+    Every problem is reported at once. Failing on the first would make an
+    operator commissioning a practice machine rediscover the next one on the
+    following boot.
+
+    Path shape only: this deliberately does not check that the directories exist,
+    are writable, or are genuinely encrypted. A volume may be mounted after the
+    process starts, and encryption is not observable from inside it. Provisioning
+    the volume is the BAA control; this stops the configuration pointing off it.
+    """
+    if not getattr(settings, "AICTRLNET_PHI_MODE", False):
+        return
+
+    forbidden = _resolved(_PHI_FORBIDDEN_ROOT)
+    data_path = _resolved(settings.DATA_PATH)
+    staged_dir = _resolved(settings.STAGED_FILES_DIR)
+    problems = []
+
+    # A relative path is not a mount point: it resolves against whatever working
+    # directory the process started in, so the same config lands PHI in different
+    # places depending on how the container was launched.
+    for name, configured in (
+        ("DATA_PATH", settings.DATA_PATH),
+        ("STAGED_FILES_DIR", settings.STAGED_FILES_DIR),
+    ):
+        if not Path(configured or "").is_absolute():
+            problems.append(
+                f"{name}={configured!r} is not an absolute path, so where it "
+                f"lands depends on the process working directory. Required: an "
+                f"absolute path on the encrypted PHI volume."
+            )
+
+    if data_path.is_relative_to(forbidden):
+        problems.append(
+            f"DATA_PATH={settings.DATA_PATH!r} resolves to '{data_path}', which is "
+            f"under '{forbidden}'. Required: a path on the encrypted PHI volume."
+        )
+
+    if staged_dir.is_relative_to(forbidden):
+        problems.append(
+            f"STAGED_FILES_DIR={settings.STAGED_FILES_DIR!r} resolves to "
+            f"'{staged_dir}', which is under '{forbidden}'. Required: a path on "
+            f"the encrypted PHI volume."
+        )
+    elif not staged_dir.is_relative_to(data_path):
+        problems.append(
+            f"STAGED_FILES_DIR={settings.STAGED_FILES_DIR!r} resolves to "
+            f"'{staged_dir}', which is outside DATA_PATH '{data_path}'. Required: "
+            f"a directory under DATA_PATH, so staged documents stay on the volume."
+        )
+
+    if (settings.CREDENTIAL_BACKEND or "").strip().lower() == "environment":
+        problems.append(
+            "CREDENTIAL_BACKEND='environment' stores credentials as plaintext "
+            "environment variables. Required: 'file', 'database' or 'vault', all "
+            "of which encrypt at rest."
+        )
+
+    if settings.ALLOW_DEV_TOKENS:
+        problems.append(
+            "ALLOW_DEV_TOKENS=true accepts the static development bearer token, "
+            "which would let any caller authenticate to a system holding PHI. "
+            "Required: false."
+        )
+
+    environment = (settings.ENVIRONMENT or "").strip().lower()
+    if environment not in _DEPLOY_ENVIRONMENTS:
+        problems.append(
+            f"ENVIRONMENT={settings.ENVIRONMENT!r} is not a deployment "
+            f"environment. Required: one of "
+            f"{', '.join(sorted(_DEPLOY_ENVIRONMENTS))}."
+        )
+
+    if problems:
+        raise RuntimeError(
+            "AICTRLNET_PHI_MODE is on, but this deployment would place protected "
+            "health information at risk. Refusing to start:\n"
+            + "\n".join(f"  - {p}" for p in problems)
+            + "\n\nEvery BAA commits that PHI and audit records live on a separate "
+            "encrypted volume. Fix the settings above or unset AICTRLNET_PHI_MODE "
+            "if this deployment handles no PHI."
+        )
 
 
 def get_settings() -> Settings:

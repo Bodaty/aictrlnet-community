@@ -23,6 +23,8 @@ from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import get_settings
+
 from . import observability
 from .metering import (
     QuotaError,
@@ -2811,7 +2813,7 @@ async def _handle_upload_file(
     if not filename or ".." in filename or "/" in filename:
         raise ToolExecutionError("Invalid filename")
 
-    storage_dir = os.environ.get("STAGED_FILES_DIR", "/tmp/aictrlnet/staged_files")
+    storage_dir = get_settings().STAGED_FILES_DIR
     file_id = str(uuid.uuid4())
     storage_path = os.path.join(storage_dir, file_id)
 

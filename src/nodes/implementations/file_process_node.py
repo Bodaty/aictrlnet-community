@@ -14,6 +14,7 @@ from typing import Any, Dict
 
 from ..base_node import BaseNode
 from ..models import NodeConfig, NodeExecutionResult, NodeStatus
+from core.config import get_settings
 from events.event_bus import event_bus
 
 logger = logging.getLogger(__name__)
@@ -47,22 +48,23 @@ class FileProcessNode(BaseNode):
 
             # If we have file_id but no path, resolve from staged files
             if file_id and not file_path:
-                file_path = input_data.get("storage_path") or f"/tmp/aictrlnet/staged_files/{file_id}"
+                file_path = input_data.get("storage_path") or os.path.join(
+                    get_settings().STAGED_FILES_DIR, str(file_id)
+                )
 
             # Path-traversal containment: file_path/storage_path are user-editable
             # (workflow input_data), so confine reads to the staged-files base dir.
             # Without this, a node could read /etc/passwd, /app/.env, or another
             # tenant's staged file.
-            # Default MUST match file_upload.UPLOAD_DIR ("/tmp/aictrlnet/staged_files"),
-            # which is where staged uploads actually land. Deriving from DATA_PATH here
-            # would reject legitimate staged reads whenever DATA_PATH != "/tmp/aictrlnet".
+            # The base dir MUST be the same setting the upload paths write to
+            # (settings.STAGED_FILES_DIR), which is where staged uploads actually
+            # land. Deriving it from DATA_PATH here would reject legitimate staged
+            # reads whenever DATA_PATH != the staged-files parent.
             # Containment check and read happen together in the worker thread so
             # the path cannot change between them, and so neither the realpath
             # syscalls nor the read block the event loop.
             def _validate_and_read():
-                base_dir = os.path.realpath(
-                    os.getenv("STAGED_FILES_DIR") or "/tmp/aictrlnet/staged_files"
-                )
+                base_dir = os.path.realpath(get_settings().STAGED_FILES_DIR)
                 resolved = os.path.realpath(file_path)
                 if os.path.commonpath([resolved, base_dir]) != base_dir:
                     raise ValueError("file_path is outside the allowed staged-files directory")

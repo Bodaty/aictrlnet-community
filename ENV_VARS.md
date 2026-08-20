@@ -145,7 +145,7 @@ STRIPE_PRICE_ENTERPRISE=price_1JKL012
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CREDENTIAL_BACKEND` | `environment` | Backend: `environment`, `file`, `vault` |
+| `CREDENTIAL_BACKEND` | `environment` | Backend: `environment`, `file`, `database`, `vault`. `environment` holds credentials as plaintext env vars and is refused under `AICTRLNET_PHI_MODE` |
 | `CREDENTIAL_ENCRYPTION_KEY` | - | Encryption key for stored credentials |
 | `CREDENTIAL_FILE_PATH` | `/app/data/credentials.json` | Path for file-based storage |
 | `VAULT_URL` | - | HashiCorp Vault URL |
@@ -158,6 +158,30 @@ STRIPE_PRICE_ENTERPRISE=price_1JKL012
 | `MAX_CONNECTIONS_COUNT` | `10` | Max database connections |
 | `MIN_CONNECTIONS_COUNT` | `10` | Min database connections |
 | `DATA_PATH` | `/tmp/aictrlnet` | Path for temporary data |
+| `STAGED_FILES_DIR` | `/tmp/aictrlnet/staged_files` | Where uploaded and generated documents are staged |
+
+## PHI / HIPAA deployments
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AICTRLNET_PHI_MODE` | `false` | Opt-in for deployments handling protected health information |
+
+When `AICTRLNET_PHI_MODE` is set, the application **refuses to start** unless every one of
+the following holds. The check runs in each edition's startup lifespan, and the error names
+every setting that is wrong along with what it resolved to.
+
+- `DATA_PATH` is an absolute path that does not resolve under `/tmp`
+- `STAGED_FILES_DIR` is an absolute path that does not resolve under `/tmp`, and resolves
+  under `DATA_PATH`
+- `CREDENTIAL_BACKEND` is not `environment`
+- `ALLOW_DEV_TOKENS` is false
+- `ENVIRONMENT` names a real deployment (`production`, `prod`, `staging`, `stage`)
+
+Containment is decided on resolved real paths, so symlinks and `..` segments cannot smuggle
+a path into `/tmp`. The check validates path *shape* only — it does not verify the directory
+exists or that the volume is genuinely encrypted, which is a provisioning control.
+
+Leaving `AICTRLNET_PHI_MODE` unset changes nothing about how a deployment behaves.
 
 ## Cloud Platform Detection
 

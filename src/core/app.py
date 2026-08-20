@@ -41,6 +41,11 @@ class AICtrlNetApp:
             from core.config import validate_secret_for_environment
             validate_secret_for_environment(self.settings)
 
+            # Refuse to boot a PHI deployment where PHI could land off the
+            # encrypted volume or credentials sit in plaintext env vars.
+            from core.config import validate_phi_mode
+            validate_phi_mode(self.settings)
+
             # Initialize database
             await init_db()
             logger.info("Database initialized")

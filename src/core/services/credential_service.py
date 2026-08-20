@@ -14,6 +14,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import select
 from abc import ABC, abstractmethod
 
+from core.config import get_settings
 from core.database import get_db
 from models.platform_integration import PlatformCredential
 from core.exceptions import CredentialNotFoundError, CredentialDecryptionError
@@ -422,7 +423,7 @@ def get_credential_service() -> CredentialService:
     if _credential_service is None:
         # Load configuration from environment
         config = {
-            'credential_backend': os.getenv('CREDENTIAL_BACKEND', 'environment'),
+            'credential_backend': get_settings().CREDENTIAL_BACKEND,
             'credential_encryption_key': os.getenv('CREDENTIAL_ENCRYPTION_KEY'),
             'credential_file_path': os.getenv('CREDENTIAL_FILE_PATH'),
             'vault_url': os.getenv('VAULT_URL'),
