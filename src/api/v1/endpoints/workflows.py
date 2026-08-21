@@ -568,8 +568,26 @@ async def update_workflow(
                 raise HTTPException(status_code=400, detail=f"Edge references missing target node: {target}")
         workflow.version += 1
 
+    # `status` and `category` have no columns — they live inside the JSON
+    # `workflow_metadata`, which is where WorkflowService.create_workflow writes
+    # them and where WorkflowResponse.extract_metadata_fields reads them back.
+    # setattr'ing them set a transient Python attribute that committed cleanly
+    # and stored nothing, so an archive request returned 200 and did nothing.
+    metadata_backed = {"status", "category", "is_template", "template_id"}
+    metadata_updates = {f: v for f, v in update_data.items() if f in metadata_backed}
+
     for field, value in update_data.items():
-        setattr(workflow, field, value)
+        if field not in metadata_backed:
+            setattr(workflow, field, value)
+
+    if metadata_updates:
+        # Merge, and REASSIGN rather than mutate: a plain JSON column is not
+        # change-tracked, so an in-place edit would be dropped at flush — a
+        # silent no-op replacing the one being fixed. Merging (not replacing)
+        # keeps sibling keys such as template_id intact.
+        merged = dict(workflow.workflow_metadata or {})
+        merged.update(metadata_updates)
+        workflow.workflow_metadata = merged
 
     try:
         await db.commit()
