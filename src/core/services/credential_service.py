@@ -15,6 +15,7 @@ from sqlalchemy import select
 from abc import ABC, abstractmethod
 
 from core.config import get_settings
+from core.crypto import derive_fernet_key
 from core.database import get_db
 from models.platform_integration import PlatformCredential
 from core.exceptions import CredentialNotFoundError, CredentialDecryptionError
@@ -91,10 +92,10 @@ class FileCredentialBackend(CredentialBackend):
         if encryption_key:
             self.fernet = Fernet(encryption_key.encode() if isinstance(encryption_key, str) else encryption_key)
         else:
-            # Generate a key if none provided (for development)
-            key = Fernet.generate_key()
-            self.fernet = Fernet(key)
-            logger.info("Generated new encryption key")
+            # Derived rather than random, so a credential written before a restart
+            # can still be read after one. Previously this generated a fresh key
+            # per process and said so only at INFO.
+            self.fernet = Fernet(derive_fernet_key("credential-service").encode())
             
         # Ensure directory exists
         os.makedirs(os.path.dirname(file_path), exist_ok=True)

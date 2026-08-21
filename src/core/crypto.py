@@ -8,6 +8,10 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 import os
+import logging
+from functools import lru_cache
+
+from core.config import _DEPLOY_ENVIRONMENTS
 
 
 # Get encryption key from environment or generate a default one
@@ -28,6 +32,68 @@ if not ENCRYPTION_KEY:
     )
     key = base64.urlsafe_b64encode(kdf.derive(password))
     ENCRYPTION_KEY = key.decode('utf-8')
+
+_logger = logging.getLogger(__name__)
+
+# Purposes that have already announced a derived key, so the warning is emitted
+# once per process rather than on every backend construction.
+_announced_derivations = set()
+
+
+@lru_cache(maxsize=8)
+def _derive(purpose: str, secret: str) -> str:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=f"aictrlnet-{purpose}-v1".encode(),
+        iterations=100000,
+        backend=default_backend(),
+    )
+    return base64.urlsafe_b64encode(kdf.derive(secret.encode())).decode()
+
+
+def derive_fernet_key(purpose: str) -> str:
+    """Deterministic per-deployment Fernet key for `purpose`.
+
+    A fallback for credential backends whose explicit key variable is unset, and
+    only that — an explicitly configured key always wins.
+
+    The alternative it replaces was `Fernet.generate_key()` at process start,
+    which meant the key died with the process while the ciphertext it produced
+    lived on in the database. After a restart those credentials could not be
+    decrypted; the platform backend caught the failure and returned an empty
+    dict, so a credential came back blank rather than erroring. Since no compose
+    file, `.env`, or deploy script sets either credential key variable, that was
+    every deployment.
+
+    Deriving from SECRET_KEY keeps the key stable for the life of a deployment
+    without requiring key provisioning that does not exist today, and keeps it
+    distinct between deployments. `purpose` is mixed into the salt so separate
+    credential stores do not share a key.
+
+    Rotating SECRET_KEY changes this key and makes existing ciphertext
+    unreadable, which is why a deployment holding credentials it cannot afford
+    to re-enter should set the explicit variable instead. Result is cached, since
+    backends are constructed per request in places.
+    """
+    from core.config import get_settings
+
+    settings = get_settings()
+    key = _derive(purpose, settings.SECRET_KEY or "")
+
+    if purpose not in _announced_derivations:
+        _announced_derivations.add(purpose)
+        deploy = (settings.ENVIRONMENT or "").strip().lower() in _DEPLOY_ENVIRONMENTS
+        _logger.log(
+            logging.CRITICAL if deploy else logging.INFO,
+            "Credential key for '%s' is derived from SECRET_KEY because its "
+            "explicit key variable is unset. Credentials survive restarts, but "
+            "rotating SECRET_KEY will make them unreadable. Provision a dedicated "
+            "key for this deployment.",
+            purpose,
+        )
+    return key
+
 
 # Initialize Fernet cipher
 _cipher = None

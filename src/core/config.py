@@ -219,6 +219,19 @@ class Settings(BaseSettings):
     # 'database' (both Fernet-encrypted), or 'vault'. The default matches the one
     # get_credential_service() has always used; PHI mode refuses 'environment'.
     CREDENTIAL_BACKEND: str = Field(default="environment", env="CREDENTIAL_BACKEND")
+    # Key material for the credential backends. Promoted from bare os.environ
+    # reads for the same reason as STAGED_FILES_DIR — the PHI guard has to be able
+    # to see them. All default to None, which is what the backends already assume.
+    CREDENTIAL_ENCRYPTION_KEY: Optional[str] = Field(
+        default=None, env="CREDENTIAL_ENCRYPTION_KEY"
+    )
+    # Used by PlatformCredentialService's file AND database backends, both of
+    # which silently generate an ephemeral Fernet key when this is unset.
+    PLATFORM_CREDENTIAL_KEY: Optional[str] = Field(
+        default=None, env="PLATFORM_CREDENTIAL_KEY"
+    )
+    VAULT_URL: Optional[str] = Field(default=None, env="VAULT_URL")
+    VAULT_TOKEN: Optional[str] = Field(default=None, env="VAULT_TOKEN")
     
     # Performance
     # PER-WORKER pool size. With uvicorn `--workers 2` x 3 editions = 6 worker
@@ -428,12 +441,46 @@ def validate_phi_mode(settings: "Settings") -> None:
             f"a directory under DATA_PATH, so staged documents stay on the volume."
         )
 
-    if (settings.CREDENTIAL_BACKEND or "").strip().lower() == "environment":
+    backend = (settings.CREDENTIAL_BACKEND or "").strip().lower()
+    if backend == "environment":
         problems.append(
             "CREDENTIAL_BACKEND='environment' stores credentials as plaintext "
             "environment variables. Required: 'file', 'database' or 'vault', all "
             "of which encrypt at rest."
         )
+    elif backend == "vault":
+        # Vault holds the key material itself, so the local Fernet keys are not
+        # required here. A half-addressed vault raises only at first credential
+        # read, which on a practice machine means mid-clinic rather than at deploy.
+        for name in ("VAULT_URL", "VAULT_TOKEN"):
+            if not (getattr(settings, name, None) or "").strip():
+                problems.append(
+                    f"CREDENTIAL_BACKEND='vault' but {name} is not set, so "
+                    f"credential access fails at first use rather than at startup. "
+                    f"Required: {name}."
+                )
+    else:
+        # 'file', 'database', and anything unrecognised, which the platform
+        # service treats as 'database'. Both credential services fall back to a
+        # Fernet key generated at process start when their key is unset: the
+        # credential is then encrypted with a key that dies with the process, so
+        # it is unreadable after the next restart and "encrypted at rest" is true
+        # only in the most useless sense.
+        if not (settings.CREDENTIAL_ENCRYPTION_KEY or "").strip():
+            problems.append(
+                f"CREDENTIAL_BACKEND={backend!r} but CREDENTIAL_ENCRYPTION_KEY is "
+                f"not set. The file backend would encrypt with a throwaway key "
+                f"generated at startup, and the database backend fails at first "
+                f"use. Required: a persistent Fernet key."
+            )
+        if not (settings.PLATFORM_CREDENTIAL_KEY or "").strip():
+            problems.append(
+                f"CREDENTIAL_BACKEND={backend!r} but PLATFORM_CREDENTIAL_KEY is "
+                f"not set. The platform credential service generates an ephemeral "
+                f"key for both its file and database backends, so stored "
+                f"credentials become unreadable after a restart. Required: a "
+                f"persistent Fernet key."
+            )
 
     if settings.ALLOW_DEV_TOKENS:
         problems.append(

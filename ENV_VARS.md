@@ -146,10 +146,24 @@ STRIPE_PRICE_ENTERPRISE=price_1JKL012
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CREDENTIAL_BACKEND` | `environment` | Backend: `environment`, `file`, `database`, `vault`. `environment` holds credentials as plaintext env vars and is refused under `AICTRLNET_PHI_MODE` |
-| `CREDENTIAL_ENCRYPTION_KEY` | - | Encryption key for stored credentials |
+| `CREDENTIAL_ENCRYPTION_KEY` | derived from `SECRET_KEY` | Fernet key for `CredentialService`'s file backend |
+| `PLATFORM_CREDENTIAL_KEY` | derived from `SECRET_KEY` | Fernet key for `PlatformCredentialService`'s file and database backends |
 | `CREDENTIAL_FILE_PATH` | `/app/data/credentials.json` | Path for file-based storage |
 | `VAULT_URL` | - | HashiCorp Vault URL |
 | `VAULT_TOKEN` | - | Vault authentication token |
+
+**On the derived defaults.** When a credential key is unset, it is derived deterministically
+from `SECRET_KEY` rather than randomly generated. Both backends previously called
+`Fernet.generate_key()` at process start, so the key died with the process while the
+ciphertext lived on in the database — stored credentials were unreadable after any restart,
+and the platform decrypt path returned an empty dict rather than raising, so they came back
+blank instead of erroring. No compose file or deploy script sets either variable, so this
+affected every deployment.
+
+Deriving keeps the key stable for the life of the deployment and distinct between
+deployments, with no new provisioning. **Rotating `SECRET_KEY` changes the derived key and
+makes existing credentials unreadable**, so any deployment holding credentials it cannot
+afford to re-enter should set the explicit variable. `AICTRLNET_PHI_MODE` requires it.
 
 ## Performance
 
@@ -174,8 +188,16 @@ every setting that is wrong along with what it resolved to.
 - `STAGED_FILES_DIR` is an absolute path that does not resolve under `/tmp`, and resolves
   under `DATA_PATH`
 - `CREDENTIAL_BACKEND` is not `environment`
+- the selected backend can actually encrypt: `file` and `database` require both
+  `CREDENTIAL_ENCRYPTION_KEY` and `PLATFORM_CREDENTIAL_KEY`; `vault` requires
+  `VAULT_URL` and `VAULT_TOKEN`
 - `ALLOW_DEV_TOKENS` is false
 - `ENVIRONMENT` names a real deployment (`production`, `prod`, `staging`, `stage`)
+
+The key-material check exists because both credential services generate a throwaway Fernet
+key at process start when their key variable is unset — no compose file sets either one — so
+credentials would be encrypted with a key that dies with the process and become unreadable
+after a restart. Outside PHI mode this behaviour is unchanged.
 
 Containment is decided on resolved real paths, so symlinks and `..` segments cannot smuggle
 a path into `/tmp`. The check validates path *shape* only — it does not verify the directory

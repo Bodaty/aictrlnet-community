@@ -7,6 +7,8 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 import logging
 from cryptography.fernet import Fernet
+
+from core.crypto import derive_fernet_key
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -99,15 +101,12 @@ class FileBackend(CredentialBackend):
 
     def _init_encryption(self):
         """Initialize Fernet cipher. Mirrors DatabaseBackend._init_encryption()."""
-        encryption_key = os.environ.get("PLATFORM_CREDENTIAL_KEY")
-        if not encryption_key:
-            logger.warning(
-                "No PLATFORM_CREDENTIAL_KEY set; generating ephemeral dev key "
-                "for FileBackend. Production deployments must set this env var."
-            )
-            encryption_key = Fernet.generate_key().decode()
-            os.environ["PLATFORM_CREDENTIAL_KEY"] = encryption_key
-
+        # Falls back to a key derived from SECRET_KEY rather than a fresh random
+        # one, so credentials written before a restart are still readable after
+        # it. No compose file or deploy script sets this variable.
+        encryption_key = os.environ.get("PLATFORM_CREDENTIAL_KEY") or derive_fernet_key(
+            "platform-credentials"
+        )
         self.cipher = Fernet(encryption_key.encode())
 
     def _encrypt_data(self, data: Dict[str, Any]) -> str:
@@ -196,14 +195,12 @@ class DatabaseBackend(CredentialBackend):
     
     def _init_encryption(self):
         """Initialize encryption key"""
-        # In production, this should come from a secure key management service
-        encryption_key = os.environ.get("PLATFORM_CREDENTIAL_KEY")
-        if not encryption_key:
-            # Generate a key for development - DO NOT use in production
-            logger.warning("No encryption key found, generating one for development")
-            encryption_key = Fernet.generate_key().decode()
-            os.environ["PLATFORM_CREDENTIAL_KEY"] = encryption_key
-        
+        # Same key as FileBackend, and the same reason for the fallback: this is
+        # the default backend, so an ephemeral key here lost credentials for
+        # every deployment on every restart.
+        encryption_key = os.environ.get("PLATFORM_CREDENTIAL_KEY") or derive_fernet_key(
+            "platform-credentials"
+        )
         self.cipher = Fernet(encryption_key.encode())
     
     def _encrypt_data(self, data: Dict[str, Any]) -> str:
