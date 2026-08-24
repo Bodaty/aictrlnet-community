@@ -1674,6 +1674,21 @@ def get_tool_counts() -> Dict[str, int]:
     }
 
 
+
+def _dict_reports_failure(result: dict) -> bool:
+    """Does this result dict say the work failed?
+
+    Deliberately narrow. `success: False` is unambiguous. A truthy `error` is
+    treated as failure too, but a present-and-empty `error` is not - plenty of
+    healthy payloads carry `error: None`. Anything less explicit stays success,
+    because guessing in the other direction would turn working tools into
+    failures, and this runs under every dynamically routed tool.
+    """
+    if result.get("success") is False:
+        return True
+    return bool(result.get("error"))
+
+
 class ToolDispatcher:
     """Base tool dispatcher for Community edition.
 
@@ -2034,10 +2049,23 @@ class ToolDispatcher:
             else:
                 result = method(**call_kwargs)
 
-            # Normalize result to ToolResult
+            # Normalize result to ToolResult.
+            #
+            # This wrapped ANY dict as success=True without looking inside it.
+            # Services on this path report failure by returning a dict - e.g.
+            # BasicAgentService.create_agent_tool catches its exception and
+            # returns {"error": ..., "success": False} - so a caught exception
+            # was reported to the MCP/LLM caller as a successful tool call.
+            # Latent for every handler="service.method" wiring, not just that one.
             if isinstance(result, ToolResult):
                 return result
             elif isinstance(result, dict):
+                if _dict_reports_failure(result):
+                    return ToolResult(
+                        success=False,
+                        error=str(result.get("error") or "tool reported failure"),
+                        data=result,
+                    )
                 return ToolResult(success=True, data=result)
             else:
                 return ToolResult(success=True, data={"result": result})

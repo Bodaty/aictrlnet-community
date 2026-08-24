@@ -17,6 +17,7 @@ Design choices:
 from typing import Any, Optional
 
 from fastapi import HTTPException, status
+from sqlalchemy import false as _sql_false, true as _sql_true
 
 from core.user_utils import get_safe_attr
 from core.tenant_context import get_current_tenant_id
@@ -37,6 +38,27 @@ def resolve_caller_tenant(current_user: Any) -> Optional[str]:
         return str(tenant)
     ctx = get_current_tenant_id()
     return str(ctx) if ctx else None
+
+
+def tenant_filter(model, current_user):
+    """Tenant predicate for a LIST query — the query-level twin of
+    `assert_tenant_access`.
+
+    A by-id guard cannot help a list endpoint: there is no single resource to
+    compare against, so the filter has to be in the query. Same three rules as
+    `assert_tenant_access` — superusers see everything, everyone else is
+    confined to their own tenant, and a caller whose tenant cannot be derived
+    sees NOTHING rather than everything.
+
+    Lived in a2a_bridge.py until it had three more callers; it belongs here
+    next to the helper it mirrors, since neither is edition-specific.
+    """
+    if is_superuser(current_user):
+        return _sql_true()
+    caller = resolve_caller_tenant(current_user)
+    if not caller:
+        return _sql_false()
+    return model.tenant_id == caller
 
 
 def assert_tenant_access(

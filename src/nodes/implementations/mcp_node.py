@@ -31,7 +31,12 @@ class MCPNode(BaseNode):
         db = context.get('db')
         if not db:
             raise ValueError("Database session not provided in context")
-        mcp_service = MCPService(db)
+        # Held on the instance because every operation helper below needs it.
+        # It used to be assigned only as a local of this method while 17 sites
+        # in other methods referenced a bare `mcp_service`, so every one of
+        # them raised NameError. Node instances are created fresh per
+        # NodeRegistry.create_node call, so per-execution state on self is safe.
+        self._mcp_service = MCPService(db)
 
         # Get MCP operation type
         operation = self.config.parameters.get("operation", "execute_tool")
@@ -84,17 +89,17 @@ class MCPNode(BaseNode):
         
         # Get server (if specified) or use default
         if server_name:
-            server = await mcp_service.get_server(server_name)
+            server = await self._mcp_service.get_server(server_name)
             if not server:
                 raise ValueError(f"MCP server '{server_name}' not found")
         else:
             # Find server that has this tool
-            server = await mcp_service.find_server_for_tool(tool_name)
+            server = await self._mcp_service.find_server_for_tool(tool_name)
             if not server:
                 raise ValueError(f"No MCP server found with tool '{tool_name}'")
         
         # Execute tool
-        result = await mcp_service.execute_tool(
+        result = await self._mcp_service.execute_tool(
             server_name=server.name,
             tool_name=tool_name,
             arguments=tool_args
@@ -113,10 +118,10 @@ class MCPNode(BaseNode):
         
         if server_name:
             # Get tools from specific server
-            tools = await mcp_service.get_server_tools(server_name)
+            tools = await self._mcp_service.get_server_tools(server_name)
         else:
             # Get all tools
-            tools = await mcp_service.get_all_tools()
+            tools = await self._mcp_service.get_all_tools()
         
         # Filter by category if specified
         if category:
@@ -137,13 +142,13 @@ class MCPNode(BaseNode):
         
         # Get resource
         if server_name:
-            resource = await mcp_service.get_resource(
+            resource = await self._mcp_service.get_resource(
                 server_name=server_name,
                 uri=resource_uri
             )
         else:
             # Try all servers
-            resource = await mcp_service.get_resource_from_any_server(resource_uri)
+            resource = await self._mcp_service.get_resource_from_any_server(resource_uri)
         
         if not resource:
             raise ValueError(f"Resource '{resource_uri}' not found")
@@ -160,10 +165,10 @@ class MCPNode(BaseNode):
         
         if server_name:
             # Get resources from specific server
-            resources = await mcp_service.get_server_resources(server_name)
+            resources = await self._mcp_service.get_server_resources(server_name)
         else:
             # Get all resources
-            resources = await mcp_service.get_all_resources()
+            resources = await self._mcp_service.get_all_resources()
         
         # Filter by type if specified
         if resource_type:
@@ -189,14 +194,14 @@ class MCPNode(BaseNode):
         
         # Get prompt
         if server_name:
-            prompt = await mcp_service.get_prompt(
+            prompt = await self._mcp_service.get_prompt(
                 server_name=server_name,
                 prompt_name=prompt_name,
                 arguments=prompt_args
             )
         else:
             # Try all servers
-            prompt = await mcp_service.get_prompt_from_any_server(
+            prompt = await self._mcp_service.get_prompt_from_any_server(
                 prompt_name=prompt_name,
                 arguments=prompt_args
             )
@@ -216,10 +221,10 @@ class MCPNode(BaseNode):
         
         if server_name:
             # Get prompts from specific server
-            prompts = await mcp_service.get_server_prompts(server_name)
+            prompts = await self._mcp_service.get_server_prompts(server_name)
         else:
             # Get all prompts
-            prompts = await mcp_service.get_all_prompts()
+            prompts = await self._mcp_service.get_all_prompts()
         
         # Filter by category if specified
         if category:
@@ -248,7 +253,7 @@ class MCPNode(BaseNode):
                 
                 if source_type == "resource":
                     # Get resource content
-                    resource = await mcp_service.get_resource_from_any_server(
+                    resource = await self._mcp_service.get_resource_from_any_server(
                         source.get("uri")
                     )
                     if resource:
@@ -256,7 +261,7 @@ class MCPNode(BaseNode):
                 
                 elif source_type == "tool":
                     # Execute tool to get context
-                    result = await mcp_service.execute_tool(
+                    result = await self._mcp_service.execute_tool(
                         server_name=source.get("server_name"),
                         tool_name=source.get("tool_name"),
                         arguments=source.get("arguments", {})
@@ -266,7 +271,7 @@ class MCPNode(BaseNode):
                 
                 elif source_type == "prompt":
                     # Get prompt content
-                    prompt = await mcp_service.get_prompt_from_any_server(
+                    prompt = await self._mcp_service.get_prompt_from_any_server(
                         prompt_name=source.get("prompt_name"),
                         arguments=source.get("arguments", {})
                     )
@@ -297,6 +302,7 @@ class MCPNode(BaseNode):
                     text_parts.append(str(value))
                 text_parts.append("")
             
+            self._require_some_context(aggregated_context, errors, sources)
             return {
                 "context": "\n".join(text_parts),
                 "errors": errors
@@ -304,10 +310,27 @@ class MCPNode(BaseNode):
         
         else:
             # Return structured format
+            self._require_some_context(aggregated_context, errors, sources)
             return {
                 "context": aggregated_context,
                 "errors": errors
             }
+
+    @staticmethod
+    def _require_some_context(aggregated_context, errors, sources) -> None:
+        """Raise when every source failed.
+
+        Partial failure is tolerated and surfaced in `errors` - some sources
+        being unavailable is a normal condition for context aggregation. But
+        when nothing at all was aggregated and every source errored, the node
+        did no work; returning an empty context under a COMPLETED status hands
+        downstream nodes an empty prompt and calls it success.
+        """
+        if not aggregated_context and errors and len(errors) >= len(sources):
+            raise RuntimeError(
+                f"Context aggregation produced nothing: all {len(sources)} "
+                f"source(s) failed. First error: {errors[0]}"
+            )
     
     async def _call_server(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Make a direct call to an MCP server."""
@@ -325,7 +348,7 @@ class MCPNode(BaseNode):
             params.update(input_data["params"])
         
         # Make server call
-        result = await mcp_service.call_server_method(
+        result = await self._mcp_service.call_server_method(
             server_name=server_name,
             method=method,
             params=params

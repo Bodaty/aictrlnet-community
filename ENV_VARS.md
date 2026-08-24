@@ -171,7 +171,7 @@ afford to re-enter should set the explicit variable. `AICTRLNET_PHI_MODE` requir
 |----------|---------|-------------|
 | `MAX_CONNECTIONS_COUNT` | `10` | Max database connections |
 | `MIN_CONNECTIONS_COUNT` | `10` | Min database connections |
-| `DATA_PATH` | `/tmp/aictrlnet` | Path for temporary data |
+| `DATA_PATH` | `/tmp/aictrlnet` | Path for data, staged documents, state snapshots and the RBAC/security/validation JSON files. The self-hosted stack overrides this to the mounted data volume (`/data`) and mounts `DATA_VOLUME` there, so setting one without the other writes into the container's own layer |
 | `STAGED_FILES_DIR` | `/tmp/aictrlnet/staged_files` | Where uploaded and generated documents are staged |
 
 ## PHI / HIPAA deployments

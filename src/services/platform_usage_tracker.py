@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, cast, Integer
 
 from models.platform_integration import PlatformExecution, PlatformCredential
 from schemas.platform_integration import PlatformType, ExecutionStatus
@@ -154,8 +154,8 @@ class PlatformUsageTracker:
         result = await self.db.execute(
             select(
                 func.count(PlatformExecution.id).label("total"),
-                func.sum(func.cast(PlatformExecution.status == ExecutionStatus.COMPLETED.value, type_=int)).label("successful"),
-                func.sum(func.cast(PlatformExecution.status == ExecutionStatus.FAILED.value, type_=int)).label("failed"),
+                func.sum(cast(PlatformExecution.status == ExecutionStatus.COMPLETED.value, Integer)).label("successful"),
+                func.sum(cast(PlatformExecution.status == ExecutionStatus.FAILED.value, Integer)).label("failed"),
                 func.sum(PlatformExecution.duration_ms).label("total_duration"),
                 func.sum(PlatformExecution.estimated_cost).label("total_cost"),
                 func.count(func.distinct(PlatformCredential.user_id)).label("unique_users")
@@ -365,7 +365,7 @@ class PlatformUsageTracker:
             PlatformExecution.external_workflow_id,
             PlatformExecution.platform,
             func.count(PlatformExecution.id).label("execution_count"),
-            func.sum(func.cast(PlatformExecution.status == ExecutionStatus.COMPLETED.value, type_=int)).label("success_count"),
+            func.sum(cast(PlatformExecution.status == ExecutionStatus.COMPLETED.value, Integer)).label("success_count"),
             func.avg(PlatformExecution.duration_ms).label("avg_duration")
         ).where(
             and_(

@@ -31,7 +31,13 @@ class DecisionNode(BaseNode):
         elif decision_type == "rules":
             result = await self._evaluate_rules(input_data, context)
         else:
-            result = {"selected_branch": "default", "reason": "Unknown decision type"}
+            # Was: silently route to "default". A typo in decision_type then
+            # sent every execution down the default branch and reported
+            # success, which is indistinguishable from a real default.
+            raise ValueError(
+                f"Unknown decision_type {decision_type!r}. Expected one of: "
+                f"conditions, switch, rules."
+            )
         
         return result
     
@@ -76,7 +82,9 @@ class DecisionNode(BaseNode):
         cases = self.config.parameters.get("cases", {})
         
         if not switch_on:
-            return {"error": "No switch_on field specified"}
+            # A decision node that cannot decide has failed. Returning an error
+            # dict left the node COMPLETED with no selected_branch at all.
+            raise ValueError("switch_on parameter is required for a switch decision")
         
         # Get the value to switch on
         switch_value = self._get_nested_value(input_data, switch_on)

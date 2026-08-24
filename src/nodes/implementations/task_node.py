@@ -116,7 +116,8 @@ class TaskNode(BaseNode):
         """Perform calculations."""
         expression = self.config.parameters.get("expression")
         if not expression:
-            return {"error": "No expression provided"}
+            # A missing expression is a misconfiguration, not a result.
+            raise ValueError("expression parameter is required for a calculate task")
         
         try:
             # Create calculation context
@@ -141,11 +142,12 @@ class TaskNode(BaseNode):
             }
             
         except Exception as e:
-            return {
-                "error": f"Calculation failed: {str(e)}",
-                "expression": expression
-            }
-    
+            # Was: return the exception as data, which BaseNode.run records as
+            # COMPLETED. Downstream nodes then consumed a dict with no result.
+            raise RuntimeError(
+                f"Calculation failed for expression {expression!r}: {e}"
+            ) from e
+
     async def _execute_custom_task(
         self,
         input_data: Dict[str, Any],

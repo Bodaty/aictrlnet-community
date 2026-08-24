@@ -59,6 +59,22 @@ class BrowserAutomationNode(BaseNode):
                 response.raise_for_status()
                 result = response.json()
 
+            # raise_for_status() above only covers the transport hop to the
+            # browser service. The service reports what the BROWSER did in its
+            # own `success` field, and nothing read it - so an action that
+            # failed inside the page (element not found, navigation blocked)
+            # returned 200 from the service and completed the node.
+            if self.config.parameters.get("fail_on_error", True) and not result.get("success", False):
+                failed_actions = [
+                    r.get("action_type") for r in result.get("results", [])
+                    if not r.get("success")
+                ]
+                raise RuntimeError(
+                    f"Browser automation failed: {result.get('error') or 'action(s) unsuccessful'}"
+                    + (f" (failed: {', '.join(a for a in failed_actions if a)})" if failed_actions else "")
+                    + ". Set fail_on_error: false on this node to tolerate it."
+                )
+
             duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
 
             await event_bus.publish(
