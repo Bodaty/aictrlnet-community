@@ -230,6 +230,13 @@ class Settings(BaseSettings):
     PLATFORM_CREDENTIAL_KEY: Optional[str] = Field(
         default=None, env="PLATFORM_CREDENTIAL_KEY"
     )
+    # The THIRD credential-encryption key, used by core/crypto.py for tenant
+    # adapter credentials and federation data. ENCRYPTION_KEY is accepted
+    # because it is the name the GCP deploy binds Secret Manager to.
+    AICTRLNET_ENCRYPTION_KEY: Optional[str] = Field(
+        default=None, env="AICTRLNET_ENCRYPTION_KEY"
+    )
+    ENCRYPTION_KEY: Optional[str] = Field(default=None, env="ENCRYPTION_KEY")
     VAULT_URL: Optional[str] = Field(default=None, env="VAULT_URL")
     VAULT_TOKEN: Optional[str] = Field(default=None, env="VAULT_TOKEN")
     
@@ -481,6 +488,33 @@ def validate_phi_mode(settings: "Settings") -> None:
                 f"credentials become unreadable after a restart. Required: a "
                 f"persistent Fernet key."
             )
+
+    # The THIRD credential-encryption path. The two checks above cover the
+    # credential backends; core/crypto.py encrypts tenant adapter credentials
+    # and federation data on a separate key that this guard did not look at —
+    # the class-versus-instance failure recorded as F-2. Until 2026-08-31 that
+    # key fell back to PBKDF2 over a password committed to this repository, so
+    # "encrypted at rest" was true and worthless. It now resolves properly, and
+    # under PHI mode it must come from an explicitly provisioned variable
+    # rather than being derived, so it can be rotated independently of
+    # SECRET_KEY and is never reproducible from source.
+    # Read from settings like every other check here, NOT by calling
+    # core.crypto._resolve_encryption_key(): that would drag `cryptography`
+    # into this module, and these guard specs run host-side where it is not
+    # installed — the import turned the whole PHI suite into errors. The
+    # question is only "was a key provisioned", which needs no crypto.
+    if not any(
+        (getattr(settings, var, None) or "").strip()
+        for var in ("AICTRLNET_ENCRYPTION_KEY", "ENCRYPTION_KEY")
+    ):
+        problems.append(
+            "Neither AICTRLNET_ENCRYPTION_KEY nor ENCRYPTION_KEY is set, so "
+            "tenant adapter credentials and federation data would be encrypted "
+            "with a key derived from SECRET_KEY — unrotatable without making "
+            "existing data unreadable, and until 2026-08-31 derived from a "
+            "password committed to this repository. Required: a persistent "
+            "Fernet key in AICTRLNET_ENCRYPTION_KEY."
+        )
 
     if settings.ALLOW_DEV_TOKENS:
         problems.append(
