@@ -3,7 +3,7 @@
 import json
 import base64
 from typing import Any, Dict, Optional
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
@@ -14,26 +14,80 @@ from functools import lru_cache
 from core.config import _DEPLOY_ENVIRONMENTS
 
 
-# Get encryption key from environment or generate a default one
-# In production, this should ALWAYS come from environment variable
-ENCRYPTION_KEY = os.getenv("AICTRLNET_ENCRYPTION_KEY")
+_logger = logging.getLogger(__name__)
 
-if not ENCRYPTION_KEY:
-    # Generate a key from a password for development
-    # WARNING: In production, use a proper key management system
-    password = b"dev-encryption-key-change-in-production"
-    salt = b"aictrlnet-salt-v1"  
+# The key this module used to encrypt with, unconditionally: PBKDF2 over a
+# password and salt that are BOTH literals in this file. Deterministic, so
+# anyone with repo access can reproduce it exactly. Kept here as a
+# DECRYPT-ONLY key so ciphertext already written under it stays readable —
+# without it, configuring a real key would orphan existing rows, which is why
+# this finding sat open across three filings as "needs a re-encryption path".
+# It is never used to encrypt anything new.
+_LEGACY_PASSWORD = b"dev-encryption-key-change-in-production"
+_LEGACY_SALT = b"aictrlnet-salt-v1"
+
+
+def _pbkdf2_key(password: bytes, salt: bytes) -> str:
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
         iterations=100000,
-        backend=default_backend()
+        backend=default_backend(),
     )
-    key = base64.urlsafe_b64encode(kdf.derive(password))
-    ENCRYPTION_KEY = key.decode('utf-8')
+    return base64.urlsafe_b64encode(kdf.derive(password)).decode()
 
-_logger = logging.getLogger(__name__)
+
+def coerce_fernet_key(material: str) -> str:
+    """Accept either a canonical Fernet key or arbitrary secret material.
+
+    Two readers of `AICTRLNET_ENCRYPTION_KEY` disagreed on its format: this
+    module passed the value straight to Fernet, while the Business
+    EncryptionService base64-DECODED it first. So provisioning the variable
+    with a normal 44-char Fernet key — what an operator actually mints, and the
+    shape of the platform credential key already deployed on Beast — made
+    Fernet(...) raise "must be 32 url-safe base64-encoded bytes" and took the
+    Business service down at construction. The documented remediation
+    ("map ENCRYPTION_KEY to AICTRLNET_ENCRYPTION_KEY") would have triggered it.
+
+    Both call sites now go through here, so any reasonable value works: a
+    canonical key is used as-is, anything else is stretched into one.
+    """
+    material = (material or "").strip()
+    try:
+        Fernet(material.encode())
+        return material
+    except Exception:
+        return _pbkdf2_key(material.encode(), b"aictrlnet-encryption-key-v1")
+
+
+def _resolve_encryption_key() -> tuple[str, str]:
+    """(key used for encryption, where it came from).
+
+    `AICTRLNET_ENCRYPTION_KEY` is the documented name and wins. `ENCRYPTION_KEY`
+    is accepted because it is the name the GCP deploy actually binds Secret
+    Manager to (`deploy-gcp.sh:518,622`, `config/deployment.yaml:54`) while
+    nothing read it — so honouring it closes the gap with no deploy change and
+    no key rotation. Failing those, derive per-deployment from SECRET_KEY, the
+    same approach derive_fernet_key() already uses for credential backends:
+    stable across restarts, distinct between deployments, and not printed in
+    this repository.
+    """
+    for var in ("AICTRLNET_ENCRYPTION_KEY", "ENCRYPTION_KEY"):
+        raw = os.getenv(var)
+        if raw and raw.strip():
+            return coerce_fernet_key(raw), var
+
+    from core.config import get_settings
+
+    secret = (get_settings().SECRET_KEY or "").strip()
+    if secret:
+        return _pbkdf2_key(secret.encode(), b"aictrlnet-encryption-v1"), "SECRET_KEY"
+
+    return _pbkdf2_key(_LEGACY_PASSWORD, _LEGACY_SALT), "hardcoded-fallback"
+
+
+ENCRYPTION_KEY, _ENCRYPTION_KEY_SOURCE = _resolve_encryption_key()
 
 # Purposes that have already announced a derived key, so the warning is emitted
 # once per process rather than on every backend construction.
@@ -97,13 +151,48 @@ def derive_fernet_key(purpose: str) -> str:
 
 # Initialize Fernet cipher
 _cipher = None
+_announced_encryption_source = False
 
-def get_cipher() -> Fernet:
-    """Get or create the Fernet cipher instance."""
-    global _cipher
+
+def get_cipher() -> MultiFernet:
+    """Cipher for encrypt_data/decrypt_data.
+
+    A MultiFernet, not a Fernet: it encrypts with the FIRST key and decrypts
+    with ANY of them. That is what lets a deployment start using a real key
+    without re-encrypting — rows written under the old source-visible key still
+    decrypt via the legacy entry, while everything new is written under the
+    configured one.
+    """
+    global _cipher, _announced_encryption_source
     if _cipher is None:
-        key = ENCRYPTION_KEY.encode() if isinstance(ENCRYPTION_KEY, str) else ENCRYPTION_KEY
-        _cipher = Fernet(key)
+        legacy = _pbkdf2_key(_LEGACY_PASSWORD, _LEGACY_SALT)
+        keys = [Fernet(ENCRYPTION_KEY.encode())]
+        if ENCRYPTION_KEY != legacy:
+            keys.append(Fernet(legacy.encode()))
+        _cipher = MultiFernet(keys)
+
+        if not _announced_encryption_source:
+            _announced_encryption_source = True
+            from core.config import get_settings
+
+            deploy = (get_settings().ENVIRONMENT or "").strip().lower() in _DEPLOY_ENVIRONMENTS
+            if _ENCRYPTION_KEY_SOURCE == "hardcoded-fallback":
+                _logger.log(
+                    logging.CRITICAL if deploy else logging.WARNING,
+                    "Adapter/federation data is being encrypted with a key derived "
+                    "from a password committed to this repository. Anyone with repo "
+                    "access can decrypt it. Set AICTRLNET_ENCRYPTION_KEY.",
+                )
+            elif _ENCRYPTION_KEY_SOURCE == "SECRET_KEY":
+                _logger.log(
+                    logging.CRITICAL if deploy else logging.INFO,
+                    "Encryption key derived from SECRET_KEY because neither "
+                    "AICTRLNET_ENCRYPTION_KEY nor ENCRYPTION_KEY is set. Stable "
+                    "across restarts, but rotating SECRET_KEY makes existing data "
+                    "unreadable. Provision a dedicated key.",
+                )
+            else:
+                _logger.info("Encryption key loaded from %s.", _ENCRYPTION_KEY_SOURCE)
     return _cipher
 
 
