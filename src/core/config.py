@@ -206,6 +206,14 @@ class Settings(BaseSettings):
     # volume and credentials are held by an encrypted backend. Default false, so
     # deployments that handle no PHI are unaffected.
     AICTRLNET_PHI_MODE: bool = Field(default=False, env="AICTRLNET_PHI_MODE")
+    # Deployment-level gate for the clinical care-gaps vertical (Business).
+    # Default false: the tables ship everywhere but the nav, API, sweeper and
+    # registry seeder stay dark unless a deployment opts in. The multi-tenant
+    # hosted service must never surface a patient-facing UI - its published
+    # terms prohibit PHI there - so this follows the same "eligibility follows
+    # deployment configuration" principle as PHI mode, and is normally enabled
+    # only alongside it on self-hosted practice deployments.
+    CARE_GAPS_ENABLED: bool = Field(default=False, env="CARE_GAPS_ENABLED")
     # Where uploaded and generated documents are staged. Promoted from a bare
     # os.environ read so the PHI guard can see it — a guard cannot enforce what
     # it cannot see. The default must stay this literal rather than deriving from
