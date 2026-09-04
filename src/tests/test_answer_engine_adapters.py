@@ -76,6 +76,7 @@ async def test_openai_answer_uses_responses_web_search_and_normalizes_citations(
     assert body["tool_choice"] == "required"
     assert body["max_output_tokens"] == 300
     assert "messages" not in body and "max_tokens" not in body
+    assert body["reasoning"] == {"effort": "low"}  # GPT-5 reasoning tokens are billed; keep GEO answers cheap
     assert "search-preview" not in body["model"]
 
 
@@ -96,6 +97,45 @@ async def test_openai_answer_multiple_output_text_parts_are_joined():
     assert resp.status == "success"
     assert resp.data["content"] == "Part one. Part two."
     assert resp.data["citations"] == ["https://c.com"]
+
+
+@pytest.mark.asyncio
+async def test_openai_answer_incomplete_response_is_an_error_not_an_empty_answer():
+    """Live on 2026-09-04: a capped call returned status=incomplete with every output
+    token spent on reasoning and no message item. Returned as success with zero
+    citations, GEO scores that combo as "brand absent" — a silent false negative,
+    the same class as the retired-model 404 that hid inside "completed" runs.
+    It must surface as an adapter error so compute-facts records an errored combo."""
+    a = OpenAIAdapter(AdapterConfig(name="openai", category=AdapterCategory.AI, api_key="x"))
+    a.client = AsyncMock()
+    a.client.post = AsyncMock(return_value=_resp({
+        "id": "resp_i", "model": "gpt-5.6", "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [
+            {"type": "reasoning", "id": "rs_1", "summary": []},
+            {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+        ],
+        "usage": {"input_tokens": 21518, "output_tokens": 600, "total_tokens": 22118,
+                  "output_tokens_details": {"reasoning_tokens": 600}},
+    }))
+    resp = await a._handle_answer(AdapterRequest(capability="answer", parameters={"query": "q", "max_tokens": 600}))
+    assert resp.status == "error"
+    assert "incomplete" in (resp.error or "").lower() and "max_output_tokens" in (resp.error or "")
+    assert resp.error_code == "RESPONSE_INCOMPLETE"
+
+
+@pytest.mark.asyncio
+async def test_openai_answer_completed_but_empty_message_is_an_error():
+    a = OpenAIAdapter(AdapterConfig(name="openai", category=AdapterCategory.AI, api_key="x"))
+    a.client = AsyncMock()
+    a.client.post = AsyncMock(return_value=_resp({
+        "id": "resp_e", "model": "gpt-5.6", "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "", "annotations": []}]}],
+        "usage": {"total_tokens": 12},
+    }))
+    resp = await a._handle_answer(AdapterRequest(capability="answer", parameters={"query": "q"}))
+    assert resp.status == "error"
+    assert resp.error_code == "EMPTY_ANSWER"
 
 
 @pytest.mark.asyncio

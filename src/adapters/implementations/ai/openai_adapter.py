@@ -174,6 +174,7 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
                     "model": {"type": "string", "default": OPENAI_ANSWER_MODEL_DEFAULT},
                     "max_tokens": {"type": "integer", "description": "Maps to Responses max_output_tokens"},
                     "search_context_size": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "reasoning_effort": {"type": "string", "enum": ["low", "medium", "high"], "default": "low"},
                 },
                 required_parameters=["query"],
                 async_supported=True,
@@ -292,6 +293,10 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
             # A GEO answer must come from a live search with citations, never from
             # model memory, so the search is required rather than left to "auto".
             "tool_choice": "required",
+            # GPT-5 reasoning tokens are billed and count against max_output_tokens;
+            # a search-backed answer needs little of it. ("minimal" is unsupported
+            # with web search per OpenAI's docs.)
+            "reasoning": {"effort": params.get("reasoning_effort") or "low"},
         }
         if params.get("max_tokens") is not None:
             data["max_output_tokens"] = params["max_tokens"]
@@ -325,6 +330,28 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
                             search_results.append({"title": ann.get("title"), "url": url})
             content = "".join(content_parts)
             usage = result.get("usage") or {}
+            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+            # Never hand GEO an empty answer as a success: compute-facts would score
+            # it as "brand absent". Seen live 2026-09-04 — a capped call came back
+            # status=incomplete (max_output_tokens) with only reasoning and
+            # web_search_call items and no message at all.
+            status = result.get("status")
+            if status not in (None, "completed"):
+                reason = (result.get("incomplete_details") or {}).get("reason") or status
+                return AdapterResponse(
+                    request_id=request.id, capability=request.capability, status="error",
+                    error=f"OpenAI response {status}: {reason} (model {result.get('model') or model})",
+                    error_code="RESPONSE_INCOMPLETE", duration_ms=duration_ms,
+                    tokens_used=usage.get("total_tokens"),
+                )
+            if not content.strip():
+                return AdapterResponse(
+                    request_id=request.id, capability=request.capability, status="error",
+                    error=f"OpenAI returned no message text (model {result.get('model') or model})",
+                    error_code="EMPTY_ANSWER", duration_ms=duration_ms,
+                    tokens_used=usage.get("total_tokens"),
+                )
 
             return AdapterResponse(
                 request_id=request.id, capability=request.capability, status="success",
@@ -335,7 +362,7 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
                     "model": result.get("model") or model,
                     "usage": usage,
                 },
-                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+                duration_ms=duration_ms,
                 cost=0.0, tokens_used=usage.get("total_tokens"),
                 metadata={"openai_id": result.get("id")},
             )
