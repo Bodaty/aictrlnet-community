@@ -20,6 +20,13 @@ from events.event_bus import event_bus
 logger = logging.getLogger(__name__)
 
 
+# Web search for the GEO `answer` capability runs on the Responses API hosted
+# `web_search` tool. The Chat Completions search models are retired:
+# `gpt-4o-search-preview` returned HTTP 404 "deprecated" on every combo of both
+# scheduled GEO legs on 2026-09-01 while the workflow still reported completed.
+OPENAI_ANSWER_MODEL_DEFAULT = "gpt-5.6"
+
+
 class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
     """Adapter for OpenAI API integration."""
     
@@ -164,8 +171,9 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
                 category="answer_engine",
                 parameters={
                     "query": {"type": "string", "description": "The question to answer"},
-                    "model": {"type": "string", "default": "gpt-4o-search-preview"},
-                    "max_tokens": {"type": "integer"},
+                    "model": {"type": "string", "default": OPENAI_ANSWER_MODEL_DEFAULT},
+                    "max_tokens": {"type": "integer", "description": "Maps to Responses max_output_tokens"},
+                    "search_context_size": {"type": "string", "enum": ["low", "medium", "high"]},
                 },
                 required_parameters=["query"],
                 async_supported=True,
@@ -273,28 +281,49 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
                 duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
             )
 
-        model = params.get("model") or "gpt-4o-search-preview"
-        data = {"model": model, "messages": [{"role": "user", "content": query}]}
+        model = params.get("model") or OPENAI_ANSWER_MODEL_DEFAULT
+        tool: Dict[str, Any] = {"type": "web_search"}
+        if params.get("search_context_size") in ("low", "medium", "high"):
+            tool["search_context_size"] = params["search_context_size"]
+        data: Dict[str, Any] = {
+            "model": model,
+            "input": query,
+            "tools": [tool],
+            # A GEO answer must come from a live search with citations, never from
+            # model memory, so the search is required rather than left to "auto".
+            "tool_choice": "required",
+        }
         if params.get("max_tokens") is not None:
-            data["max_tokens"] = params["max_tokens"]
+            data["max_output_tokens"] = params["max_tokens"]
 
         try:
-            response = await self.client.post("/chat/completions", json=data)
+            response = await self.client.post("/responses", json=data)
             response.raise_for_status()
             result = response.json()
-            choices = result.get("choices") or []
-            msg = (choices[0].get("message") or {}) if choices else {}
-            content = msg.get("content", "") or ""
 
-            citations, search_results = [], []
-            for a in (msg.get("annotations") or []):
-                if isinstance(a, dict) and a.get("type") == "url_citation":
-                    uc = a.get("url_citation") or {}
-                    url = uc.get("url")
-                    if url:
-                        citations.append(url)
-                        search_results.append({"title": uc.get("title"), "url": url})
-            citations = list(dict.fromkeys(citations))
+            # Responses shape: output[] holds web_search_call items and message
+            # items; each message carries output_text parts whose annotations are
+            # url_citation objects with url/title at the top level.
+            content_parts: List[str] = []
+            citations: List[str] = []
+            search_results: List[Dict[str, Any]] = []
+            seen_urls: set = set()
+            for item in result.get("output") or []:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                for part in item.get("content") or []:
+                    if not isinstance(part, dict) or part.get("type") != "output_text":
+                        continue
+                    content_parts.append(part.get("text") or "")
+                    for ann in part.get("annotations") or []:
+                        if not isinstance(ann, dict) or ann.get("type") != "url_citation":
+                            continue
+                        url = ann.get("url")
+                        if url and url not in seen_urls:
+                            seen_urls.add(url)
+                            citations.append(url)
+                            search_results.append({"title": ann.get("title"), "url": url})
+            content = "".join(content_parts)
             usage = result.get("usage") or {}
 
             return AdapterResponse(
