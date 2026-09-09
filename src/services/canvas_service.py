@@ -74,13 +74,19 @@ BUILT_IN_TEMPLATES = [
 class CanvasRenderService:
     """Renders canvas blocks from data hints and auto-detects data shapes."""
 
+    # Editions extend the canvas by overriding these — Business adds form,
+    # diagram, log and composite. The fallback below must consult the
+    # subclass's set, or an edition's own block types get downgraded to text.
+    supported_block_types = COMMUNITY_BLOCK_TYPES
+    edition = "community"
+
     def render(self, request: CanvasRenderRequest) -> CanvasRenderResponse:
         """Render a canvas from the provided blocks and layout."""
         rendered_blocks = []
         for block in request.blocks:
-            if block.block_type not in COMMUNITY_BLOCK_TYPES:
+            if block.block_type not in self.supported_block_types:
                 logger.warning(
-                    f"Block type '{block.block_type}' not available in Community. "
+                    f"Block type '{block.block_type}' not available in {self.edition}. "
                     f"Falling back to 'text'."
                 )
                 block.block_type = "text"
@@ -97,8 +103,8 @@ class CanvasRenderService:
             title=request.title,
             render_hints={
                 "block_count": len(rendered_blocks),
-                "supported_types": list(COMMUNITY_BLOCK_TYPES),
-                "edition": "community",
+                "supported_types": list(self.supported_block_types),
+                "edition": self.edition,
             },
             created_at=datetime.utcnow(),
         )

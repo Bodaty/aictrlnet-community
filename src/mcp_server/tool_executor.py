@@ -2394,10 +2394,7 @@ async def _handle_get_conversation(
 ) -> Dict[str, Any]:
     from sqlalchemy import desc, select
 
-    try:
-        from models.community_complete import ConversationMessage, ConversationSession
-    except ImportError:
-        raise ToolExecutionError("Conversation models unavailable")
+    from models.conversation import ConversationMessage, ConversationSession
 
     session_id = arguments["session_id"]
     limit = min(int(arguments.get("message_limit", 50)), 500)
@@ -2414,7 +2411,7 @@ async def _handle_get_conversation(
         await db.execute(
             select(ConversationMessage)
             .where(ConversationMessage.session_id == session_id)
-            .order_by(desc(ConversationMessage.created_at))
+            .order_by(desc(ConversationMessage.timestamp))
             .limit(limit)
         )
     ).scalars().all()
@@ -2422,13 +2419,13 @@ async def _handle_get_conversation(
     return {
         "id": str(session.id),
         "user_id": getattr(session, "user_id", None),
-        "created_at": str(getattr(session, "created_at", "")),
+        "created_at": str(getattr(session, "started_at", "")),
         "messages": [
             {
                 "id": str(getattr(m, "id", "")),
                 "role": getattr(m, "role", None),
                 "content": getattr(m, "content", None),
-                "created_at": str(getattr(m, "created_at", "")),
+                "created_at": str(getattr(m, "timestamp", "")),
             }
             for m in reversed(msgs)  # oldest first
         ],
@@ -2975,137 +2972,135 @@ async def _handle_list_agents(
     try:
         from sqlalchemy import select
 
-        from aictrlnet_business.models.agent_registry import AgentRegistry  # type: ignore
+        from aictrlnet_business.models.enhanced_agent import EnhancedAgent  # type: ignore
         from core.tenant_context import get_current_tenant_id
+    except ImportError:
+        return {"agents": [], "available": False, "status": "feature_pending"}
 
-        tenant_id = get_current_tenant_id() or "default"
-        query = select(AgentRegistry).where(AgentRegistry.tenant_id == tenant_id)
-        if arguments.get("agent_type"):
-            query = query.where(AgentRegistry.agent_type == arguments["agent_type"])
-        if arguments.get("enabled_only"):
-            query = query.where(AgentRegistry.enabled == True)  # noqa: E712
-        query = query.limit(int(arguments.get("limit", 50))).offset(
-            int(arguments.get("offset", 0))
+    query = select(EnhancedAgent).where(EnhancedAgent.tenant_id == get_current_tenant_id())
+    if arguments.get("agent_type"):
+        query = query.where(EnhancedAgent.agent_type == arguments["agent_type"])
+    if arguments.get("enabled_only"):
+        query = query.where(EnhancedAgent.is_active == True)  # noqa: E712
+    query = (
+        query.order_by(EnhancedAgent.name)
+        .limit(min(int(arguments.get("limit", 50)), 500))
+        .offset(int(arguments.get("offset", 0)))
+    )
+    rows = (await db.execute(query)).unique().scalars().all()
+    return {
+        "agents": [
+            {
+                "id": str(a.id),
+                "name": a.name,
+                "agent_type": a.agent_type,
+                "enabled": bool(a.is_active),
+                "description": a.description,
+                "department": a.department,
+                "autonomy_level": a.autonomy_level,
+            }
+            for a in rows
+        ],
+        "count": len(rows),
+    }
+
+
+async def _load_tenant_agent(db: AsyncSession, agent_id: str):
+    """EnhancedAgent by id, scoped to the current tenant. Raises if absent."""
+    from sqlalchemy import select
+
+    from aictrlnet_business.models.enhanced_agent import EnhancedAgent  # type: ignore
+    from core.tenant_context import get_current_tenant_id
+
+    agent = (
+        await db.execute(
+            select(EnhancedAgent).where(
+                EnhancedAgent.id == agent_id,
+                EnhancedAgent.tenant_id == get_current_tenant_id(),
+            )
         )
-        rows = (await db.execute(query)).scalars().all()
-        return {
-            "agents": [
-                {
-                    "id": str(getattr(a, "id", "")),
-                    "name": getattr(a, "name", None),
-                    "agent_type": getattr(a, "agent_type", None),
-                    "enabled": getattr(a, "enabled", True),
-                    "description": getattr(a, "description", None),
-                }
-                for a in rows
-            ],
-            "count": len(rows),
-        }
-    except Exception as e:
-        logger.info("agent_registry unavailable: %s", e)
-        return {"agents": [], "available": False}
+    ).unique().scalar_one_or_none()
+    if not agent:
+        raise ToolExecutionError(f"Agent {agent_id} not found in tenant")
+    return agent
 
 
 async def _handle_get_agent_capabilities(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    _require(arguments, "agent_id")
     _ensure_business_sys_path()
     try:
-        from sqlalchemy import select
-
-        from aictrlnet_business.models.agent_registry import AgentRegistry  # type: ignore
-    except Exception:
-        raise ToolExecutionError("Agent registry unavailable in this edition")
-
-    agent = (
-        await db.execute(
-            select(AgentRegistry).where(AgentRegistry.id == arguments["agent_id"])
-        )
-    ).scalar_one_or_none()
-    if not agent:
-        raise ToolExecutionError(f"Agent {arguments['agent_id']} not found")
+        agent = await _load_tenant_agent(db, arguments["agent_id"])
+    except ImportError:
+        raise ToolExecutionError("Agent registry requires the Business edition")
     return {
         "id": str(agent.id),
         "name": agent.name,
-        "agent_type": getattr(agent, "agent_type", None),
-        "capabilities": getattr(agent, "capabilities", None),
-        "tools": getattr(agent, "tools", None),
-        "enabled": getattr(agent, "enabled", True),
-        "autonomy_level": getattr(agent, "autonomy_level", None),
+        "agent_type": agent.agent_type,
+        "capabilities": [
+            {"name": c.name, "description": c.description}
+            for c in (agent.capabilities or [])
+        ],
+        "skills": list(agent.skills or []),
+        "enabled": bool(agent.is_active),
+        "autonomy_level": agent.autonomy_level,
     }
 
 
 async def _handle_set_agent_autonomy(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    _ensure_business_sys_path()
-    try:
-        from sqlalchemy import select, update
-
-        from aictrlnet_business.models.agent_registry import AgentRegistry  # type: ignore
-        from core.tenant_context import get_current_tenant_id
-    except Exception:
-        raise ToolExecutionError("Agent registry unavailable")
-
-    tenant_id = get_current_tenant_id() or "default"
-    agent = (
-        await db.execute(
-            select(AgentRegistry).where(
-                AgentRegistry.id == arguments["agent_id"],
-                AgentRegistry.tenant_id == tenant_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if not agent:
-        raise ToolExecutionError(
-            f"Agent {arguments['agent_id']} not found in tenant"
-        )
-
+    _require(arguments, "agent_id", "autonomy_level")
     level = int(arguments["autonomy_level"])
     if not 0 <= level <= 100:
         raise ToolExecutionError("autonomy_level must be 0-100")
-    await db.execute(
-        update(AgentRegistry)
-        .where(AgentRegistry.id == agent.id)
-        .values(autonomy_level=level)
-    )
+
+    _ensure_business_sys_path()
+    try:
+        agent = await _load_tenant_agent(db, arguments["agent_id"])
+    except ImportError:
+        raise ToolExecutionError("Agent registry requires the Business edition")
+
+    # Direct write, same as the REST endpoint (endpoints/autonomy.py:551) and
+    # the set_workflow_autonomy handler — neither writes an audit row.
+    previous = agent.autonomy_level
+    agent.autonomy_level = level
     await db.commit()
-    return {"id": str(agent.id), "autonomy_level": level}
+    return {"id": str(agent.id), "autonomy_level": level, "previous_autonomy_level": previous}
 
 
 async def _handle_execute_agent(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    _require(arguments, "agent_id", "prompt")
     _ensure_business_sys_path()
-    try:
-        from services.agent_execution_service import AgentExecutionService
-    except ImportError:
-        try:
-            from aictrlnet_business.services.agent_execution import AgentExecutionService  # type: ignore
-        except Exception:
-            raise ToolExecutionError("Agent execution service unavailable")
 
-    svc = AgentExecutionService(db)
-    method = (
-        getattr(svc, "execute", None)
-        or getattr(svc, "execute_agent", None)
-        or getattr(svc, "run", None)
-    )
-    if not method:
-        raise ToolExecutionError("AgentExecutionService has no execute method")
-    result = await method(
-        agent_id=arguments["agent_id"],
-        prompt=arguments["prompt"],
-        input_data=arguments.get("input_data"),
+    # Business executor when present (memory, tools, framework routing);
+    # Community's basic executor otherwise. Same execute_agent signature.
+    try:
+        from aictrlnet_business.services.agent_execution_enhanced import (  # type: ignore
+            EnhancedAgentExecutor as _Executor,
+        )
+    except ImportError:
+        from services.agent_execution_basic import BasicAgentExecutor as _Executor
+
+    agent = await _load_tenant_agent(db, arguments["agent_id"])
+
+    task = {
+        "type": "mcp_request",
+        "prompt": arguments["prompt"],
+        "input_data": arguments.get("input_data"),
+    }
+    result = await _Executor().execute_agent(
+        db=db,
         user_id=user_id,
+        agent_name=agent.name,
+        task=task,
     )
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    if isinstance(result, dict):
-        return result
-    return {"result": str(result)}
+    payload = result if isinstance(result, dict) else {"result": str(result)}
+    payload["agent_id"] = str(agent.id)
+    return payload
 
 
 async def _handle_configure_agent_identity(
@@ -3737,40 +3732,24 @@ async def _handle_detect_industry(
 async def _handle_verify_quality(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    _ensure_business_sys_path()
-    try:
-        from aictrlnet_business.services.quality_verification_service import (  # type: ignore
-            QualityVerificationService,
-        )
-    except Exception:
-        # Fall back to the community assess_quality handler as a degraded path
-        from mcp_server.services.quality import MCPQualityService
+    _require(arguments, "content")
+    from mcp_server.services.quality import MCPQualityService
 
-        svc = MCPQualityService(db)
-        return await svc.assess_quality(
-            content=arguments["content"],
-            content_type=arguments.get("content_type", "text"),
-            criteria={"standards": arguments.get("standards")},
-        )
-
-    svc = QualityVerificationService(db)
-    method = (
-        getattr(svc, "verify", None)
-        or getattr(svc, "verify_quality", None)
-    )
-    if not method:
-        return {"passed": None, "available": False}
-    result = await method(
+    # assess_quality's `criteria` is a {dimension: {weight, threshold}} map
+    # (accuracy / completeness / relevance / clarity). Passing `standards`
+    # there — as the old fallback did — made every call return an error
+    # payload. Use the default dimensions and echo the request honestly.
+    result = await MCPQualityService(db).assess_quality(
         content=arguments["content"],
         content_type=arguments.get("content_type", "text"),
-        standards=arguments.get("standards") or [],
     )
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    return {"result": result}
-
+    if arguments.get("standards"):
+        result["requested_standards"] = list(arguments["standards"])
+        result["note"] = (
+            "Standards are recorded but not applied; the assessment scores the "
+            "default quality dimensions (accuracy, completeness, relevance, clarity)."
+        )
+    return result
 
 # ---------------------------------------------------------------------------
 # Wave 5 handlers — Institute (education-led GTM, v11.1)
@@ -4142,47 +4121,15 @@ async def _handle_get_enterprise_risk_assessment(
     _ensure_enterprise_sys_path()
     try:
         from core.tenant_context import get_current_tenant_id
-
-        # The enterprise endpoint lives in ai_governance_enterprise — reach
-        # it through the service underneath.
         from aictrlnet_enterprise.services.ai_governance_enterprise import (  # type: ignore
-            EnterpriseAIGovernanceService,
+            CrossTenantGovernanceService,
         )
-    except Exception:
-        # Fall back to the business-tier risk aggregation so Enterprise
-        # callers still get a value even if the enterprise service isn't
-        # yet factored out.
-        try:
-            _ensure_business_sys_path()
-            from aictrlnet_business.services.risk_assessment_service import (  # type: ignore
-                RiskAssessmentService,
-            )
-
-            svc = RiskAssessmentService(db)
-            result = await svc.get_summary(user_id=user_id)
-            if hasattr(result, "model_dump"):
-                return result.model_dump()
-            if hasattr(result, "dict"):
-                return result.dict()
-            return {"summary": result}
-        except Exception:
-            return _enterprise_pending("risk_assessment")
-
-    svc = EnterpriseAIGovernanceService(db)
-    tenant_id = get_current_tenant_id() or "default"
-    method = (
-        getattr(svc, "get_risk_summary", None)
-        or getattr(svc, "get_enterprise_risk_summary", None)
-    )
-    if not method:
+    except ImportError:
         return _enterprise_pending("risk_assessment")
-    result = await method(tenant_id=tenant_id)
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    return {"summary": result}
 
+    tenant_id = get_current_tenant_id()
+    summary = await CrossTenantGovernanceService(db).get_tenant_risk_stats(tenant_id)
+    return {"tenant_id": tenant_id, "window_days": 30, "summary": summary}
 
 # ---- Organizations + Tenants ----
 
@@ -4191,51 +4138,61 @@ async def _handle_list_organizations(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_enterprise_sys_path()
+    _ensure_business_sys_path()
     try:
         from sqlalchemy import select
 
-        from aictrlnet_enterprise.models.organization import Organization  # type: ignore
-    except Exception:
+        from aictrlnet_business.models.organization import Organization  # type: ignore
+        from aictrlnet_enterprise.models.enterprise import TenantUser  # type: ignore
+        from core.tenant_context import get_current_tenant_id
+    except ImportError:
         return _enterprise_pending("organizations")
 
-    rows = (await db.execute(select(Organization))).scalars().all()
+    # Organization has no tenant column; scope through the tenant's members.
+    members = select(TenantUser.user_id).where(TenantUser.tenant_id == get_current_tenant_id())
+    rows = (
+        await db.execute(
+            select(Organization)
+            .where(Organization.created_by.in_(members))
+            .order_by(Organization.name)
+            .limit(500)
+        )
+    ).scalars().all()
     return {
         "organizations": [
             {
-                "id": str(getattr(o, "id", "")),
-                "name": getattr(o, "name", None),
-                "slug": getattr(o, "slug", None),
-                "created_at": str(getattr(o, "created_at", "")),
+                "id": str(o.id),
+                "name": o.name,
+                "type": o.type,
+                "structure": o.structure,
+                "created_by": o.created_by,
+                "created_at": str(o.created_at),
             }
             for o in rows
         ],
         "count": len(rows),
     }
 
-
 async def _handle_list_tenants(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    _ensure_enterprise_sys_path()
-    try:
-        from sqlalchemy import select
+    # Tenant is a Community model (aictrlnet_enterprise imports it from there —
+    # see aictrlnet_enterprise/models/enterprise.py). There is no enterprise
+    # override to prefer.
+    from sqlalchemy import select
 
-        from aictrlnet_enterprise.models.tenant import Tenant  # type: ignore
-    except Exception:
-        try:
-            from sqlalchemy import select
-
-            # Community tenants table (present in all editions)
-            from models.community_complete import Tenant  # type: ignore
-        except Exception:
-            return _enterprise_pending("tenants")
+    from models.tenant import Tenant
 
     query = (
         select(Tenant)
         .limit(min(int(arguments.get("limit", 100)), 500))
         .offset(int(arguments.get("offset", 0)))
     )
-    rows = (await db.execute(query)).scalars().all()
+    try:
+        rows = (await db.execute(query)).scalars().all()
+    except Exception as e:
+        # Wave-6 contract: enterprise-tier tools return a dict, never raise.
+        return {"tenants": [], "count": 0, "available": False, "error": f"{type(e).__name__}: {e}"}
     return {
         "tenants": [
             {
@@ -4249,98 +4206,71 @@ async def _handle_list_tenants(
         "count": len(rows),
     }
 
-
 # ---- Federated knowledge + Cross-tenant ----
 
 
 async def _handle_federated_knowledge_query(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    _ensure_enterprise_sys_path()
+    _require(arguments, "query")
+    from services.knowledge.knowledge_retrieval_service import KnowledgeRetrievalService
+
     try:
-        # Knowledge federation lives in knowledge_enterprise endpoint; try
-        # to find its service backing.
-        from aictrlnet_enterprise.services.federated_knowledge_service import (  # type: ignore
-            FederatedKnowledgeService,
+        results = await KnowledgeRetrievalService(db).find_relevant_knowledge(
+            query=arguments["query"],
+            context=None,
+            limit=min(int(arguments.get("limit", 10)), 100),
         )
-    except Exception:
-        # Fallback: call the community knowledge retrieval service
-        # scoped to the caller's tenant only.
-        try:
-            from services.knowledge.knowledge_retrieval_service import (
-                KnowledgeRetrievalService,
-            )
-
-            svc = KnowledgeRetrievalService(db)
-            results = await svc.find_relevant_knowledge(
-                query=arguments["query"],
-                context=None,
-                limit=min(int(arguments.get("limit", 10)), 100),
-            )
-            return {
-                "results": [
-                    (r.model_dump() if hasattr(r, "model_dump")
-                     else r.dict() if hasattr(r, "dict")
-                     else {"content": str(r)})
-                    for r in results
-                ],
-                "federated": False,
-                "note": "Federated knowledge service not available — scoped to caller's tenant only",
-            }
-        except Exception:
-            return _enterprise_pending("federated_knowledge")
-
-    svc = FederatedKnowledgeService(db)
-    method = (
-        getattr(svc, "search", None)
-        or getattr(svc, "query", None)
-        or getattr(svc, "find", None)
-    )
-    if not method:
-        return _enterprise_pending("federated_knowledge")
-    results = await method(
-        query=arguments["query"],
-        tenant_ids=arguments.get("tenant_ids"),
-        limit=min(int(arguments.get("limit", 10)), 100),
-        user_id=user_id,
-    )
+    except Exception as e:
+        # Wave-6 contract: enterprise-tier tools return a dict, never raise —
+        # knowledge retrieval depends on optional infrastructure.
+        return {
+            "results": [],
+            "federated": False,
+            "available": False,
+            "error": f"{type(e).__name__}: {e}",
+        }
     return {
-        "results": results if isinstance(results, list) else [results],
-        "federated": True,
+        "results": [
+            (r.model_dump() if hasattr(r, "model_dump")
+             else r.dict() if hasattr(r, "dict")
+             else {"content": str(r)})
+            for r in results
+        ],
+        "federated": False,
+        "note": "Scoped to the caller's tenant; cross-tenant federation is not yet shipped.",
     }
-
 
 async def _handle_get_cross_tenant_insights(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     _ensure_enterprise_sys_path()
     try:
-        from aictrlnet_enterprise.services.cross_tenant_service import (  # type: ignore
-            CrossTenantService,
+        from sqlalchemy import select
+
+        from aictrlnet_enterprise.models.enterprise import TenantGroup  # type: ignore
+        from aictrlnet_enterprise.services.ai_governance_enterprise import (  # type: ignore
+            CrossTenantGovernanceService,
         )
-    except Exception:
+        from core.tenant_context import get_current_tenant_id
+    except ImportError:
         return _enterprise_pending("cross_tenant")
 
-    svc = CrossTenantService(db)
-    metric_type = arguments.get("metric_type", "summary")
-    method_name = f"get_cross_tenant_{metric_type}"
-    method = (
-        getattr(svc, method_name, None)
-        or getattr(svc, "get_summary", None)
-        or getattr(svc, "get_insights", None)
-    )
-    if not method:
-        return _enterprise_pending("cross_tenant")
-    result = await method(
-        time_range=arguments.get("time_range", "30d"),
-        user_id=user_id,
-    )
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    return {"insights": result}
-
+    tenant_id = get_current_tenant_id()
+    # tenant_ids is a JSON list (not JSONB) — filter in Python; groups are few.
+    groups = [
+        g for g in (await db.execute(select(TenantGroup).where(TenantGroup.is_active == True))).scalars().all()  # noqa: E712
+        if tenant_id in (g.tenant_ids or [])
+    ]
+    svc = CrossTenantGovernanceService(db)
+    return {
+        "tenant_id": tenant_id,
+        "time_range": "30d",   # the backing computes a fixed 30-day window
+        "tenant_groups": [
+            {"id": str(g.id), "name": g.name, "metrics": await svc.get_cross_tenant_metrics(str(g.id))}
+            for g in groups
+        ],
+    }
 
 # ---- Fleet Management ----
 
@@ -4395,67 +4325,36 @@ async def _handle_get_fleet_autonomy_summary(
 # ---- License Management ----
 
 
+_LICENSE_PENDING_MESSAGE = (
+    "License management has no backing service yet in any edition. This MCP "
+    "tool is registered and plan-gated to Enterprise, but returns "
+    "feature_pending until the service ships. Tracked in the features doc, "
+    "Appendix C."
+)
+
+
 async def _handle_get_license_status(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    _ensure_enterprise_sys_path()
-    try:
-        from aictrlnet_enterprise.services.license_management import (  # type: ignore
-            LicenseManagementService,
-        )
-    except Exception:
-        return _enterprise_pending("license_management")
-
-    svc = LicenseManagementService(db)
-    method = (
-        getattr(svc, "get_subscription_status", None)
-        or getattr(svc, "get_status", None)
-        or getattr(svc, "get_license", None)
-    )
-    if not method:
-        return _enterprise_pending("license_management")
-    try:
-        result = await method(user_id=user_id)
-    except TypeError:
-        result = await method()
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    return {"license": result}
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "feature": "license_management",
+        "message": _LICENSE_PENDING_MESSAGE,
+    }
 
 
 async def _handle_list_license_entitlements(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    _ensure_enterprise_sys_path()
-    try:
-        from aictrlnet_enterprise.services.license_management import (  # type: ignore
-            LicenseManagementService,
-        )
-    except Exception:
-        return _enterprise_pending("license_management")
-
-    svc = LicenseManagementService(db)
-    method = (
-        getattr(svc, "list_entitlements", None)
-        or getattr(svc, "get_entitlements", None)
-        or getattr(svc, "get_features", None)
-    )
-    if not method:
-        return _enterprise_pending("license_management")
-    try:
-        result = await method(user_id=user_id)
-    except TypeError:
-        result = await method()
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    if isinstance(result, list):
-        return {"entitlements": result, "count": len(result)}
-    return {"entitlements": result}
-
+    return {
+        "status": "feature_pending",
+        "available": False,
+        "feature": "license_management",
+        "entitlements": [],
+        "count": 0,
+        "message": _LICENSE_PENDING_MESSAGE,
+    }
 
 # ---------------------------------------------------------------------------
 # Wave 7 B1.1 — MCP Client (federate external MCP servers)
@@ -5322,16 +5221,31 @@ async def _handle_list_a2a_agents(
 ) -> Dict[str, Any]:
     _ensure_business_sys_path()
     try:
-        # A2A agent registry — try standard path
-        from aictrlnet_business.services.a2a_service import A2AService  # type: ignore
-        svc = A2AService(db)
-        method = getattr(svc, "list_agents", None) or getattr(svc, "discover_agents", None)
-        if method:
-            result = await method(capabilities=arguments.get("capabilities"))
-            return {"agents": _pa_dump(result)}
-    except Exception:
-        pass
-    return {"agents": [], "available": False, "status": "feature_pending"}
+        from aictrlnet_business.services.google_a2a import GoogleA2AService  # type: ignore
+    except ImportError:
+        return {"agents": [], "available": False, "status": "feature_pending"}
+
+    rows = await GoogleA2AService(db).list_agents(
+        capabilities=arguments.get("capabilities"),
+        limit=100,
+        offset=0,
+    )
+    return {
+        "agents": [
+            {
+                "id": str(a.id),
+                "name": a.name,
+                "url": a.url,
+                "description": a.description,
+                "capabilities": list(a.capabilities or []),
+                "status": a.status,
+                "health_status": a.health_status,
+                "version": a.version,
+            }
+            for a in rows
+        ],
+        "count": len(rows),
+    }
 
 
 async def _handle_register_runtime_webhook(
@@ -5518,38 +5432,82 @@ async def _handle_get_execution_framework_trace(
 async def _handle_match_agents_to_task(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    """Rank agents against a free-text task.
+
+    Backed by IntelligentAgentSelector — the same multi-factor scorer the
+    workflow enhancer, agent resolver and progressive executor use (capabilities
+    0.5 / performance 0.2 / specialization 0.2 / availability 0.1, with an ML
+    adjustment and an optional LLM re-rank).
+    """
     _require(arguments, "task")
+    task = arguments["task"]
+    # inputSchema caps top_k at 10; clamp rather than trust the caller.
+    top_k = max(1, min(int(arguments.get("top_k", 3)), 10))
 
     _ensure_business_sys_path()
     try:
-        from aictrlnet_business.services.intelligent_matching_utils import match_agents  # type: ignore
-    except Exception:
-        try:
-            from aictrlnet_business.services import intelligent_matching_utils as imu  # type: ignore
-            match_agents = getattr(imu, "match_agents", None) or getattr(imu, "match_agents_to_task", None)
-        except Exception:
-            match_agents = None
-    if match_agents is None:
+        from aictrlnet_business.services.intelligent_agent_selector import (  # type: ignore
+            AgentRequirements,
+            ExecutionContext,
+            IntelligentAgentSelector,
+        )
+        from aictrlnet_business.services.unified_agent_resolver import (  # type: ignore
+            UnifiedAgentResolver,
+        )
+    except ImportError:
         return {
             "matches": [],
             "available": False,
             "status": "feature_pending",
-            "message": "intelligent_matching_utils lacks an exported match_agents function.",
+            "message": "Agent matching requires the Business edition.",
         }
+
+    # The extractor is a narrow regex/keyword matcher (10 generic patterns plus
+    # four keywords) — it returns [] for most real task text. So:
+    #   * required_capabilities stays EMPTY, because a non-empty required list
+    #     makes _get_candidate_agents drop any agent without a >=50% overlap
+    #     (_has_basic_capabilities), and a ranking tool must rank, not pre-filter.
+    #   * whatever we can extract — or the raw task as a fallback — goes to
+    #     preferred_capabilities, which is what _calculate_capability_score feeds
+    #     to _match_capabilities_semantic (ML service, semantic_similarity).
+    capabilities = UnifiedAgentResolver().extract_capabilities(task)
+
+    selector = IntelligentAgentSelector(db)
     try:
-        results = await match_agents(
-            task=arguments["task"], top_k=int(arguments.get("top_k", 3)), db=db
-        ) if _is_coroutine_fn(match_agents) else match_agents(
-            task=arguments["task"], top_k=int(arguments.get("top_k", 3))
-        )
+        await selector.initialize()
     except Exception as e:
-        return {"matches": [], "error": str(e)}
-    return {"matches": _pa_dump(results), "task": arguments["task"]}
+        # ML Service is optional — capability matching falls back to keywords.
+        logger.warning(f"ML Service unavailable for agent matching: {e}")
 
+    ranked = await selector.rank_agents(
+        requirements=AgentRequirements(
+            required_capabilities=[],
+            preferred_capabilities=capabilities or [task],
+        ),
+        context=ExecutionContext(
+            allow_agent_creation=False,
+            allow_degraded_mode=False,
+            user_id=user_id,
+        ),
+        user_request=task,
+        top_k=top_k,
+    )
 
-def _is_coroutine_fn(fn) -> bool:
-    import asyncio
-    return asyncio.iscoroutinefunction(fn)
+    return {
+        "task": task,
+        "derived_capabilities": capabilities,
+        "matches": [
+            {
+                "id": str(getattr(agent, "id", "")),
+                "name": getattr(agent, "name", None),
+                "agent_type": getattr(agent, "agent_type", None),
+                "department": getattr(agent, "department", None),
+                "confidence": round(float(score), 4),
+            }
+            for agent, score in ranked
+            if agent is not None
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

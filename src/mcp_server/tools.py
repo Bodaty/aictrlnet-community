@@ -2646,7 +2646,7 @@ ENTERPRISE_TOOLS = [
     {
         "name": "get_license_status",
         "description": (
-            "Return the caller's Enterprise license status — active/"
+            "[feature_pending] Return the caller's Enterprise license status — active/"
             "expiring/expired, seat counts, feature entitlements."
         ),
         "inputSchema": {"type": "object", "properties": {}},
@@ -2654,7 +2654,7 @@ ENTERPRISE_TOOLS = [
     {
         "name": "list_license_entitlements",
         "description": (
-            "List the license entitlements (feature flags, limits) "
+            "[feature_pending] List the license entitlements (feature flags, limits) "
             "available under the current Enterprise plan."
         ),
         "inputSchema": {"type": "object", "properties": {}},

@@ -415,6 +415,7 @@ class LLMGenerationEngine:
 
         # BALANCED tier tasks: Semantic analysis and matching (~3-5 seconds)
         balanced_tasks = {
+            "mcp_request",          # execute_agent via MCP — no task metadata to grade complexity
             "semantic_matching",
             "semantic_analysis",
             "analysis",

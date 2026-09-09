@@ -5,6 +5,7 @@ Output: StagedFile reference that can be downloaded or sent via channels.
 
 import asyncio
 import io
+import html as html_mod
 import logging
 import os
 import uuid
@@ -239,16 +240,83 @@ class DocGenerationNode(BaseNode):
 
     def _generate_html(self, title: str, data: Any, template: Any = None) -> tuple:
         """Generate HTML document."""
-        if template and isinstance(template, str):
-            # Use provided HTML template
-            try:
-                html = template.format(title=title, data=data, timestamp=datetime.utcnow().isoformat())
-            except (KeyError, IndexError):
-                html = template
+        return render_html_document(title, data, template), "text/html"
+
+    def _data_to_html(self, data: Any) -> str:
+        """Convert data structure to HTML."""
+        return data_to_html(data)
+
+    def _table_to_html(self, headers: List[str], rows: List[Any]) -> str:
+        """Render tabular data as HTML table."""
+        return table_to_html(headers, rows)
+
+    def validate_config(self) -> bool:
+        """Validate node configuration."""
+        fmt = self.config.parameters.get("format", "pdf").lower()
+        if fmt not in ("pdf", "xlsx", "excel", "html"):
+            raise ValueError(f"Unsupported format: {fmt}. Must be pdf, xlsx, or html")
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Module-level HTML generation. The node delegates here; the Business canvas
+# export and canvas→email rendering reuse these instead of growing a second
+# document generator. Values are HTML-escaped: this output is rendered by the
+# browser service and mailed, and canvas data is agent/user content.
+# ---------------------------------------------------------------------------
+
+def _esc(value: Any) -> str:
+    return html_mod.escape("" if value is None else str(value), quote=False)
+
+
+def table_to_html(headers: List[str], rows: List[Any]) -> str:
+    """Render tabular data as an HTML table (rows capped at 1000)."""
+    header_html = "".join(f"<th>{_esc(h)}</th>" for h in headers)
+    row_html = ""
+    for row in rows[:1000]:
+        if isinstance(row, dict):
+            cells = "".join(f"<td>{_esc(row.get(h, ''))}</td>" for h in headers)
+        elif isinstance(row, (list, tuple)):
+            cells = "".join(f"<td>{_esc(c)}</td>" for c in row)
         else:
-            # Auto-generate HTML
-            html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{title}</title>
+            cells = f"<td>{_esc(row)}</td>"
+        row_html += f"<tr>{cells}</tr>"
+    return f"<table><thead><tr>{header_html}</tr></thead><tbody>{row_html}</tbody></table>"
+
+
+def data_to_html(data: Any) -> str:
+    """Convert a data structure to HTML fragments."""
+    if isinstance(data, dict):
+        if "rows" in data and "headers" in data:
+            return table_to_html(data["headers"], data["rows"])
+        elif "sheets" in data:
+            parts = []
+            for name, sheet in data["sheets"].items():
+                parts.append(f"<h2>{_esc(name)}</h2>")
+                if "headers" in sheet and "rows" in sheet:
+                    parts.append(table_to_html(sheet["headers"], sheet["rows"]))
+            return "\n".join(parts)
+        elif "full_text" in data:
+            return f"<pre>{_esc(data['full_text'])}</pre>"
+        else:
+            rows = "".join(f"<tr><td><b>{_esc(k)}</b></td><td>{_esc(v)}</td></tr>" for k, v in data.items())
+            return f"<table>{rows}</table>"
+    elif isinstance(data, list):
+        return "<ul>" + "".join(f"<li>{_esc(item)}</li>" for item in data) + "</ul>"
+    return f"<p>{_esc(data)}</p>"
+
+
+def render_html_document(title: str, data: Any, template: Any = None) -> bytes:
+    """Full HTML document as UTF-8 bytes. A str template is .format()ed with
+    title/data/timestamp; otherwise the standard styled document is built."""
+    if template and isinstance(template, str):
+        try:
+            html = template.format(title=title, data=data, timestamp=datetime.utcnow().isoformat())
+        except (KeyError, IndexError):
+            html = template
+    else:
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{_esc(title)}</title>
 <style>
 body {{ font-family: sans-serif; margin: 2em; }}
 table {{ border-collapse: collapse; width: 100%; }}
@@ -257,51 +325,8 @@ th {{ background: #4a90d9; color: white; }}
 tr:nth-child(even) {{ background: #f2f2f2; }}
 .footer {{ margin-top: 2em; color: #888; font-size: 0.9em; }}
 </style></head><body>
-<h1>{title}</h1>
-{self._data_to_html(data)}
+<h1>{_esc(title)}</h1>
+{data_to_html(data)}
 <p class="footer">Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
 </body></html>"""
-
-        return html.encode("utf-8"), "text/html"
-
-    def _data_to_html(self, data: Any) -> str:
-        """Convert data structure to HTML."""
-        if isinstance(data, dict):
-            if "rows" in data and "headers" in data:
-                return self._table_to_html(data["headers"], data["rows"])
-            elif "sheets" in data:
-                parts = []
-                for name, sheet in data["sheets"].items():
-                    parts.append(f"<h2>{name}</h2>")
-                    if "headers" in sheet and "rows" in sheet:
-                        parts.append(self._table_to_html(sheet["headers"], sheet["rows"]))
-                return "\n".join(parts)
-            elif "full_text" in data:
-                return f"<pre>{data['full_text']}</pre>"
-            else:
-                rows = "".join(f"<tr><td><b>{k}</b></td><td>{v}</td></tr>" for k, v in data.items())
-                return f"<table>{rows}</table>"
-        elif isinstance(data, list):
-            return "<ul>" + "".join(f"<li>{item}</li>" for item in data) + "</ul>"
-        return f"<p>{data}</p>"
-
-    def _table_to_html(self, headers: List[str], rows: List[Any]) -> str:
-        """Render tabular data as HTML table."""
-        header_html = "".join(f"<th>{h}</th>" for h in headers)
-        row_html = ""
-        for row in rows[:1000]:  # Limit for HTML
-            if isinstance(row, dict):
-                cells = "".join(f"<td>{row.get(h, '')}</td>" for h in headers)
-            elif isinstance(row, (list, tuple)):
-                cells = "".join(f"<td>{c}</td>" for c in row)
-            else:
-                cells = f"<td>{row}</td>"
-            row_html += f"<tr>{cells}</tr>"
-        return f"<table><thead><tr>{header_html}</tr></thead><tbody>{row_html}</tbody></table>"
-
-    def validate_config(self) -> bool:
-        """Validate node configuration."""
-        fmt = self.config.parameters.get("format", "pdf").lower()
-        if fmt not in ("pdf", "xlsx", "excel", "html"):
-            raise ValueError(f"Unsupported format: {fmt}. Must be pdf, xlsx, or html")
-        return True
+    return html.encode("utf-8")
