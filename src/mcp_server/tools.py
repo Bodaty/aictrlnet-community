@@ -3113,6 +3113,14 @@ TOOL_SCOPES = {
 }
 
 
+from .annotations import apply_annotations  # noqa: E402
+
+# Attach title + MCP annotation hints to every definition. Runs once at import,
+# after TOOL_SCOPES exists, so readOnlyHint is derived from the same registry
+# tool_executor enforces.
+apply_annotations((COMMUNITY_TOOLS, BUSINESS_TOOLS, ENTERPRISE_TOOLS), TOOL_SCOPES)
+
+
 def get_tools_for_edition() -> list:
     """Return tool definitions available for the current edition.
 

@@ -179,8 +179,10 @@ class MCPProtocolHandler:
                 tools.append(
                     {
                         "name": t["name"],
+                        "title": t["title"],
                         "description": t["description"],
                         "inputSchema": t["inputSchema"],
+                        "annotations": t["annotations"],
                     }
                 )
         return _jsonrpc_result(msg_id, {"tools": tools})
