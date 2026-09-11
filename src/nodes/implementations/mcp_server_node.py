@@ -172,8 +172,10 @@ class MCPServerNode(BaseNode):
             }
             
         finally:
-            # Unsubscribe from events
-            await event_bus.unsubscribe(request_event, handle_request)
+            # Unsubscribe from events. A-22: event_bus.unsubscribe is sync
+            # (event_bus.py:121); awaiting it raised TypeError, turning a completed
+            # request into a failure.
+            event_bus.unsubscribe(request_event, handle_request)
     
     async def _process_continuous_requests(
         self,
@@ -238,8 +240,10 @@ class MCPServerNode(BaseNode):
             }
             
         finally:
-            # Unsubscribe from events
-            await event_bus.unsubscribe(request_event, handle_request)
+            # Unsubscribe from events. A-22: event_bus.unsubscribe is sync
+            # (event_bus.py:121); awaiting it raised TypeError, turning a completed
+            # request into a failure.
+            event_bus.unsubscribe(request_event, handle_request)
     
     async def _register_webhook(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """Register webhook for async processing."""

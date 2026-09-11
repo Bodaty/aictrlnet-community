@@ -18,6 +18,13 @@ class AdapterCategory(str, Enum):
     DATA = "data"
     INTEGRATION = "integration"
     UTILITY = "utility"
+    # A-28: Business/Enterprise adapter constructors assign these categories
+    # (jira/hubspot/salesforce; the compliance and industry adapters). They were
+    # missing from the base enum, so those adapters raised AttributeError at
+    # construction. The enum is a plain str-Enum (no DB column), so adding is safe.
+    BUSINESS = "business"
+    COMPLIANCE = "compliance"
+    INDUSTRY = "industry"
 
 
 class Edition(str, Enum):

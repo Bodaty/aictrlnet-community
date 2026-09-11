@@ -32,7 +32,7 @@ class IAMNode(BaseNode):
         db = context.get('db')
         if not db:
             raise ValueError("Database session not provided in context")
-        iam_service = IAMService(db)
+        self._iam_service = IAMService(db)
 
         # Get IAM operation type
         operation = self.config.parameters.get("operation", "send_message")
@@ -110,7 +110,7 @@ class IAMNode(BaseNode):
             message["expires_at"] = self.config.parameters["expires_at"]
         
         # Send message
-        delivery_status = await iam_service.send_message(
+        delivery_status = await self._iam_service.send_message(
             to_agent=target_agent,
             message=message
         )
@@ -146,28 +146,28 @@ class IAMNode(BaseNode):
         # Apply filters to find target agents
         if agent_filter.get("capability"):
             # Filter by capability
-            agents = await iam_service.find_agents_by_capability(
+            agents = await self._iam_service.find_agents_by_capability(
                 capability=agent_filter["capability"]
             )
         elif agent_filter.get("tag"):
             # Filter by tag
-            agents = await iam_service.find_agents_by_tag(
+            agents = await self._iam_service.find_agents_by_tag(
                 tag=agent_filter["tag"]
             )
         elif agent_filter.get("pattern"):
             # Filter by name pattern
-            agents = await iam_service.find_agents_by_pattern(
+            agents = await self._iam_service.find_agents_by_pattern(
                 pattern=agent_filter["pattern"]
             )
         else:
             # Broadcast to all agents
-            agents = await iam_service.get_all_agents()
+            agents = await self._iam_service.get_all_agents()
         
         # Send to all matching agents
         delivery_results = []
         for agent in agents:
             try:
-                status = await iam_service.send_message(
+                status = await self._iam_service.send_message(
                     to_agent=agent["id"],
                     message=message
                 )
@@ -223,7 +223,7 @@ class IAMNode(BaseNode):
         }
         
         # Send request and wait for response
-        response = await iam_service.send_request(
+        response = await self._iam_service.send_request(
             to_agent=target_agent,
             request=request,
             timeout=timeout
@@ -252,27 +252,27 @@ class IAMNode(BaseNode):
         
         # Apply filters
         if filters.get("capability"):
-            agents = await iam_service.find_agents_by_capability(
+            agents = await self._iam_service.find_agents_by_capability(
                 capability=filters["capability"]
             )
         elif filters.get("tag"):
-            agents = await iam_service.find_agents_by_tag(
+            agents = await self._iam_service.find_agents_by_tag(
                 tag=filters["tag"]
             )
         elif filters.get("status"):
-            agents = await iam_service.find_agents_by_status(
+            agents = await self._iam_service.find_agents_by_status(
                 status=filters["status"]
             )
         else:
             # Get all agents
-            agents = await iam_service.get_all_agents()
+            agents = await self._iam_service.get_all_agents()
         
         # Get detailed info if requested
         include_details = self.config.parameters.get("include_details", False)
         if include_details:
             detailed_agents = []
             for agent in agents:
-                details = await iam_service.get_agent_details(agent["id"])
+                details = await self._iam_service.get_agent_details(agent["id"])
                 detailed_agents.append(details)
             agents = detailed_agents
         
@@ -289,7 +289,7 @@ class IAMNode(BaseNode):
             raise ValueError("agent_id is required for get_agent_info operation")
         
         # Get agent details
-        agent_info = await iam_service.get_agent_details(agent_id)
+        agent_info = await self._iam_service.get_agent_details(agent_id)
         
         if not agent_info:
             raise ValueError(f"Agent '{agent_id}' not found")
@@ -297,12 +297,12 @@ class IAMNode(BaseNode):
         # Get additional info if requested
         include_metrics = self.config.parameters.get("include_metrics", False)
         if include_metrics:
-            metrics = await iam_service.get_agent_metrics(agent_id)
+            metrics = await self._iam_service.get_agent_metrics(agent_id)
             agent_info["metrics"] = metrics
         
         include_capabilities = self.config.parameters.get("include_capabilities", False)
         if include_capabilities:
-            capabilities = await iam_service.get_agent_capabilities(agent_id)
+            capabilities = await self._iam_service.get_agent_capabilities(agent_id)
             agent_info["capabilities"] = capabilities
         
         return {
@@ -319,7 +319,7 @@ class IAMNode(BaseNode):
         # Subscribe the current agent/workflow to the topic
         subscriber_id = context.get("agent_id", f"workflow-{context.get('workflow_id', 'unknown')}")
         
-        subscription = await iam_service.subscribe_to_topic(
+        subscription = await self._iam_service.subscribe_to_topic(
             topic=topic,
             subscriber_id=subscriber_id,
             filters=self.config.parameters.get("filters", {})
@@ -354,7 +354,7 @@ class IAMNode(BaseNode):
         }
         
         # Publish to topic
-        publish_result = await iam_service.publish_to_topic(
+        publish_result = await self._iam_service.publish_to_topic(
             topic=topic,
             message=message
         )

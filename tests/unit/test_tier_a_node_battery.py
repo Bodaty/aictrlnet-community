@@ -70,9 +70,8 @@ def _ids(r):
 # Ledger: row id -> finding. Must match the failing set exactly (a new failure
 # and an unrecorded fix both fail the gate). Mirrors review-functional-findings.md.
 KNOWN_FAILING_ROWS = {
-    "transform:A-21: no mapping configured comp": "A-21",
     "mcp:discover_tools": "A-18",
-    "iam:A-1: raises NameError today - ia": "A-1",
+    "iam:A-1: raises NameError today - ia": "A-18",
 }
 
 

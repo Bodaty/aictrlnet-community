@@ -606,6 +606,8 @@ class NotificationNode(BaseNode):
                     payload.update(self.config.parameters["webhook_fields"])
 
                 try:
+                    from core.ssrf import validate_outbound_url
+                    validate_outbound_url(url)  # security #5c: recipient-supplied URL, block internal targets
                     resp = await client.post(url, json=payload, headers=headers)
                     results.append({
                         "url": url,

@@ -40,6 +40,11 @@ class TransformNode(BaseNode):
     async def _apply_mapping(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply field mapping transformation."""
         mapping = self.config.parameters.get("mapping", {})
+        # A-21: a mapping transform with no mapping used to complete with {} and
+        # silently drop every input field. A misconfigured transform is a failure,
+        # not an empty success (same class as the DecisionNode fix in baa2d32b).
+        if not mapping:
+            raise ValueError("transform node (mapping) has no 'mapping' configured")
         output_data = {}
         
         for output_field, input_field in mapping.items():
