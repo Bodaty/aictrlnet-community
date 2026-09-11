@@ -10,9 +10,17 @@ the gate. The ledger mirrors .claude/plans/review-functional-findings.md.
 Runs in dev-community-1 under `make test-unit-community`.
 """
 import sys as _sys, pathlib as _pathlib
-_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))  # community runs importlib mode
+_sys.path.append(str(_pathlib.Path(__file__).resolve().parent))  # find tier_a_* helpers without shadowing src packages
 
 import pytest
+
+import tier_a_support as _tier_a_support
+
+
+@pytest.fixture(autouse=True)
+def _edition_nodes_registered():
+    _tier_a_support.ensure_edition_nodes_registered()
+
 from nodes.models import NodeConfig, NodeType
 from nodes.registry import get_node_registry
 from tier_a_support import (EXPECTED_ALIASES, UNIMPLEMENTED_NODE_TYPES,

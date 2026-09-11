@@ -111,3 +111,61 @@ def _ctx(db) -> Dict[str, Any]:
     return {"db": db, "workflow_id": wf, "workflow_instance_id": str(uuid.uuid4()),
             "workflow_definition_id": wf, "workflow_name": "tier-a", "user_id": "tier-a-user",
             "tenant_id": "default-tenant", "is_dry_run": False}
+
+
+_TIER_A_REGISTERED = False
+
+
+def ensure_edition_nodes_registered():
+    """Order-independent registration for the Tier A node gates, matching the
+    real app.
+
+    The node_registry singleton (registry.py) is built by whichever test imports
+    it first; under the full suite that can leave only Community defaults, so
+    edition aliases go missing though they pass in isolation. This mirrors the
+    app lifespan's defensive repair (aictrlnet_enterprise/core/app.py:186-203):
+    load the edition's OWN edition_nodes.py by file path and register it.
+
+    - Runs at most once per process, and only if registration was actually lost
+      (so in the normal case where registry.py's import hook already registered,
+      this is a pure no-op and pollutes nothing).
+    - Loads the CURRENT edition's edition_nodes.py only. In the enterprise
+      container that is enterprise/edition_nodes.py, which registers the business
+      node list it carries - NOT business/edition_nodes.py - so careGapEngine
+      stays unregistered in Enterprise exactly as the shipped app leaves it (A-15).
+    """
+    global _TIER_A_REGISTERED
+    if _TIER_A_REGISTERED:
+        return
+    import importlib.util
+    import os
+    from nodes.models import NodeConfig, NodeType
+    from nodes.registry import node_registry
+
+    def _resolves(alias):
+        try:
+            cfg = NodeConfig(id="probe", name="probe", type=NodeType.TASK, parameters={"custom_node_type": alias})
+            node = node_registry.create_node(cfg)
+            return type(node).__name__ != "TaskNode"
+        except Exception:  # noqa: BLE001
+            return False
+
+    # Enterprise container: prefer enterprise's own file (registers its business
+    # list). Business container: business file. Community: neither exists.
+    candidates = [
+        "/workspace/editions/enterprise/src/nodes/edition_nodes.py",
+        "/workspace/editions/business/src/nodes/edition_nodes.py",
+    ]
+    if not _resolves("code"):  # a business/enterprise alias missing => registration lost
+        for path in candidates:
+            if not os.path.exists(path):
+                continue
+            try:
+                spec = importlib.util.spec_from_file_location(f"_tier_a_edition_nodes_{abs(hash(path))}", path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                mod.register_edition_nodes(node_registry)
+            except Exception:  # noqa: BLE001 - the gate reports what stays unregistered
+                pass
+            break  # the first existing candidate is this edition's own file
+    _TIER_A_REGISTERED = True

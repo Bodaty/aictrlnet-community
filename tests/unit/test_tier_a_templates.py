@@ -9,7 +9,7 @@ entry must match at least one failure (else FIXED - remove it). The ledger
 mirrors .claude/plans/review-functional-findings.md.
 """
 import sys as _sys, pathlib as _pathlib
-_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))  # community runs importlib mode
+_sys.path.append(str(_pathlib.Path(__file__).resolve().parent))  # find tier_a_* helpers without shadowing src packages
 
 import json
 import re
@@ -81,3 +81,13 @@ def test_every_template_resolves_or_is_in_the_ledger():
 def test_template_count_matches_inventory():
     n = sum(1 for _ in _templates())
     assert n >= MIN_TEMPLATES, f"expected at least {MIN_TEMPLATES} system templates, found {n}"
+
+
+# --- Tier A: order-independent edition-node registration (see tier_a_support) ---
+import pytest as _pytest_taf  # noqa: E402
+import tier_a_support as _tier_a_support  # noqa: E402
+
+
+@_pytest_taf.fixture(autouse=True)
+def _edition_nodes_registered():
+    _tier_a_support.ensure_edition_nodes_registered()
