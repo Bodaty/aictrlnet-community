@@ -27,6 +27,7 @@ if _egress_os.path.join(_egress_root, "tests") not in _egress_sys.path:
     _egress_sys.path.insert(0, _egress_os.path.join(_egress_root, "tests"))
 
 from smoke_common.egress_guard import install_test_egress_guard  # noqa: E402
+from smoke_common.db_probe import require_database  # noqa: E402
 
 install_test_egress_guard()
 # --- END outbound-egress guard ---
@@ -49,6 +50,7 @@ def test_engine():
     """Create test database engine."""
     # Use the production database for integration tests (will rollback changes)
     database_url = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@postgres:5432/aictrlnet")
+    require_database(database_url)
 
     engine = create_async_engine(
         database_url,

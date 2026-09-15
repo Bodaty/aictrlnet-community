@@ -8,6 +8,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from smoke_common.db_probe import require_database  # <repo>/tests is on sys.path via ../conftest.py's egress-guard block
 
 
 @pytest.fixture(scope="session")
@@ -16,6 +17,7 @@ def test_engine():
         "DATABASE_URL",
         "postgresql+asyncpg://postgres:postgres@postgres:5432/aictrlnet",
     )
+    require_database(database_url)
     engine = create_async_engine(database_url, echo=False, poolclass=NullPool)
     yield engine
     loop = asyncio.new_event_loop()

@@ -30,6 +30,7 @@ from fastapi import Response
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from smoke_common.db_probe import require_database  # <repo>/tests is on sys.path via ../conftest.py's egress-guard block
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 for _p in (str(_REPO_ROOT / "editions" / "community" / "src"),):
@@ -49,6 +50,7 @@ _ADMIN = {"id": "admin", "tenant_id": _TENANT, "is_superuser": True}
 
 @pytest_asyncio.fixture
 async def db():
+    require_database(_DB_URL)
     engine = create_async_engine(_DB_URL, echo=False, poolclass=NullPool)
     maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with maker() as session:
