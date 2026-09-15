@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 
 class OllamaAdapter(BaseAdapter, ToolCallingMixin):
     """Adapter for Ollama local LLM API."""
-    
+
+    PHI_PROVIDERS = frozenset(['ollama'])
+
+    def _phi_provider(self):
+        return "ollama"
+
     def __init__(self, config: AdapterConfig):
         # Ensure category is set correctly
         config.category = AdapterCategory.AI
@@ -38,6 +43,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
         if "localhost" in self.base_url and not self.discovery_only:
             self.base_url = self.base_url.replace("localhost", "host.docker.internal")
         self.timeout = config.timeout_seconds or 300.0  # Longer timeout for local models
+        self._assert_phi_egress_allowed()
     
     async def initialize(self) -> None:
         """Initialize the Ollama adapter."""

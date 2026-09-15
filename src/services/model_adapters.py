@@ -427,6 +427,11 @@ class MultiModelAdapter(ModelAdapter):
 # Factory function
 def get_model_adapter(model_name: str, ollama_url: str = "http://host.docker.internal:11434") -> ModelAdapter:
     """Get the appropriate adapter for a model."""
+    # R-04: every adapter here POSTs prompts straight to Ollama, bypassing the
+    # provider-adapter guard; this factory is their single constructor.
+    from core.phi_egress import assert_phi_provider_allowed
+
+    assert_phi_provider_allowed("ollama", ollama_url)
     # For now, use the multi-model adapter for everything
     # Can add specific adapters for other models later
     return MultiModelAdapter(ollama_url)

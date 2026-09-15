@@ -22,7 +22,21 @@ logger = logging.getLogger(__name__)
 
 class BaseAdapter(ABC):
     """Base class for all adapters in AICtrlNet."""
-    
+
+    # R-04 PHI egress guard. Model-provider adapters declare the providers the
+    # CLASS can serve (static, so ai_process_node can filter registry classes
+    # without instantiating them) and override _phi_provider() with the one
+    # THIS instance serves. Every provider adapter calls
+    # _assert_phi_egress_allowed() from __init__, right after its endpoint is
+    # resolved and before it validates credentials, so under PHI mode an
+    # adapter for a non-allowlisted provider cannot be built at all — and an
+    # adapter that cannot be built cannot send anything. Construction is the
+    # choke point because not every caller goes through initialize()/start()
+    # (llm/generation.py reuses cached adapters), and because llm/service.py
+    # swallows initialize() failures. Bridges and agent-framework adapters
+    # leave these defaults; their egress is guarded at the call sites.
+    PHI_PROVIDERS: frozenset = frozenset()
+
     def __init__(self, config: AdapterConfig):
         self.config = config
         self.id = f"{config.name}-{config.version}"
@@ -36,6 +50,25 @@ class BaseAdapter(ABC):
         if config.rate_limit_per_minute:
             self._rate_limiter = asyncio.Semaphore(config.rate_limit_per_minute)
     
+    def _phi_provider(self) -> Optional[str]:
+        """Provider this instance sends prompts to, or None for non-providers."""
+        return None
+
+    def _assert_phi_egress_allowed(self) -> None:
+        """Refuse construction under PHI mode unless this instance's provider
+        is allowlisted (and, for a local provider, its endpoint is local)."""
+        provider = self._phi_provider()
+        if provider is None:
+            return
+        from core.phi_egress import assert_phi_provider_allowed
+
+        url = (
+            getattr(self, "base_url", None)
+            or getattr(self, "endpoint", None)
+            or self.config.base_url
+        )
+        assert_phi_provider_allowed(provider, url)
+
     @abstractmethod
     async def initialize(self) -> None:
         """Initialize the adapter (connect to services, validate config, etc)."""

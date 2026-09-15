@@ -23,6 +23,7 @@ from .caching import LLMCache
 from .cost_tracking import CostTracker
 from .tier_resolver import get_environment_default_model
 from core.exceptions import UpstreamResponseError
+from core.phi_egress import PHIEgressRefused
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,11 @@ class _AdapterProvider:
                 await adapter.initialize()
                 cls._instances[key] = adapter
                 logger.info(f"Initialized tool-calling adapter for {key}")
+            except PHIEgressRefused:
+                # R-04: returning None reads as "provider unavailable" and the
+                # engine would fall back to another provider. A refusal is an
+                # answer, not an outage.
+                raise
             except Exception as e:
                 logger.warning(f"Failed to initialize tool-calling adapter for {key}: {e}")
                 return None
@@ -206,6 +212,8 @@ class _AdapterProvider:
                 ))
             else:
                 return None
+        except PHIEgressRefused:
+            raise  # R-04: see _AdapterProvider.get
         except Exception as e:
             logger.warning(f"Failed to create adapter for {provider.value}: {e}")
             return None

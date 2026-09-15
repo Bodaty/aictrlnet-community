@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 class HuggingFaceAdapter(BaseAdapter):
     """Adapter for Hugging Face Inference API integration."""
     
+    PHI_PROVIDERS = frozenset(['huggingface'])
+
+    def _phi_provider(self):
+        return "huggingface"
+
     def __init__(self, config: AdapterConfig):
         # Ensure category is set correctly
         config.category = AdapterCategory.AI
@@ -29,6 +34,7 @@ class HuggingFaceAdapter(BaseAdapter):
         
         self.client: Optional[httpx.AsyncClient] = None
         self.base_url = config.base_url or "https://api-inference.huggingface.co"
+        self._assert_phi_egress_allowed()
         
         # Check for discovery mode
         self.discovery_only = config.custom_config.get("discovery_only", False) if config.custom_config else False

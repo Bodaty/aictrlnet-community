@@ -43,6 +43,11 @@ class PerplexityAdapter(BaseAdapter):
 
     node_type = "perplexity"
 
+    PHI_PROVIDERS = frozenset(['perplexity'])
+
+    def _phi_provider(self):
+        return "perplexity"
+
     def __init__(self, config: AdapterConfig):
         config.category = AdapterCategory.AI
         super().__init__(config)
@@ -56,6 +61,7 @@ class PerplexityAdapter(BaseAdapter):
             or DEFAULT_BASE_URL
         )
         self.base_url = raw.rstrip("/")
+        self._assert_phi_egress_allowed()
 
         self.api_key = (
             config.api_key

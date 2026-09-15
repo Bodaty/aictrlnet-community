@@ -179,6 +179,9 @@ afford to re-enter should set the explicit variable. `AICTRLNET_PHI_MODE` requir
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AICTRLNET_PHI_MODE` | `false` | Opt-in for deployments handling protected health information |
+| `AICTRLNET_PHI_LLM_PROVIDERS` | empty | Comma-separated model providers that may receive PHI (e.g. `vllm,ollama`). Read only under PHI mode |
+| `AICTRLNET_PHI_BAA_PROVIDERS` | empty | Comma-separated non-local providers with a Business Associate Agreement on file. A cloud provider in the allowlist without an entry here is a boot failure |
+| `VLLM_URL` / `VLLM_BASE_URL` / `OLLAMA_BASE_URL` | unset | Local model endpoints, promoted from bare `os.environ` reads so the PHI guard can check them. Four names feed two endpoints with three precedences (`vllm_adapter`: `VLLM_BASE_URL` then `VLLM_URL`; `llm/generation.py`: `VLLM_URL` and `OLLAMA_URL`; `llm/service.py`: `OLLAMA_BASE_URL`); every set one is checked |
 
 When `AICTRLNET_PHI_MODE` is set, the application **refuses to start** unless every one of
 the following holds. The check runs in each edition's startup lifespan, and the error names
@@ -193,6 +196,33 @@ every setting that is wrong along with what it resolved to.
   `VAULT_URL` and `VAULT_TOKEN`
 - `ALLOW_DEV_TOKENS` is false
 - `ENVIRONMENT` names a real deployment (`production`, `prod`, `staging`, `stage`)
+- every name in `AICTRLNET_PHI_LLM_PROVIDERS` and `AICTRLNET_PHI_BAA_PROVIDERS` is a known
+  provider; every non-local provider in the allowlist also appears in the BAA list; and, when
+  the allowlist is non-empty, each allowlisted local provider's configured URL resolves to a
+  loopback, private or link-local address, and `DEFAULT_LLM_MODEL` routes to an allowlisted
+  provider
+
+**Model providers and PHI (R-04).** Under PHI mode a prompt may reach only a provider in
+`AICTRLNET_PHI_LLM_PROVIDERS`. This is enforced where a provider adapter is *constructed* (so
+it holds on every path: workflow nodes, the LLM service, the conversation tools, the Business
+agent frameworks), at the raw Ollama call sites, and in the fallback chain, which never
+crosses from an allowlisted provider to one that is not. Refusal is an error that fails the
+node and the run, never a silent skip: the loop and parallel nodes refuse to absorb it even
+with `continue_on_error` / `fail_fast=false`.
+
+- An **empty allowlist boots** and refuses every model call at runtime naming the setting. A
+  PHI deployment that uses no model is legitimate.
+- `ollama` and `vllm` are **local** providers: no BAA needed, but the endpoint must resolve to
+  a local address. A name that does not resolve at all is allowed (nothing can egress to it,
+  and `host.docker.internal` does not resolve outside Docker).
+- Any other provider is a **cloud** provider and must also be listed in
+  `AICTRLNET_PHI_BAA_PROVIDERS`, which is the operator's record that a BAA exists.
+- `agent-framework` is a pseudo-provider for the `ai-agent-framework-service` container,
+  which forwards prompts to whatever providers *it* holds keys for. Allowlisting it is the
+  operator's attestation that that container is configured with allowed providers only. Leave
+  it off on a practice machine.
+- Consequence: `PERPLEXITY_API_KEY` reaches the self-hosted service for GEO audits; under PHI
+  mode those workflows refuse unless `perplexity` is allowlisted with a BAA. That is correct.
 
 The key-material check exists because both credential services generate a throwaway Fernet
 key at process start when their key variable is unset — no compose file sets either one — so

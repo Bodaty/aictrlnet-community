@@ -44,6 +44,11 @@ def _strip_vllm_prefix(model: Optional[str]) -> Optional[str]:
 class VLLMAdapter(BaseAdapter, ToolCallingMixin):
     """Adapter for a self-hosted vLLM OpenAI-compatible inference server."""
 
+    PHI_PROVIDERS = frozenset(['vllm'])
+
+    def _phi_provider(self):
+        return "vllm"
+
     def __init__(self, config: AdapterConfig):
         config.category = AdapterCategory.AI
         super().__init__(config)
@@ -67,6 +72,7 @@ class VLLMAdapter(BaseAdapter, ToolCallingMixin):
             raw = raw.replace("localhost", "host.docker.internal")
         raw = raw.rstrip("/")
         self.base_url = raw if raw.endswith("/v1") else f"{raw}/v1"
+        self._assert_phi_egress_allowed()
 
         self.api_key = config.api_key or config.credentials.get("api_key")
         self.timeout = config.timeout_seconds or 120.0

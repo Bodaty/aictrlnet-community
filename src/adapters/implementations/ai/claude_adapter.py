@@ -22,7 +22,12 @@ logger = logging.getLogger(__name__)
 
 class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
     """Adapter for Anthropic Claude API integration."""
-    
+
+    PHI_PROVIDERS = frozenset(['anthropic'])
+
+    def _phi_provider(self):
+        return "anthropic"
+
     def __init__(self, config: AdapterConfig):
         # Ensure category is set correctly
         config.category = AdapterCategory.AI
@@ -30,6 +35,7 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
         
         self.client: Optional[httpx.AsyncClient] = None
         self.base_url = config.base_url or "https://api.anthropic.com/v1"
+        self._assert_phi_egress_allowed()
         # Env fallback (Bodaty free-tier key) so per-execution instances built
         # with no stored credential still authenticate — mirrors the perplexity
         # adapter and the tiered GEO model.

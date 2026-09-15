@@ -16,6 +16,13 @@ from ..template_utils import (
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest, AdapterStatus
+from core.phi_egress import (
+    ALLOWLIST_SETTING,
+    PHI_REFUSAL_MARKER,
+    PHIEgressRefused,
+    phi_allowed_providers,
+    phi_mode_on,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -611,6 +618,30 @@ class AIProcessNode(BaseNode):
         if not available:
             raise ValueError("No AI adapters available")
 
+        # R-04: under PHI mode a registry class is eligible only if it can
+        # serve an allowlisted provider, or declares none (the llm-service
+        # bridge, guarded transitively). Filtering by CLASS rather than by
+        # registry name matters: the Business factory registers aliases such
+        # as 'azure', 'alibaba' and 'gcp-vertex'. Every class is registered at
+        # boot regardless of PHI mode, so this filter is load-bearing.
+        if phi_mode_on():
+            allowed = phi_allowed_providers()
+            if not allowed:
+                # Nothing can serve. Refuse here rather than let the bridge
+                # (which declares no providers) be selected and fail on its
+                # health check with a connection error that hides the reason.
+                raise PHIEgressRefused(
+                    f"{PHI_REFUSAL_MARKER} {ALLOWLIST_SETTING} is empty: this "
+                    f"deployment sends protected health information to no model "
+                    f"provider. Required: allowlist a provider this deployment "
+                    f"serves (e.g. vllm, ollama) before running model nodes."
+                )
+            available = [
+                name for name in available
+                if not getattr(adapter_registry.get_adapter_class(name), "PHI_PROVIDERS", frozenset())
+                or getattr(adapter_registry.get_adapter_class(name), "PHI_PROVIDERS", frozenset()) & allowed
+            ]
+
         provider = get_environment_default_provider()
         candidates = PROVIDER_TO_ADAPTER.get(provider, [provider, "llm-service"])
 
@@ -624,6 +655,17 @@ class AIProcessNode(BaseNode):
             if fb in available:
                 logger.info(f"Auto-selected fallback adapter '{fb}'")
                 return fb
+
+        if phi_mode_on():
+            # R-04: "whatever is registered first" is not an answer for PHI.
+            raise PHIEgressRefused(
+                f"{PHI_REFUSAL_MARKER} No registered model adapter can serve an "
+                f"allowlisted provider (system default provider '{provider}'; "
+                f"{ALLOWLIST_SETTING} currently: "
+                f"{', '.join(sorted(phi_allowed_providers())) or '<empty>'}). "
+                f"Required: allowlist a provider this deployment serves, or set "
+                f"the node's adapter explicitly to one."
+            )
 
         return available[0]
     
@@ -645,6 +687,8 @@ class AIProcessNode(BaseNode):
                 f"Adapter capability '{capability}' returned error status "
                 f"({getattr(response, 'error', None)}); retrying as chat"
             )
+        except PHIEgressRefused:
+            raise  # R-04: the chat retry would be a second egress attempt
         except Exception as primary_error:
             logger.warning(
                 f"Adapter capability '{capability}' failed "

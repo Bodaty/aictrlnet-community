@@ -7,6 +7,7 @@ import httpx
 from datetime import datetime
 
 from adapters.base_adapter import BaseAdapter
+from core.phi_egress import PHIEgressRefused, assert_local_service_endpoint
 from adapters.models import (
     AdapterCapability,
     AdapterMetrics,
@@ -50,6 +51,10 @@ class LLMServiceAdapter(BaseAdapter):
             self.api_key = getattr(config, 'api_key', "dev-token-for-testing")
         self.api_prefix = "/api/v1/llm"
         self._client = None
+        # R-04: _chat and _embedding have no in-process path — they POST the
+        # prompt to service_url. The generate path's providers are guarded
+        # downstream; this hop itself must stay local under PHI mode.
+        assert_local_service_endpoint("llm-service", self.service_url)
     
     @property
     def adapter_type(self) -> AdapterCategory:
@@ -138,6 +143,10 @@ class LLMServiceAdapter(BaseAdapter):
                 }
             )
 
+        except PHIEgressRefused:
+            # R-04: an error RESULT makes ai_process_node retry as chat, i.e.
+            # a second egress attempt. A refusal must propagate as an error.
+            raise
         except Exception as e:
             logger.error(f"LLM Service execution failed: {e}")
             self.metrics.total_requests += 1
@@ -183,6 +192,8 @@ class LLMServiceAdapter(BaseAdapter):
                 "cached": result.cache_hit,
                 "cost": result.cost,
             }
+        except PHIEgressRefused:
+            raise  # R-04: never turn a refusal into an HTTP hop
         except Exception as direct_err:
             logger.warning(f"Direct LLM call failed ({type(direct_err).__name__}: {direct_err}), falling back to HTTP")
 

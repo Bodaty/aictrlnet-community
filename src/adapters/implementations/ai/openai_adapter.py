@@ -29,7 +29,12 @@ OPENAI_ANSWER_MODEL_DEFAULT = "gpt-5.6"
 
 class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
     """Adapter for OpenAI API integration."""
-    
+
+    PHI_PROVIDERS = frozenset(['openai'])
+
+    def _phi_provider(self):
+        return "openai"
+
     def __init__(self, config: AdapterConfig):
         # Ensure category is set correctly
         config.category = AdapterCategory.AI
@@ -37,6 +42,7 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
         
         self.client: Optional[httpx.AsyncClient] = None
         self.base_url = config.base_url or "https://api.openai.com/v1"
+        self._assert_phi_egress_allowed()
         # Env fallback (Bodaty free-tier key) so per-execution instances built
         # with no stored credential still authenticate — mirrors the perplexity
         # adapter and the tiered GEO model.

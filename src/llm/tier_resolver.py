@@ -42,8 +42,13 @@ def get_environment_default_provider() -> str:
     Returns:
         Provider string: 'ollama' locally, 'vertex_ai' on GCP, etc.
     """
-    model = get_environment_default_model()
-    model_lower = model.lower()
+    return provider_for_model_name(get_environment_default_model())
+
+
+def provider_for_model_name(model: str) -> str:
+    """Provider a model name routes to, by the same heuristics the auto-select
+    path uses. Pure, so the PHI boot guard can apply it to a Settings value."""
+    model_lower = (model or "").lower()
     if model_lower.startswith("vllm:"):
         return "vllm"
     if is_ollama_model(model):

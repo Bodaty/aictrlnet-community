@@ -214,6 +214,21 @@ class Settings(BaseSettings):
     # deployment configuration" principle as PHI mode, and is normally enabled
     # only alongside it on self-hosted practice deployments.
     CARE_GAPS_ENABLED: bool = Field(default=False, env="CARE_GAPS_ENABLED")
+    # R-04: which model providers may receive PHI, and which cloud providers
+    # have a BAA on file. Read only under AICTRLNET_PHI_MODE (core/phi_egress.py).
+    # Empty allowlist = this deployment sends PHI to no model at all: it boots,
+    # and every model call refuses at runtime naming the setting.
+    AICTRLNET_PHI_LLM_PROVIDERS: str = Field(default="", env="AICTRLNET_PHI_LLM_PROVIDERS")
+    AICTRLNET_PHI_BAA_PROVIDERS: str = Field(default="", env="AICTRLNET_PHI_BAA_PROVIDERS")
+    # Local model endpoints, promoted from bare os.environ reads so the PHI
+    # guard can see them (a guard cannot enforce what it cannot see). Four
+    # names feed two endpoints with three precedences: vllm_adapter reads
+    # VLLM_BASE_URL then VLLM_URL; llm/generation.py reads VLLM_URL and
+    # settings.OLLAMA_URL; llm/service.py reads OLLAMA_BASE_URL. Deliberately
+    # not unified here — that is a behavioural change with its own item.
+    VLLM_URL: Optional[str] = Field(default=None, env="VLLM_URL")
+    VLLM_BASE_URL: Optional[str] = Field(default=None, env="VLLM_BASE_URL")
+    OLLAMA_BASE_URL: Optional[str] = Field(default=None, env="OLLAMA_BASE_URL")
     # Where uploaded and generated documents are staged. Promoted from a bare
     # os.environ read so the PHI guard can see it — a guard cannot enforce what
     # it cannot see. The default must stay this literal rather than deriving from
@@ -538,6 +553,11 @@ def validate_phi_mode(settings: "Settings") -> None:
             f"environment. Required: one of "
             f"{', '.join(sorted(_DEPLOY_ENVIRONMENTS))}."
         )
+
+    # R-04: model providers that may receive PHI. See core/phi_egress.py.
+    from core.phi_egress import phi_boot_problems
+
+    problems.extend(phi_boot_problems(settings))
 
     if problems:
         raise RuntimeError(

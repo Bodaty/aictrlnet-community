@@ -24,12 +24,18 @@ logger = logging.getLogger(__name__)
 class DeepSeekAdapter(BaseAdapter):
     """Adapter for DeepSeek Platform API (OpenAI-compatible)."""
 
+    PHI_PROVIDERS = frozenset(['deepseek'])
+
+    def _phi_provider(self):
+        return "deepseek"
+
     def __init__(self, config: AdapterConfig):
         config.category = AdapterCategory.AI
         super().__init__(config)
 
         self.client: Optional[httpx.AsyncClient] = None
         self.base_url = config.base_url or "https://api.deepseek.com"
+        self._assert_phi_egress_allowed()
         self.api_key = config.api_key or config.credentials.get("api_key", "")
 
         self.discovery_only = config.custom_config.get("discovery_only", False)

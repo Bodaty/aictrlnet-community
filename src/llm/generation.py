@@ -19,6 +19,12 @@ from .model_selection import (
     EnhancedModelSelector
 )
 from core.config import get_settings
+from core.phi_egress import (
+    PHIEgressRefused,
+    assert_phi_provider_allowed,
+    phi_allowed_providers,
+    phi_mode_on,
+)
 from .tier_resolver import (
     get_environment_default_model,
     is_ollama_model
@@ -145,7 +151,12 @@ class LLMGenerationEngine:
         # Select the best model
         model, tier = await self._select_model(request)
         provider = get_provider_from_model(model)
-        
+
+        # R-04: decide before the provider is touched. The adapter layer would
+        # refuse anyway, but here the message names the selected model and no
+        # provider construction, cache lookup or HTTP call precedes it.
+        assert_phi_provider_allowed(provider.value, self._phi_endpoint_for(provider))
+
         logger.info(f"Generating with {model} ({tier.value}) via {provider.value} for task: {request.task_type}")
 
         # Route to appropriate adapter
@@ -160,6 +171,10 @@ class LLMGenerationEngine:
                 response = await self._generate_with_ollama(request, model)
             else:
                 response = await self._generate_with_adapter(request, model, provider)
+        except PHIEgressRefused:
+            # R-04: a refusal is an answer, not a provider failure. Never
+            # enter the fallback branch on it.
+            raise
         except Exception as e:
             # WARNING, not ERROR: this is one provider failing before we try to
             # recover. Every terminal path below logs ERROR and re-raises, so
@@ -465,6 +480,8 @@ class LLMGenerationEngine:
 
     async def _generate_with_ollama(self, request: LLMRequest, model: str) -> LLMResponse:
         """Generate using Ollama directly."""
+        # R-04: raw HTTP to Ollama bypasses the adapter layer's guard.
+        assert_phi_provider_allowed("ollama", self.ollama_url)
         try:
             # For workflow generation, use the model adapter
             if request.task_type == "workflow_generation":
@@ -1170,7 +1187,9 @@ Return ONLY the JSON array, no other text or explanation."""
         models = []
 
         # Get Ollama models
-        ollama_models = await self._get_ollama_models()
+        # R-04: under PHI mode the dropdown must not advertise a provider
+        # that every call would refuse.
+        ollama_models = await self._get_ollama_models() if self._phi_allows("ollama") else []
         for model_name in ollama_models:
             size = _estimate_model_size_billions(model_name)
             models.append(ModelInfo(
@@ -1186,7 +1205,7 @@ Return ONLY the JSON array, no other text or explanation."""
 
         # Get vLLM models (auto-discover from running vLLM server at VLLM_URL)
         # Names are emitted with the vllm: prefix so selection routes through VLLMAdapter.
-        vllm_models = await self._get_vllm_models()
+        vllm_models = await self._get_vllm_models() if self._phi_allows("vllm") else []
         for model_name in vllm_models:
             size = _estimate_model_size_billions(model_name)
             models.append(ModelInfo(
@@ -1241,6 +1260,8 @@ Return ONLY the JSON array, no other text or explanation."""
         ]
 
         for model_name, provider in api_models:
+            if not self._phi_allows(provider.value):
+                continue  # R-04
             if self._is_provider_configured(provider):
                 models.append(ModelInfo(
                     name=model_name,
@@ -1324,6 +1345,18 @@ Return ONLY the JSON array, no other text or explanation."""
         self._vllm_models_cache_time = now - 270
         return self._vllm_models_cache
 
+    def _phi_endpoint_for(self, provider: ModelProvider) -> Optional[str]:
+        if provider == ModelProvider.OLLAMA:
+            return self.ollama_url
+        if provider == ModelProvider.VLLM:
+            return self.vllm_url
+        return None
+
+    @staticmethod
+    def _phi_allows(provider: str) -> bool:
+        """R-04: True unless PHI mode is on and `provider` is not allowlisted."""
+        return not phi_mode_on() or provider in phi_allowed_providers()
+
     async def _pick_fallback_local_model(self, exclude: Optional[str] = None) -> Optional[str]:
         """Pick a locally-served fallback model (vLLM preferred, then Ollama).
 
@@ -1338,8 +1371,10 @@ Return ONLY the JSON array, no other text or explanation."""
         """
         # get_environment_default_model + is_ollama_model are already imported at
         # module scope (top of file); the local re-import shadowed them (ruff F811).
-        vllm_available = await self._get_vllm_models()
-        ollama_available = await self._get_ollama_models()
+        # R-04: a fallback never crosses from an allowlisted provider to one
+        # that is not. Under PHI mode each local pool exists only if allowed.
+        vllm_available = await self._get_vllm_models() if self._phi_allows("vllm") else []
+        ollama_available = await self._get_ollama_models() if self._phi_allows("ollama") else []
 
         configured = get_environment_default_model()
         if configured and configured != exclude:
