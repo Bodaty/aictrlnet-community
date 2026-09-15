@@ -152,9 +152,13 @@ def ensure_edition_nodes_registered():
 
     # Enterprise container: prefer enterprise's own file (registers its business
     # list). Business container: business file. Community: neither exists.
+    # Resolved from this file so the same code works in-container
+    # (/workspace/editions/<edition>/tests/unit) and on a bare CI checkout
+    # (<repo>/editions/<edition>/tests/unit). Community's tree has neither file.
+    _editions_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     candidates = [
-        "/workspace/editions/enterprise/src/nodes/edition_nodes.py",
-        "/workspace/editions/business/src/nodes/edition_nodes.py",
+        os.path.join(_editions_dir, "enterprise", "src", "nodes", "edition_nodes.py"),
+        os.path.join(_editions_dir, "business", "src", "nodes", "edition_nodes.py"),
     ]
     if not _resolves("code"):  # a business/enterprise alias missing => registration lost
         for path in candidates:

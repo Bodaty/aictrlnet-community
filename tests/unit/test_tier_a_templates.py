@@ -17,8 +17,11 @@ from pathlib import Path
 from nodes.registry import get_node_registry
 from tier_a_support import make_config
 
+# <edition>/tests/unit/<this file> -> <edition>/workflow-templates/system; the
+# same relative shape in-container (/app) and on a bare CI checkout.
+_EDITION_DIR = Path(__file__).resolve().parents[2]
 TEMPLATE_ROOTS = [
-    Path("/app/workflow-templates/system"),
+    _EDITION_DIR / "workflow-templates" / "system",
 ]
 MIN_TEMPLATES = 1
 
