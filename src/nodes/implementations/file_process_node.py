@@ -78,6 +78,15 @@ class FileProcessNode(BaseNode):
                 content_type = self._detect_content_type(file_path)
 
             # Route to format-specific processor
+            if content_type.startswith("image/"):
+                # F-3: an image has no text layer. Before this, .png/.jpg fell
+                # through to _process_text and decode(errors="replace") garbage
+                # was reported as the document's text.
+                raise ValueError(
+                    f"{file_path or file_id} is an image ({content_type}) with no text "
+                    f"layer. This document needs OCR before it can be processed; "
+                    f"refusing to report decoded bytes as text."
+                )
             if "pdf" in content_type:
                 extracted = self._process_pdf(raw_bytes)
             elif "spreadsheet" in content_type or "excel" in content_type or file_path.endswith((".xlsx", ".xls")):
@@ -134,6 +143,21 @@ class FileProcessNode(BaseNode):
 
         # Combine all text for convenience
         full_text = "\n\n".join(p["text"] for p in pages if p["text"])
+
+        # F-3 (HIPAA R-09, "silent extraction error written to the chart"): a
+        # scanned fax or lab report arrives as an image-only PDF, extract_text()
+        # returns None on every page, and this used to complete successfully
+        # with full_text="" — the model was then prompted on nothing. There is
+        # no OCR path in the platform today, so the only correct answer is to
+        # fail loudly. Whitespace-only counts as no text layer.
+        if not pages:
+            raise ValueError("PDF has no pages; nothing to extract.")
+        if not full_text.strip():
+            raise ValueError(
+                f"PDF has {len(pages)} page(s) but no text layer (scanned or "
+                f"image-only). This document needs OCR before it can be "
+                f"processed; refusing to report empty text as a successful extraction."
+            )
 
         return {
             "type": "pdf",
@@ -220,6 +244,15 @@ class FileProcessNode(BaseNode):
             "csv": "text/csv",
             "txt": "text/plain",
             "json": "application/json",
+            # F-3: images are routed to a loud failure, not to the text fallback.
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "gif": "image/gif",
+            "bmp": "image/bmp",
+            "tif": "image/tiff",
+            "tiff": "image/tiff",
+            "webp": "image/webp",
         }
         return mapping.get(ext, "application/octet-stream")
 

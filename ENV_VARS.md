@@ -218,9 +218,12 @@ with `continue_on_error` / `fail_fast=false`.
 - Any other provider is a **cloud** provider and must also be listed in
   `AICTRLNET_PHI_BAA_PROVIDERS`, which is the operator's record that a BAA exists.
 - `agent-framework` is a pseudo-provider for the `ai-agent-framework-service` container,
-  which forwards prompts to whatever providers *it* holds keys for. Allowlisting it is the
-  operator's attestation that that container is configured with allowed providers only. Leave
-  it off on a practice machine.
+  which forwards prompts to whatever providers *it* holds keys for. Allowlisting it lets the
+  editions call it; the container then applies the same allowlist itself (it carries a vendored
+  copy of the guard and both compose files pass it `AICTRLNET_PHI_MODE`, both provider lists and
+  `VLLM_URL`), answering a refused provider with HTTP 403. CrewAI, AutoGen and Semantic Kernel
+  build their own OpenAI clients, so under PHI mode those frameworks need `openai` allowlisted
+  with a BAA.
 - Consequence: `PERPLEXITY_API_KEY` reaches the self-hosted service for GEO audits; under PHI
   mode those workflows refuse unless `perplexity` is allowlisted with a BAA. That is correct.
 

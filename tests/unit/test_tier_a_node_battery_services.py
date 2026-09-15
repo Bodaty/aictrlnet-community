@@ -67,7 +67,6 @@ ENTERPRISE_ROWS = [
 
 ROWS = COMMUNITY_ROWS
 KNOWN_FAILING_ROWS = {
-    "fileProcess:F-3: an image-only PDF must rais": "F-3",
     "mcpClient:tool op against our own MCP tran": "A-26",
 }
 
