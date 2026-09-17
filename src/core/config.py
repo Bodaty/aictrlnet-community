@@ -214,6 +214,13 @@ class Settings(BaseSettings):
     # deployment configuration" principle as PHI mode, and is normally enabled
     # only alongside it on self-hosted practice deployments.
     CARE_GAPS_ENABLED: bool = Field(default=False, env="CARE_GAPS_ENABLED")
+    # A viewer's repeated reads of the same care-gap item in the same context
+    # within this window are one access event, so an open browser tab polling
+    # every 15 seconds does not grow the HIPAA access log by ten rows per item
+    # per hour. 0 = log every read.
+    CARE_GAPS_VIEW_AUDIT_WINDOW_MINUTES: int = Field(
+        default=60, env="CARE_GAPS_VIEW_AUDIT_WINDOW_MINUTES"
+    )
     # R-04: which model providers may receive PHI, and which cloud providers
     # have a BAA on file. Read only under AICTRLNET_PHI_MODE (core/phi_egress.py).
     # Empty allowlist = this deployment sends PHI to no model at all: it boots,
