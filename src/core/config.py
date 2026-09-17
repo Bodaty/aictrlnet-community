@@ -220,6 +220,13 @@ class Settings(BaseSettings):
     # and every model call refuses at runtime naming the setting.
     AICTRLNET_PHI_LLM_PROVIDERS: str = Field(default="", env="AICTRLNET_PHI_LLM_PROVIDERS")
     AICTRLNET_PHI_BAA_PROVIDERS: str = Field(default="", env="AICTRLNET_PHI_BAA_PROVIDERS")
+    # Comma-separated exact hostnames of the EHR FHIR / identity servers the
+    # care-gap sync may call under PHI mode, e.g. "api.practicefusion.com".
+    # Read only under AICTRLNET_PHI_MODE (core/phi_egress.py). Empty = no FHIR
+    # egress is allowed: the deployment boots and every sync call refuses
+    # naming this setting, which is the right shape for a practice that keeps
+    # its roster by hand.
+    AICTRLNET_PHI_FHIR_HOSTS: str = Field(default="", env="AICTRLNET_PHI_FHIR_HOSTS")
     # Local model endpoints, promoted from bare os.environ reads so the PHI
     # guard can see them (a guard cannot enforce what it cannot see). Four
     # names feed two endpoints with three precedences: vllm_adapter reads

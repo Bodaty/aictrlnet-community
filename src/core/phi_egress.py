@@ -15,11 +15,14 @@ spec pins the copy to llm.tier_resolver.PROVIDER_ALIASES.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import socket
 import time
 from typing import Optional
 from urllib.parse import urlsplit
 
+
+logger = logging.getLogger(__name__)
 
 # Every message starts with this. The exception TYPE does not survive the trip
 # from an adapter to a workflow run (base_node stringifies it, ai_process_node
@@ -29,6 +32,8 @@ PHI_REFUSAL_MARKER = "[PHI-EGRESS-REFUSED]"
 
 ALLOWLIST_SETTING = "AICTRLNET_PHI_LLM_PROVIDERS"
 BAA_SETTING = "AICTRLNET_PHI_BAA_PROVIDERS"
+# Hostnames of the EHR FHIR / identity servers the care-gap sync may call.
+FHIR_HOSTS_SETTING = "AICTRLNET_PHI_FHIR_HOSTS"
 
 # Providers served from the deployment's own machine. They need no BAA but
 # their endpoint must resolve locally.
@@ -97,6 +102,13 @@ def parse_provider_list(raw: Optional[str]) -> frozenset[str]:
     return frozenset(
         normalize_provider(part) for part in raw.split(",") if part and part.strip()
     )
+
+
+def parse_host_list(raw: Optional[str]) -> frozenset[str]:
+    """Comma-separated hostnames -> lowercased, de-duplicated set."""
+    if not raw:
+        return frozenset()
+    return frozenset(part.strip().lower() for part in raw.split(",") if part.strip())
 
 
 def reset_endpoint_cache() -> None:
@@ -180,6 +192,10 @@ def phi_baa_providers(settings=None) -> frozenset[str]:
     return parse_provider_list(getattr(_settings(settings), BAA_SETTING, ""))
 
 
+def phi_fhir_hosts(settings=None) -> frozenset[str]:
+    return parse_host_list(getattr(_settings(settings), FHIR_HOSTS_SETTING, ""))
+
+
 def describe_endpoint(url: str) -> str:
     host, addresses = resolve_endpoint_addresses(url)
     if addresses and addresses != [host]:
@@ -231,6 +247,40 @@ def assert_phi_provider_allowed(
         )
 
 
+def assert_phi_fhir_host_allowed(url: str, *, settings=None) -> None:
+    """Refuse to call an EHR FHIR or identity host that is not allowlisted.
+
+    No-op unless AICTRLNET_PHI_MODE is on. The URL is never quoted back: a FHIR
+    search carries patient identifiers in its query string, and refusals are
+    shown to staff and written to logs. The host alone says what was refused.
+    """
+    settings = _settings(settings)
+    if not phi_mode_on(settings):
+        return
+
+    parts = urlsplit(url if "//" in url else f"//{url}")
+    host = (parts.hostname or "").lower()
+    allowed = phi_fhir_hosts(settings)
+    listed = ", ".join(sorted(allowed)) if allowed else "<empty>"
+
+    if parts.scheme != "https":
+        raise PHIEgressRefused(
+            f"{PHI_REFUSAL_MARKER} Refusing to send protected health information "
+            f"to FHIR host '{host or '<none>'}' over '{parts.scheme or '<none>'}': "
+            f"PHI leaves this deployment over https only. Required: an https URL "
+            f"for that host."
+        )
+
+    if host not in allowed:
+        raise PHIEgressRefused(
+            f"{PHI_REFUSAL_MARKER} Refusing to send protected health information "
+            f"to FHIR host '{host or '<none>'}': it is not in {FHIR_HOSTS_SETTING} "
+            f"(currently: {listed}). Required: add '{host}' to "
+            f"{FHIR_HOSTS_SETTING} on a deployment covered by a BAA with that "
+            f"vendor, or point the connection at an allowlisted host."
+        )
+
+
 def assert_local_service_endpoint(name: str, url: Optional[str], *, settings=None) -> None:
     """For platform-internal hops that are not model providers (the llm-service
     bridge, the MCP server): under PHI mode the target must be local."""
@@ -264,6 +314,28 @@ def phi_boot_problems(settings) -> list[str]:
                 f"{setting_name} names unknown provider(s) {', '.join(unknown)}. "
                 f"Required: one of {', '.join(sorted(KNOWN_PROVIDERS))}."
             )
+
+    fhir_hosts = phi_fhir_hosts(settings)
+    malformed = sorted(
+        h
+        for h in fhir_hosts
+        if any(c in h for c in "/:*") or h.split() != [h]
+    )
+    if malformed:
+        problems.append(
+            f"{FHIR_HOSTS_SETTING} entries must be bare hostnames, not URLs, "
+            f"ports or wildcards: {', '.join(malformed)}. Required: e.g. "
+            f"'api.practicefusion.com'."
+        )
+    elif not fhir_hosts and getattr(settings, "CARE_GAPS_ENABLED", False):
+        # Not a problem: a practice that keeps its roster by hand runs the
+        # care-gap engine with no EHR egress at all.
+        logger.warning(
+            "CARE_GAPS_ENABLED is on under PHI mode but %s is empty: the FHIR "
+            "sync will refuse every call. Set it to the EHR's FHIR host to "
+            "enable syncing, or ignore this if the roster is maintained manually.",
+            FHIR_HOSTS_SETTING,
+        )
 
     if not allowed:
         return problems
