@@ -8,13 +8,14 @@ which unit tests already cover).
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import pytest
 from fastapi import Request
 from starlette.datastructures import Headers
 
-from mcp_server import tool_executor, tools
+from mcp_server import self_server, tool_executor, tools
 from mcp_server.plan_gate import PlanService
 from mcp_server.protocol import MCPProtocolHandler
 from mcp_server.scopes import expand_legacy, scopes_satisfy
@@ -479,19 +480,42 @@ async def test_A11_plan_mutating_tools_registered():
 
 
 # ---------------------------------------------------------------------------
-# A12 — audit log fail-closed for Enterprise
+# A12 — audit log fail-secure, keyed on the DEPLOYMENT edition (M3)
 # ---------------------------------------------------------------------------
+
+
+@contextlib.asynccontextmanager
+async def _stub_audit_session():
+    """No-op stand-in for self_server.audit_session().
+
+    Since M2, _audit_if_enterprise opens a REAL admin-transaction connection
+    via self_server.audit_session() before ever reaching the (stubbed)
+    compliance manager below. The A12 tests exercise the fail-secure/warn
+    logic around that manager, not the real connection (that path is
+    test_mcp_audit_persistence.py in the enterprise edition) -- stub it out
+    so these tests don't depend on a live database.
+    """
+    yield _StubDB()
+
+
+async def _stub_resolve_self_server_id(db):
+    return self_server.SELF_SERVER_ID
 
 
 @pytest.mark.asyncio
 async def test_A12_audit_failure_fails_enterprise_tool(monkeypatch):
-    """Audit service raising → Enterprise caller's tool call surfaces
-    as ComplianceError (audit trail incomplete)."""
+    """Audit service raising, on an Enterprise DEPLOYMENT → the caller's
+    tool call surfaces as ComplianceError (audit trail incomplete) —
+    even though the tenant's own plan is community. M3: this gate keys
+    on AICTRLNET_EDITION, not the tenant's plan tier."""
     import sys
     import types
 
+    calls = []
+
     class _BoomAudit:
         async def audit_mcp_operation(self, **kw):
+            calls.append(kw)
             raise RuntimeError("audit backend unreachable")
 
         async def enforce_compliance(self, **kw):
@@ -500,50 +524,64 @@ async def test_A12_audit_failure_fails_enterprise_tool(monkeypatch):
     mod = types.ModuleType("aictrlnet_enterprise.services.mcp_compliance")
     mod.MCPComplianceManager = _BoomAudit
     monkeypatch.setitem(sys.modules, "aictrlnet_enterprise.services.mcp_compliance", mod)
+    monkeypatch.setenv("AICTRLNET_EDITION", "enterprise")
     monkeypatch.setenv("MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE", "true")
+    monkeypatch.setattr(self_server, "audit_session", _stub_audit_session)
+    monkeypatch.setattr(self_server, "resolve_self_server_id", _stub_resolve_self_server_id)
 
     from mcp_server.tool_executor import _audit_if_enterprise, ComplianceError
 
-    with pytest.raises(ComplianceError):
+    with pytest.raises(ComplianceError, match="audit backend unreachable"):
         await _audit_if_enterprise(
             tool_name="query_analytics",
             request_data={},
             response_data=None,
             user_id="u1",
-            tenant_id="ent-tenant",
+            tenant_id="community-tenant",
             duration_ms=10.0,
             status="success",
             db=_StubDB(),
-            plan_tier="enterprise",
+            plan_tier="community",
         )
+
+    assert calls, "audit_mcp_operation was never called — test exercised nothing"
 
 
 @pytest.mark.asyncio
 async def test_A12_audit_failure_is_warning_for_business(monkeypatch):
-    """Business-tier audit failure → warn and continue (no compliance
-    requirement at that tier)."""
+    """Audit service raising, on a Business DEPLOYMENT → warn and
+    continue, even though the tenant's own plan is enterprise. M3: a
+    non-Enterprise deployment never fails secure, regardless of plan."""
     import sys
     import types
 
+    calls = []
+
     class _BoomAudit:
         async def audit_mcp_operation(self, **kw):
+            calls.append(kw)
             raise RuntimeError("still down")
 
     mod = types.ModuleType("aictrlnet_enterprise.services.mcp_compliance")
     mod.MCPComplianceManager = _BoomAudit
     monkeypatch.setitem(sys.modules, "aictrlnet_enterprise.services.mcp_compliance", mod)
+    monkeypatch.setenv("AICTRLNET_EDITION", "business")
+    monkeypatch.setattr(self_server, "audit_session", _stub_audit_session)
+    monkeypatch.setattr(self_server, "resolve_self_server_id", _stub_resolve_self_server_id)
 
     from mcp_server.tool_executor import _audit_if_enterprise
 
-    # Must NOT raise for business-tier
+    # Must NOT raise on a business deployment, even for an enterprise-tier tenant
     await _audit_if_enterprise(
         tool_name="evaluate_policy",
         request_data={},
         response_data=None,
         user_id="u1",
-        tenant_id="biz-tenant",
+        tenant_id="ent-tenant",
         duration_ms=10.0,
         status="success",
         db=_StubDB(),
-        plan_tier="business",
+        plan_tier="enterprise",
     )
+
+    assert calls, "audit_mcp_operation was never called — test exercised nothing"

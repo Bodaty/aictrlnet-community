@@ -21,7 +21,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from mcp_server.tools import get_tools_for_edition
 from mcp_server.tool_executor import execute_tool, ToolExecutionError, ScopeError
-from mcp_server.plan_gate import PlanError
+from mcp_server.plan_gate import PlanError, PlanService
 from mcp_server.metering import QuotaError
 from mcp_server.rate_bucket import RateError
 from tier_a_egress import SmokeEgressBlocked, synthesize_value
@@ -29,6 +29,24 @@ from tier_a_egress import SmokeEgressBlocked, synthesize_value
 TOOLS = {t["name"]: t for t in get_tools_for_edition()}
 DECLARED_PENDING = {n for n, t in TOOLS.items() if "feature_pending" in (t.get("description") or "")}
 PER_TOOL_TIMEOUT = 20
+
+# On a fresh DB (no Business demo seed), default-tenant's plan resolves
+# from subscription rows that only that seed creates -- absent it, every
+# copy of this sweep would resolve "community" and see 106/142 tools
+# GATED before real classification is possible. Pin the tier this
+# KNOWN_DEAD ledger was calibrated against instead. This is also the one
+# line that ends this file's byte-identity with the Business copy (no
+# test enforces that identity).
+PINNED_PLAN_TIER = "community"
+
+
+class _PinnedPlanService(PlanService):
+    def __init__(self, db, tier: str):
+        super().__init__(db)
+        self._tier = tier
+
+    async def _resolve(self, tenant_id):
+        return self._tier
 
 # A-30: tools that return feature_pending without declaring it (and F-6: the credential four).
 # Shared across editions; only names present in this edition's catalogue are compared.
@@ -83,10 +101,16 @@ async def dev_user_id(db):
     return str(row[0])
 
 
-async def _classify(name, db, dev_user_id):
+async def _classify(name, db, dev_user_id, plan_service):
     args = synthesize_value(TOOLS[name]["inputSchema"], components={})
     try:
-        result = await asyncio.wait_for(execute_tool(name, args, db, dev_user_id, tenant_id="default-tenant"), timeout=PER_TOOL_TIMEOUT)
+        result = await asyncio.wait_for(
+            execute_tool(
+                name, args, db, dev_user_id, tenant_id="default-tenant",
+                plan_service=plan_service,
+            ),
+            timeout=PER_TOOL_TIMEOUT,
+        )
     except ToolExecutionError as e:
         msg = str(e)
         return ("DEAD", msg) if msg.startswith("Unknown tool") else ("SURFACED", msg[:120])
@@ -114,9 +138,10 @@ async def _classify(name, db, dev_user_id):
 
 @pytest.mark.asyncio
 async def test_every_mcp_tool_is_not_dead_or_is_in_the_ledger(db, dev_user_id):
+    plan_service = _PinnedPlanService(db, PINNED_PLAN_TIER)
     classes, detail = {}, {}
     for name in sorted(TOOLS):
-        k, d = await _classify(name, db, dev_user_id)
+        k, d = await _classify(name, db, dev_user_id, plan_service)
         classes[name] = k; detail[name] = d
     from collections import Counter
     counts = Counter(classes.values())

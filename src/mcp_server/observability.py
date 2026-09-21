@@ -60,6 +60,19 @@ try:
         "AGP policy-gate denials on outbound MCP tools",
         ["tool", "policy_id"],
     )
+    AUDIT_SERVER_UNRESOLVED = Counter(
+        "mcp_audit_server_unresolved_total",
+        "Self MCP server row not found when resolving server_id for an audit write",
+    )
+    AUDIT_WRITE_FAILED = Counter(
+        "mcp_audit_write_failed_total",
+        "MCP audit write failures",
+        ["fail_secure"],
+    )
+    AUDIT_SOC_WRITE_FAILED = Counter(
+        "mcp_audit_soc_write_failed_total",
+        "Contained audit_logs (SOC dual-write) failures — the mcp_audit_logs row still lands",
+    )
     TOOL_DURATION = Histogram(
         "mcp_tool_duration_seconds",
         "MCP tool handler duration",
@@ -87,6 +100,9 @@ except Exception:  # prometheus_client not installed
     QUOTA_DENIED = _NoopMetric()  # type: ignore
     COMPLIANCE_DENIED = _NoopMetric()  # type: ignore
     POLICY_BLOCKED = _NoopMetric()  # type: ignore
+    AUDIT_SERVER_UNRESOLVED = _NoopMetric()  # type: ignore
+    AUDIT_WRITE_FAILED = _NoopMetric()  # type: ignore
+    AUDIT_SOC_WRITE_FAILED = _NoopMetric()  # type: ignore
     TOOL_DURATION = _NoopMetric()  # type: ignore
 
 
@@ -197,6 +213,37 @@ def record_compliance_denied(
     )
 
 
+def record_audit_server_unresolved(tenant_id: Optional[str] = None) -> None:
+    AUDIT_SERVER_UNRESOLVED.inc()
+    logger.info(
+        "mcp_audit_server_unresolved",
+        extra={"tenant_id": tenant_id},
+    )
+
+
+def record_audit_write_failed(
+    tool: str, fail_secure: bool, error: str, tenant_id: Optional[str] = None
+) -> None:
+    AUDIT_WRITE_FAILED.labels(fail_secure="true" if fail_secure else "false").inc()
+    logger.info(
+        "mcp_audit_write_failed",
+        extra={
+            "tool": tool,
+            "fail_secure": fail_secure,
+            "error": error,
+            "tenant_id": tenant_id,
+        },
+    )
+
+
+def record_audit_soc_write_failed(error: str, tenant_id: Optional[str] = None) -> None:
+    AUDIT_SOC_WRITE_FAILED.inc()
+    logger.info(
+        "mcp_audit_soc_write_failed",
+        extra={"error": error, "tenant_id": tenant_id},
+    )
+
+
 def record_policy_blocked(
     tool: str,
     policy_id: str,
@@ -243,6 +290,9 @@ def tool_span(tool: str):
 
 
 __all__ = [
+    "record_audit_server_unresolved",
+    "record_audit_soc_write_failed",
+    "record_audit_write_failed",
     "record_compliance_denied",
     "record_invocation",
     "record_plan_denied",

@@ -24,8 +24,9 @@ from typing import Any, Dict, List, Optional, Set
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
+from core.tenant_context import DEFAULT_TENANT_ID
 
-from . import observability
+from . import observability, self_server
 from .metering import (
     QuotaError,
     RefundableError,
@@ -49,6 +50,12 @@ logger = logging.getLogger(__name__)
 # mid-flight — the generation would silently never finish and the poll tool
 # would report a status that never advances.
 _BACKGROUND_TASKS: set = set()
+
+# Strong references to detached audit-write tasks (see _audit_if_enterprise).
+# A cancellation of the caller shields the write in flight rather than
+# cancelling it with the caller; same "event loop only weak-refs a bare
+# task" hazard as _BACKGROUND_TASKS above.
+_AUDIT_TASKS: set = set()
 
 
 class ToolExecutionError(Exception):
@@ -280,7 +287,9 @@ async def execute_tool(
             duration_seconds=duration,
             tenant_id=tenant_id,
         )
-        # 6. Audit — always log for Enterprise tenants, even on failure
+        # 6. Audit — always attempted; fails secure only on an Enterprise
+        #    DEPLOYMENT (AICTRLNET_EDITION=enterprise), regardless of the
+        #    caller's own plan tier
         await _audit_if_enterprise(
             tool_name,
             arguments,
@@ -321,7 +330,7 @@ async def _enforce_compliance_if_enterprise(
     try:
         svc = MCPComplianceManager()
         compliant, reason = await svc.enforce_compliance(
-            server_id="aictrlnet-mcp-transport",
+            server_id=self_server.SELF_SERVER_ID,
             tenant_id=tenant_id or "default",
             capability=tool_name,
             db=db,
@@ -441,12 +450,37 @@ async def _audit_if_enterprise(
 ) -> None:
     """Persist the MCP tool call to the Enterprise audit log.
 
-    Wave 7 A12: **fail-closed for Enterprise plan tier**. Previously
-    audit failures were silently logged as warnings — unacceptable for
-    SOC2/HIPAA-scoped deploys where the audit trail is a compliance
-    requirement. Now: if the audit service errors for an Enterprise
-    caller, the tool call surfaces as a ComplianceError so the caller
-    knows the trail is incomplete and can decide what to do.
+    Wave 7 A12 / M3: **fail-secure keyed on the deployment edition**, not
+    the caller's tenant plan. Previously this gate matched Enterprise
+    plan tier, so a community-plan tenant on an Enterprise deployment
+    could silently lose audit rows — audit completeness is an obligation
+    of the installation, not the buyer's tier. Now: if the audit service
+    errors and this process is running as ``AICTRLNET_EDITION=enterprise``,
+    the tool call surfaces as a ComplianceError so the caller knows the
+    trail is incomplete, regardless of ``plan_tier``. Non-Enterprise
+    deployments log a warning and continue. ``plan_tier`` no longer
+    decides ``fail_secure``, but it is logged in this function's
+    warning/error lines for diagnostic context (the caller also uses it
+    for its own metrics via ``observability.record_invocation``).
+
+    M2: the write itself runs on ``self_server.audit_session()`` — its own
+    admin transaction on a dedicated NullPool connection — instead of the
+    request's own ``db`` session. By the time this runs (``execute_tool``'s
+    ``finally``), the request session can be unusable: a metering timeout
+    cancels asyncpg mid-statement, and this function's own ``commit()``
+    would otherwise commit/rollback whatever the handler left pending on
+    that same session. ``db`` stays in the signature for the caller and is
+    deliberately unused here.
+
+    M2 review fix: the write runs as a task, awaited via ``asyncio.shield()``.
+    A cancellation of THIS coroutine (client disconnect, worker shutdown, an
+    outer ``asyncio.wait_for`` around ``execute_tool`` — the tier-A sweep does
+    exactly that) is a ``BaseException`` that would otherwise skip the
+    ``except Exception`` below and lose the audit row with zero
+    observability. ``shield()`` lets the write keep running detached instead
+    of being cancelled with it; its outcome is then only observable via a
+    done-callback, since by the time it finishes there is no caller left to
+    raise ``ComplianceError`` to.
 
     Controlled by the same ``MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE``
     flag as A2.
@@ -455,32 +489,72 @@ async def _audit_if_enterprise(
         from aictrlnet_enterprise.services.mcp_compliance import MCPComplianceManager  # type: ignore
     except ImportError:
         return
-    try:
-        svc = MCPComplianceManager()
-        await svc.audit_mcp_operation(
-            tenant_id=tenant_id or "default",
-            user_id=user_id,
-            operation_type=f"mcp_tool:{tool_name}",
-            operation_status=status,
-            server_id="aictrlnet-mcp-transport",
-            request_data=request_data,
-            response_data=response_data,
-            duration_ms=duration_ms,
-            db=db,
-        )
-    except Exception as e:
-        import os
 
-        fail_secure = (
-            plan_tier == "enterprise"
-            and os.environ.get("MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE", "true").lower() == "true"
+    import os
+
+    fail_secure = (
+        os.environ.get("AICTRLNET_EDITION", "community").strip().lower() == "enterprise"
+        and os.environ.get("MCP_COMPLIANCE_REQUIRED_FOR_ENTERPRISE", "true").lower() == "true"
+    )
+
+    async def _write() -> None:
+        svc = MCPComplianceManager()
+        async with self_server.audit_session() as audit_db:
+            server_id = await self_server.resolve_self_server_id(audit_db)
+            await svc.audit_mcp_operation(
+                tenant_id=tenant_id or DEFAULT_TENANT_ID,
+                user_id=user_id,
+                operation_type=f"mcp_tool:{tool_name}",
+                operation_status=status,
+                server_id=server_id,
+                request_data=request_data,
+                response_data=response_data,
+                duration_ms=duration_ms,
+                db=audit_db,
+            )
+
+    task = asyncio.create_task(_write())
+    _AUDIT_TASKS.add(task)
+    task.add_done_callback(_AUDIT_TASKS.discard)
+
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Our own await was cancelled, not the shielded task — it keeps
+        # running detached. There is no caller left to raise ComplianceError
+        # to once we re-raise below, so just count + warn if it eventually
+        # fails; a successful detached write logs nothing.
+        def _on_detached_done(t: "asyncio.Task") -> None:
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                observability.record_audit_write_failed(
+                    tool=tool_name, fail_secure=fail_secure, error=str(exc), tenant_id=tenant_id
+                )
+                logger.warning(
+                    "Enterprise audit logging failed after the caller was "
+                    "cancelled (write finished detached, plan_tier=%s): %s",
+                    plan_tier, exc,
+                )
+
+        task.add_done_callback(_on_detached_done)
+        raise
+    except Exception as e:
+        observability.record_audit_write_failed(
+            tool=tool_name, fail_secure=fail_secure, error=str(e), tenant_id=tenant_id
         )
         if fail_secure:
-            logger.error("Enterprise audit log failed — raising: %s", e)
+            logger.error(
+                "Enterprise audit log failed (plan_tier=%s) — raising: %s",
+                plan_tier, e,
+            )
             raise ComplianceError(
                 f"Enterprise audit trail incomplete: {e}"
             ) from e
-        logger.warning("Enterprise audit logging failed: %s", e)
+        logger.warning(
+            "Enterprise audit logging failed (plan_tier=%s): %s", plan_tier, e
+        )
 
 
 # ---------------------------------------------------------------------------

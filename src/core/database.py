@@ -57,7 +57,10 @@ def get_engine():
             # pool_size + max_overflow = 20 connections, totaling 240 —
             # leaving 60 for postgres management. If you bump workers
             # beyond 4 per edition, lower these defaults proportionally
-            # OR raise postgres max_connections.
+            # OR raise postgres max_connections. On top of this pool, the
+            # MCP audit engine (NullPool, mcp_server/self_server.py) can
+            # hold up to AUDIT_MAX_CONCURRENCY (4) more connections per
+            # Enterprise worker.
             pool_size=settings.MAX_CONNECTIONS_COUNT,
             max_overflow=getattr(settings, "MAX_OVERFLOW_COUNT", 10),
             pool_pre_ping=True,

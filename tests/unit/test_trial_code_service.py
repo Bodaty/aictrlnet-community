@@ -144,7 +144,8 @@ def _mk_sub(user, plan, **kw):
 
 
 @pytest.fixture
-async def cleanup(db):
+async def cleanup(db, starter_plan):
+    # Depends on starter_plan so its subscriptions are deleted before the plan they reference.
     created = {"users": [], "subs": []}
     yield created
     for sid in created["subs"]:
