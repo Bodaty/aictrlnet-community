@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 
 from core.database import get_db
+from core.mcp_access import mcp_caller
 from core.security import get_current_active_user
 from models import TaskMCP, User
 from services.mcp_integration import MCPTaskIntegration
@@ -18,6 +19,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _assert_platform_admin(current_user, action: str) -> None:
+    """These paths reach MCP servers, or other callers' task payloads.
+
+    Routing picks a server the caller may not own and connects with that
+    row's stored credentials, and tasks_mcp has no owner column to scope
+    reads by. Until both carry ownership (dispatcher work, next change),
+    they are administrator-only rather than open to every account.
+    """
+    if mcp_caller(current_user).is_superuser:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"{action} is restricted to platform administrators",
+    )
 
 
 @router.post("/route")
@@ -40,6 +57,7 @@ async def route_task(
         
         # Check if this is an MCP task
         if MCPTaskIntegration.is_mcp_task(task_data):
+            _assert_platform_admin(current_user, "Routing a task to an MCP server")
             # Route to MCP
             result, status_code = await MCPTaskIntegration.route_task(task_data)
             
@@ -90,6 +108,7 @@ async def get_mcp_task(
     current_user: User = Depends(get_current_active_user)
 ):
     """Get details of an MCP task"""
+    _assert_platform_admin(current_user, "Reading MCP task records")
     result = await db.execute(
         select(TaskMCP).where(TaskMCP.task_id == task_id)
     )
@@ -127,6 +146,7 @@ async def list_mcp_tasks(
     current_user: User = Depends(get_current_active_user)
 ):
     """List MCP tasks"""
+    _assert_platform_admin(current_user, "Listing MCP task records")
     query = select(TaskMCP).where(TaskMCP.mcp_enabled == True)
 
     if status:

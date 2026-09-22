@@ -54,6 +54,11 @@ class MCPServerConfig:
     headers: Optional[Dict[str, str]] = None
 
 
+# What a stdio MCP server process inherits from this service. Enough for the
+# usual launchers to resolve interpreters, a home directory and a temp dir.
+_CHILD_ENV_ALLOWLIST = frozenset({"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR"})
+
+
 @dataclass
 class MCPTool:
     """MCP tool definition per specification."""
@@ -135,8 +140,11 @@ class MCPConnection:
 
     async def _connect_stdio(self) -> bool:
         """Connect using stdio transport."""
-        # Prepare environment
-        env = os.environ.copy()
+        # Prepare environment. The child gets a minimal, explicit environment
+        # plus whatever the server row configures — never the platform's own
+        # process environment, which holds the database URL, the JWT signing
+        # key and every provider credential the service was started with.
+        env = {k: v for k, v in os.environ.items() if k in _CHILD_ENV_ALLOWLIST}
         env.update(self.config.env)
 
         # Build command
@@ -697,15 +705,6 @@ class MCPClientAdapter(BaseAdapter):
         """Get adapter capabilities."""
         return [
             AdapterCapability(
-                name="mcp.connect",
-                description="Connect to MCP server via stdio transport",
-                parameters={
-                    "command": "string (required) - Command to run",
-                    "args": "array (optional) - Command arguments",
-                    "env": "object (optional) - Environment variables"
-                }
-            ),
-            AdapterCapability(
                 name="mcp.list_tools",
                 description="List available tools from connected MCP servers",
                 parameters={}
@@ -798,30 +797,13 @@ class MCPClientAdapter(BaseAdapter):
             operation = task.get("operation", "list_tools")
 
             if operation == "connect":
-                # Connect to a new MCP server
-                server_config = MCPServerConfig(
-                    name=task.get("name", f"server_{len(self.connections)}"),
-                    command=task["command"],
-                    args=task.get("args", []),
-                    env=task.get("env", {})
-                )
-                success = await self.connect_server(server_config)
-
-                duration = (datetime.utcnow() - start_time).total_seconds() * 1000
-                return AdapterResult(
-                    request_id=request_id,
-                    capability="mcp.connect",
-                    status="success" if success else "error",
-                    data={
-                        "connected": success,
-                        "server_name": server_config.name,
-                        "capabilities": {
-                            "tools": self.connections[server_config.name].capabilities.tools if success else False,
-                            "resources": self.connections[server_config.name].capabilities.resources if success else False,
-                        } if success else {}
-                    },
-                    duration_ms=duration,
-                    tokens_used=0
+                # Starting a stdio server runs a command on the platform host,
+                # so it is an administrator action taken through the MCP server
+                # API, which knows who is asking. This generic entry point has
+                # no caller context, so it does not start processes.
+                raise ValueError(
+                    "stdio MCP servers are started through the MCP server API "
+                    "(POST /api/v1/mcp/servers), not through adapter execute()"
                 )
 
             elif operation == "disconnect":

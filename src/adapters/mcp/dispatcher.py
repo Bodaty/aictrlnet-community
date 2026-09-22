@@ -130,8 +130,18 @@ class MCPDispatcher:
         
         # Check if specific server requested
         server_name = task.get("payload", {}).get("server_name")
-        if server_name and server_name in self.servers:
-            server = self.servers[server_name]
+        if server_name:
+            # A named target that is not loaded must fail, never fall through to
+            # capability selection: the cache holds only servers that were
+            # `active` at load time, so the miss is the normal case, and the
+            # fallback would quietly run the task on an unrelated server —
+            # with that server's stored credentials.
+            server = self.servers.get(server_name)
+            if not server:
+                return {
+                    "success": False,
+                    "error": f"MCP server '{server_name}' is not available",
+                }
             logger.info(f"Routing task to requested server: {server_name}")
         else:
             # Select server based on capabilities

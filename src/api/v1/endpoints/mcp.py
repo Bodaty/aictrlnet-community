@@ -17,6 +17,15 @@ import logging
 import json
 
 from core.database import get_db
+from core.mcp_access import (
+    can_read,
+    can_run_stdio,
+    can_use,
+    mcp_caller,
+    readable,
+    usable,
+    visible_config,
+)
 from core.security import get_current_active_user
 from api.v1.endpoints._auth_helpers import (
     get_safe_attr,
@@ -82,11 +91,10 @@ router = APIRouter()
 # admin-only firebreak on update_mcp_server with real per-owner scoping.
 
 def _mcp_owner_id(current_user) -> Optional[str]:
-    # Via the shared helpers, not raw getattr: Business/Enterprise hand these
+    # Via core.mcp_access, not raw getattr: Business/Enterprise hand these
     # endpoints a dict rather than a User object, where getattr silently yields
     # None — which would strip ownership off every server registered there.
-    uid = get_safe_user_id(current_user) or get_safe_attr(current_user, "sub")
-    return str(uid) if uid else None
+    return mcp_caller(current_user).user_id
 
 
 def _is_superuser(current_user) -> bool:
@@ -94,22 +102,96 @@ def _is_superuser(current_user) -> bool:
     return bool(is_superuser(current_user))
 
 
+def _assert_may_run_stdio(current_user) -> None:
+    """A stdio server is a command this service runs on its own host.
+
+    Its process, its filesystem, its network position — so configuring or
+    starting one is an administrator action, not a tenant one. 403, not 404:
+    this is a refusal of a capability, and says nothing about any row.
+    """
+    if can_run_stdio(mcp_caller(current_user)):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            "stdio MCP servers run a command on the platform host and can only "
+            "be configured by an administrator. Use the http_sse transport to "
+            "connect to a remote MCP server."
+        ),
+    )
+
+
+def _stdio_fields_changed(server: "MCPServer", update_dict: dict) -> bool:
+    """Whether a PATCH would alter how (or whether) a subprocess is launched.
+
+    The edit form re-sends unchanged fields, and `args` is stored as JSON by
+    this API but comma-joined by the MCP tool path, so compare normalised
+    values rather than refusing every PATCH that mentions them.
+    """
+    def _norm(value):
+        if value in (None, "", [], {}):
+            return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                if "," in value:
+                    value = [part for part in value.split(",") if part]
+        if isinstance(value, list):
+            return [str(v) for v in value] or None
+        if isinstance(value, dict):
+            return {str(k): str(v) for k, v in value.items()} or None
+        return str(value)
+
+    for field in ("command", "args", "env_vars"):
+        if field not in update_dict:
+            continue
+        if _norm(update_dict[field]) != _norm(getattr(server, field, None)):
+            return True
+    return False
+
+
+def _assert_platform_admin(current_user, action: str) -> None:
+    """For paths that reach a server the caller has not been matched against.
+
+    Both of these pick or accept a destination without an owner check —
+    routing selects from every loaded server, and the connectivity probe takes
+    a URL. They are administrator tools until the dispatcher carries ownership.
+    """
+    if mcp_caller(current_user).is_superuser:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"{action} is restricted to platform administrators",
+    )
+
+
+def _redact_config(response: "MCPServerResponse", server, current_user) -> "MCPServerResponse":
+    """Hide how to reach a server from callers who may not use it.
+
+    command/args/env_vars/url carry credentials often enough (a token in an
+    argument, a key in a query string, the whole of env_vars) that only a
+    caller who may USE the row sees them. Shared rows stay listable — name,
+    transport, status — which is what makes them discoverable without handing
+    out the platform's own integration secrets.
+    """
+    if visible_config(server, mcp_caller(current_user)):
+        return response
+    return response.model_copy(
+        update={"command": None, "args": None, "env_vars": None, "url": None}
+    )
+
+
 def assert_mcp_read(server: "MCPServer", current_user) -> None:
     """Allow reading a server that is shared (no owner) or owned by the caller."""
-    if _is_superuser(current_user):
-        return
-    owner = getattr(server, "owner_user_id", None)
-    if owner is None or str(owner) == _mcp_owner_id(current_user):
+    if can_read(server, mcp_caller(current_user)):
         return
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP server not found")
 
 
 def assert_mcp_mutate(server: "MCPServer", current_user) -> None:
     """Allow mutating only a server the caller owns (shared servers → superuser)."""
-    if _is_superuser(current_user):
-        return
-    owner = getattr(server, "owner_user_id", None)
-    if owner is not None and str(owner) == _mcp_owner_id(current_user):
+    if can_use(server, mcp_caller(current_user)):
         return
     # 404 (not 403) to avoid disclosing existence of others' / system servers.
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP server not found")
@@ -228,6 +310,7 @@ async def register_mcp_server(
     try:
         # Validate transport-specific requirements
         if server_data.transport_type == MCPTransportType.stdio:
+            _assert_may_run_stdio(current_user)
             if not server_data.command:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -278,7 +361,7 @@ async def register_mcp_server(
             try:
                 mcp_client = await get_mcp_client()
                 mcp_config = MCPServerConfig(
-                    name=server_data.name,
+                    name=str(server.id),
                     command=server_data.command,
                     args=server_data.args or [],
                     env=server_data.env_vars or {},
@@ -288,7 +371,7 @@ async def register_mcp_server(
                 connected = await mcp_client.connect_server(mcp_config)
 
                 if connected:
-                    connection = mcp_client.connections.get(server_data.name)
+                    connection = mcp_client.connections.get(str(server.id))
                     if connection:
                         # Update server with discovered capabilities
                         server.status = "connected"
@@ -324,7 +407,7 @@ async def register_mcp_server(
         env_dict = json.loads(server.env_vars) if server.env_vars else None
         caps_dict = json.loads(server.server_capabilities) if server.server_capabilities else None
 
-        return MCPServerResponse(
+        return _redact_config(MCPServerResponse(
             id=server.id,
             name=server.name,
             transport_type=server.transport_type,
@@ -342,7 +425,7 @@ async def register_mcp_server(
             updated_at=datetime.fromtimestamp(server.updated_at) if server.updated_at else None,
             server_metadata=server_data.server_metadata,
             oauth2_provider_id=server.oauth2_provider_id  # SEP-991: OAuth2 integration
-        )
+        ), server, current_user)
 
     except HTTPException:
         raise
@@ -374,13 +457,7 @@ async def list_mcp_servers(
     try:
         # Per-owner visibility: a non-superuser sees shared (owner-less/system)
         # servers plus their own; a superuser sees all.
-        from sqlalchemy import or_ as _or
-        _owner_filter = None
-        if not _is_superuser(current_user):
-            _owner_filter = _or(
-                MCPServer.owner_user_id.is_(None),
-                MCPServer.owner_user_id == _mcp_owner_id(current_user),
-            )
+        _owner_filter = readable(MCPServer, mcp_caller(current_user))
 
         # Build query
         query = select(MCPServer)
@@ -432,7 +509,7 @@ async def list_mcp_servers(
             env_dict = json.loads(server.env_vars) if server.env_vars else None
             caps_dict = json.loads(server.server_capabilities) if server.server_capabilities else None
 
-            server_responses.append(MCPServerResponse(
+            server_responses.append(_redact_config(MCPServerResponse(
                 id=server.id,
                 name=server.name,
                 transport_type=server.transport_type,
@@ -449,7 +526,7 @@ async def list_mcp_servers(
                 created_at=datetime.fromtimestamp(server.created_at),
                 updated_at=datetime.fromtimestamp(server.updated_at) if server.updated_at else None,
                 oauth2_provider_id=server.oauth2_provider_id  # SEP-991: OAuth2 integration
-            ))
+            ), server, current_user))
 
         return MCPServerList(
             servers=server_responses,
@@ -490,7 +567,7 @@ async def get_mcp_server(
     env_dict = json.loads(server.env_vars) if server.env_vars else None
     caps_dict = json.loads(server.server_capabilities) if server.server_capabilities else None
 
-    return MCPServerResponse(
+    return _redact_config(MCPServerResponse(
         id=server.id,
         name=server.name,
         transport_type=server.transport_type,
@@ -507,7 +584,7 @@ async def get_mcp_server(
         created_at=datetime.fromtimestamp(server.created_at),
         updated_at=datetime.fromtimestamp(server.updated_at) if server.updated_at else None,
         oauth2_provider_id=server.oauth2_provider_id  # SEP-991: OAuth2 integration
-    )
+    ), server, current_user)
 
 
 @router.patch("/servers/{server_id}", response_model=MCPServerResponse)
@@ -538,6 +615,19 @@ async def update_mcp_server(
 
     # Update fields
     update_dict = update_data.model_dump(exclude_unset=True)
+
+    # An owner may not turn their row into a stdio server, or change what a
+    # stdio server would run. Otherwise a tenant writes the command and waits
+    # for an administrator to click Health or Connect, which starts it.
+    _requested_transport = update_dict.get("transport_type")
+    _requested_transport = str(
+        getattr(_requested_transport, "value", _requested_transport) or ""
+    )
+    _turns_stdio = (
+        _requested_transport == "stdio" and str(server.transport_type) != "stdio"
+    )
+    if _turns_stdio or _stdio_fields_changed(server, update_dict):
+        _assert_may_run_stdio(current_user)
     for field, value in update_dict.items():
         if field == "server_metadata" and value is not None:
             # Store metadata as JSON string
@@ -564,7 +654,7 @@ async def update_mcp_server(
     env_dict = json.loads(server.env_vars) if server.env_vars else None
     caps_dict = json.loads(server.server_capabilities) if server.server_capabilities else None
 
-    return MCPServerResponse(
+    return _redact_config(MCPServerResponse(
         id=server.id,
         name=server.name,
         transport_type=server.transport_type,
@@ -581,7 +671,7 @@ async def update_mcp_server(
         created_at=datetime.fromtimestamp(server.created_at),
         updated_at=datetime.fromtimestamp(server.updated_at) if server.updated_at else None,
         oauth2_provider_id=server.oauth2_provider_id  # SEP-991: OAuth2 integration
-    )
+    ), server, current_user)
 
 
 @router.delete("/servers/{server_id}")
@@ -637,11 +727,12 @@ async def check_server_health(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
-        assert_mcp_mutate(server, current_user)
+
+    assert_mcp_mutate(server, current_user)
 
     try:
         mcp_client = await get_mcp_client()
-        connection = mcp_client.connections.get(server.name)
+        connection = mcp_client.connections.get(str(server.id))
 
         if connection and connection.initialized:
             # Server is connected and initialized
@@ -656,13 +747,15 @@ async def check_server_health(
                 checked_at=datetime.utcnow()
             )
         elif server.transport_type == "stdio" and server.command:
+            # Starting it is an administrator action, even for the owner.
+            _assert_may_run_stdio(current_user)
             # Try to connect and check health
             try:
                 args_list = json.loads(server.args) if server.args else []
                 env_dict = json.loads(server.env_vars) if server.env_vars else {}
 
                 mcp_config = MCPServerConfig(
-                    name=server.name,
+                    name=str(server.id),
                     command=server.command,
                     args=args_list,
                     env=env_dict,
@@ -672,7 +765,7 @@ async def check_server_health(
                 connected = await mcp_client.connect_server(mcp_config)
 
                 if connected:
-                    connection = mcp_client.connections.get(server.name)
+                    connection = mcp_client.connections.get(str(server.id))
                     # Update server status in database
                     server.status = "connected"
                     server.protocol_version = connection._protocol_version if connection else None
@@ -729,6 +822,10 @@ async def check_server_health(
                 checked_at=datetime.utcnow()
             )
 
+    except HTTPException:
+        # A refusal is an answer, not a health result: reporting it as
+        # "status: error" would turn a 403 into a 200 body.
+        raise
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         return MCPHealthCheck(
@@ -761,7 +858,8 @@ async def test_server_connection(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
-        assert_mcp_mutate(server, current_user)
+
+    assert_mcp_mutate(server, current_user)
     
     try:
         # Create test task
@@ -770,7 +868,9 @@ async def test_server_connection(
             "source_id": str(current_user.id),
             "payload": {
                 "messages": [{"role": "user", "content": test_request.test_message}],
-                "server_name": server.name,
+                # By id, not name: names are not unique across owners, and the
+                # dispatcher indexes by both.
+                "server_name": str(server.id),
                 "max_tokens": 100
             }
         })
@@ -843,6 +943,7 @@ async def execute_mcp_task(
     current_user: User = Depends(get_current_active_user)
 ):
     """Execute a task via MCP"""
+    _assert_platform_admin(current_user, "Executing a task through MCP")
     try:
         # Prepare task
         task = MCPTaskIntegration.prepare_mcp_task({
@@ -889,6 +990,7 @@ async def test_mcp_connection(
     current_user: User = Depends(get_current_active_user)
 ):
     """Test MCP connection and list available tools."""
+    _assert_platform_admin(current_user, "Probing an arbitrary MCP server URL")
     try:
         # Initialize service
         service = UnifiedMCPService()
@@ -953,6 +1055,8 @@ async def connect_to_mcp_server(
         )
     assert_mcp_mutate(server, current_user)
 
+    _assert_may_run_stdio(current_user)
+
     if server.transport_type != "stdio":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -969,8 +1073,8 @@ async def connect_to_mcp_server(
         mcp_client = await get_mcp_client()
 
         # Check if already connected
-        if server.name in mcp_client.connections:
-            connection = mcp_client.connections[server.name]
+        if str(server.id) in mcp_client.connections:
+            connection = mcp_client.connections[str(server.id)]
             return {
                 "status": "already_connected",
                 "server_name": server.name,
@@ -1003,7 +1107,7 @@ async def connect_to_mcp_server(
 
         # Create MCP server config
         mcp_config = MCPServerConfig(
-            name=server.name,
+            name=str(server.id),
             command=server.command,
             args=args_list,
             env=env_dict,
@@ -1024,7 +1128,7 @@ async def connect_to_mcp_server(
             )
 
         # Get connection details
-        connection = mcp_client.connections[server.name]
+        connection = mcp_client.connections[str(server.id)]
 
         # Update server in database
         server.status = "connected"
@@ -1105,7 +1209,7 @@ async def disconnect_from_mcp_server(
     try:
         mcp_client = await get_mcp_client()
 
-        if server.name not in mcp_client.connections:
+        if str(server.id) not in mcp_client.connections:
             return {
                 "status": "not_connected",
                 "server_name": server.name,
@@ -1113,7 +1217,7 @@ async def disconnect_from_mcp_server(
             }
 
         # Disconnect
-        await mcp_client.disconnect_server(server.name)
+        await mcp_client.disconnect_server(str(server.id))
 
         # Update server status
         server.status = "disconnected"
@@ -1155,18 +1259,19 @@ async def list_server_tools(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
-        assert_mcp_read(server, current_user)
+
+    assert_mcp_read(server, current_user)
 
     try:
         mcp_client = await get_mcp_client()
 
-        if server.name not in mcp_client.connections:
+        if str(server.id) not in mcp_client.connections:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Server is not connected. Call /connect first."
             )
 
-        connection = mcp_client.connections[server.name]
+        connection = mcp_client.connections[str(server.id)]
 
         # Build tool list with MCP 2025-11-25 features
         tools_list = []
@@ -1175,7 +1280,8 @@ async def list_server_tools(
                 "name": t.name,
                 "description": t.description,
                 "input_schema": t.input_schema,
-                "server_name": t.server_name
+                # The connection is keyed by server id; report the readable name.
+                "server_name": server.name
             }
 
             # Include outputSchema if available (MCP 2025-11-25)
@@ -1247,25 +1353,26 @@ async def call_mcp_tool(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
-        assert_mcp_mutate(server, current_user)
+
+    assert_mcp_mutate(server, current_user)
 
     try:
         mcp_client = await get_mcp_client()
 
-        if server.name not in mcp_client.connections:
+        if str(server.id) not in mcp_client.connections:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Server is not connected. Call /connect first."
             )
 
         # Get tool definition to check for outputSchema
-        connection = mcp_client.connections[server.name]
+        connection = mcp_client.connections[str(server.id)]
         tool_def = next((t for t in connection.tools if t.name == tool_name), None)
         has_output_schema = tool_def and hasattr(tool_def, 'output_schema') and tool_def.output_schema
 
         # Call the tool
         start_time = datetime.utcnow()
-        tool_result = await mcp_client.call_tool(server.name, tool_name, arguments)
+        tool_result = await mcp_client.call_tool(str(server.id), tool_name, arguments)
         end_time = datetime.utcnow()
 
         latency_ms = (end_time - start_time).total_seconds() * 1000
@@ -1349,18 +1456,19 @@ async def list_server_resources(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MCP server not found"
         )
-        assert_mcp_read(server, current_user)
+
+    assert_mcp_read(server, current_user)
 
     try:
         mcp_client = await get_mcp_client()
 
-        if server.name not in mcp_client.connections:
+        if str(server.id) not in mcp_client.connections:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Server is not connected. Call /connect first."
             )
 
-        connection = mcp_client.connections[server.name]
+        connection = mcp_client.connections[str(server.id)]
 
         return {
             "server_name": server.name,
@@ -1388,23 +1496,37 @@ async def list_server_resources(
 
 @router.get("/connections")
 async def list_active_connections(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """List all active MCP server connections.
+    """List the caller's active MCP server connections.
 
-    Returns information about currently connected MCP servers and their
-    available tools and resources.
+    The client is process-wide and its connections are keyed by server id, so
+    this reports only the servers the caller may read — otherwise every user
+    would see which integrations every other tenant is running.
     """
     try:
         mcp_client = await get_mcp_client()
         health = await mcp_client.health_check()
 
+        visible = await db.execute(
+            select(MCPServer.id, MCPServer.name).filter(
+                readable(MCPServer, mcp_caller(current_user))
+            )
+        )
+        names_by_id = {str(row[0]): row[1] for row in visible.all()}
+        servers = {
+            names_by_id.get(key, key): value
+            for key, value in (health.get("servers") or {}).items()
+            if key in names_by_id
+        }
+
         return {
             "status": health["status"],
-            "connected_servers": health["connected_servers"],
+            "connected_servers": len(servers),
             "protocol_compliant": health.get("protocol_compliant", True),
             "transport": health.get("transport", "stdio"),
-            "servers": health["servers"]
+            "servers": servers
         }
 
     except Exception as e:

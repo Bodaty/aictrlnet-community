@@ -93,6 +93,31 @@ def _chain_has(exc, cls):
     return False
 
 
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_mcp_server_rows(db):
+    """Delete the mcp_servers rows this sweep registers.
+
+    register_mcp_server COMMITs on the request session, so the module's
+    `finally: await db.rollback()` cannot undo it and every gate run used to
+    leave another row behind.
+    """
+    before = {r[0] for r in (await db.execute(text("SELECT id FROM mcp_servers"))).all()}
+    yield
+    try:
+        await db.rollback()
+        rows = (await db.execute(text("SELECT id FROM mcp_servers"))).all()
+        added = [r[0] for r in rows if r[0] not in before]
+        if added:
+            await db.execute(
+                text("DELETE FROM mcp_server_capabilities WHERE server_id = ANY(:ids)"),
+                {"ids": added},
+            )
+            await db.execute(text("DELETE FROM mcp_servers WHERE id = ANY(:ids)"), {"ids": added})
+            await db.commit()
+    except Exception:  # noqa: BLE001 - cleanup must not mask a real failure
+        await db.rollback()
+
 @pytest_asyncio.fixture
 async def dev_user_id(db):
     await db.execute(text("select set_config('app.current_tenant_id', 'default-tenant', false)"))

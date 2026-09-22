@@ -33,35 +33,23 @@ class MCPClientNode(BaseNode):
         self._initialized = False
     
     async def initialize(self, context: Dict[str, Any]) -> None:
-        """Initialize MCP connection."""
-        if self._initialized:
-            return
-        
-        try:
-            server_url = self.config.parameters.get("mcp_server_url")
-            if not server_url:
-                raise ValueError("mcp_server_url is required")
-            
-            api_key = self.config.parameters.get("api_key")
-            server_name = self.config.parameters.get("server_name", "external_mcp")
-            
-            # Get control plane URL from context or use default
-            control_plane_url = context.get("control_plane_url", "http://localhost:8000")
-            self.mcp_dispatcher = MCPDispatcher(control_plane_url)
-            
-            # Register the external MCP server
-            await self.mcp_dispatcher.register_server(
-                server_url=server_url,
-                api_key=api_key,
-                server_name=server_name
-            )
-            
-            self._initialized = True
-            logger.info(f"MCP Client Node initialized for server: {server_name} at {server_url}")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize MCP Client Node: {str(e)}")
-            raise
+        """Initialize MCP connection.
+
+        Registering used to write the node's URL and api_key into
+        ``mcp_servers`` as an owner-less row — visible to every tenant — and to
+        flip any existing row with the same URL to active, on a workflow run by
+        any user. It also probed the URL before any of that. The node never
+        worked past this point either: the dispatch call below it passes a
+        `timeout` argument the dispatcher has never accepted (ledger A-26).
+
+        So it stops here, loudly, instead of leaving that trail. The working
+        client over the MCP protocol is the next change in this series.
+        """
+        raise NotImplementedError(
+            "The mcpClient node is being rebuilt on the MCP protocol client and "
+            "is unavailable in this version; use the MCP server API to register "
+            "a server, or the mcp node's tool operation."
+        )
     
     async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute MCP client request. Returns output dict for BaseNode.run() to wrap."""

@@ -4476,6 +4476,30 @@ def _validate_stdio_command(command, args) -> None:
         raise ToolExecutionError("stdio command must not contain shell metacharacters")
 
 
+# Rows registered through this surface belong to the caller. Sentinel ids the
+# transport substitutes when it cannot resolve a user own nothing, so they can
+# never become a bucket every such caller shares.
+_SENTINEL_CALLER_IDS = {"unknown", "anonymous", "none", ""}
+
+
+def _caller_owner_id(user_id) -> Optional[str]:
+    uid = str(user_id).strip() if user_id is not None else ""
+    return None if uid.lower() in _SENTINEL_CALLER_IDS else uid
+
+
+def _assert_mcp_row_usable(row, user_id) -> None:
+    """Refuse a row the caller does not own exactly as an unknown id is refused.
+
+    Superuser handling arrives with the caller plumbing; until then this
+    surface treats everyone as a plain owner, which fails closed.
+    """
+    owner = row[7] if len(row) > 7 else None
+    caller = _caller_owner_id(user_id)
+    if owner is not None and caller is not None and str(owner) == caller:
+        return
+    raise ToolExecutionError(f"MCP server {row[0]} not registered")
+
+
 async def _handle_register_mcp_server(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
@@ -4484,6 +4508,7 @@ async def _handle_register_mcp_server(
     import uuid
 
     from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
 
     from core.tenant_context import get_current_tenant_id
 
@@ -4492,10 +4517,21 @@ async def _handle_register_mcp_server(
     transport = arguments.get("transport", "http")
     now = time.time()
 
-    # Fail closed on stdio launchers: only known MCP bootstrappers, no inline
-    # eval, no shell metacharacters (prevents command-injection RCE at probe time).
+    # This surface is driven by MCP clients and API keys, so it never registers
+    # a server that would run a command on the platform host: an instruction
+    # reaching a model would otherwise become host execution. Administrators
+    # register stdio servers through the MCP server API, which knows the caller.
     if str(transport).lower() == "stdio":
-        _validate_stdio_command(arguments.get("command"), arguments.get("args"))
+        raise ToolExecutionError(
+            "stdio MCP servers cannot be registered through this tool; an "
+            "administrator registers them with POST /api/v1/mcp/servers"
+        )
+
+    url = (arguments.get("url") or "").strip()
+    if not url:
+        raise ToolExecutionError(
+            f"register_mcp_server requires a url for '{transport}' transport"
+        )
 
     try:
         await db.execute(
@@ -4504,23 +4540,34 @@ async def _handle_register_mcp_server(
                 INSERT INTO mcp_servers
                   (id, name, url, api_key, service_type, status,
                    last_checked, created_at, updated_at,
-                   transport_type, command, args)
+                   transport_type, command, args, owner_user_id, tenant_id)
                 VALUES (:id, :name, :url, :api_key, 'external', 'pending',
-                        :now, :now, :now, :transport, :command, :args)
+                        :now, :now, :now, :transport, :command, :args,
+                        :owner, :tenant)
                 """
             ),
             {
                 "id": server_id,
                 "name": arguments["name"],
-                "url": arguments.get("url"),
+                "url": url,
                 "api_key": arguments.get("api_key"),
                 "now": now,
                 "transport": transport,
                 "command": arguments.get("command"),
                 "args": ",".join(arguments.get("args") or []) or None,
+                "owner": _caller_owner_id(user_id),
+                "tenant": tenant,
             },
         )
         await db.commit()
+    except IntegrityError as e:
+        # The driver text names the constraint and the conflicting value, which
+        # answers "is this URL already registered?" for rows the caller cannot
+        # see. Say only that it could not be registered.
+        await db.rollback()
+        raise ToolExecutionError(
+            "register_mcp_server failed: this server could not be registered"
+        ) from e
     except Exception as e:
         raise ToolExecutionError(f"register_mcp_server failed: {e}") from e
 
@@ -4541,12 +4588,16 @@ async def _handle_discover_mcp_server_tools(
 
     row = (
         await db.execute(
-            text("SELECT id, name, url, transport_type, command, args, api_key FROM mcp_servers WHERE id = :id"),
+            text(
+                "SELECT id, name, url, transport_type, command, args, api_key, "
+                "owner_user_id FROM mcp_servers WHERE id = :id"
+            ),
             {"id": arguments["server_id"]},
         )
     ).first()
     if row is None:
         raise ToolExecutionError(f"MCP server {arguments['server_id']} not registered")
+    _assert_mcp_row_usable(row, user_id)
 
     try:
         from adapters.implementations.ai.mcp_client_adapter import (
@@ -4557,10 +4608,13 @@ async def _handle_discover_mcp_server_tools(
     except Exception as e:
         return {"status": "feature_pending", "available": False, "message": str(e)}
 
-    # Defense-in-depth: re-validate the stdio launcher at connect time, in case a
-    # server row predates the registration-time gate.
+    # Same rule at connect time, for rows that predate it: this surface does not
+    # start host processes.
     if str(row[3]).lower() == "stdio":
-        _validate_stdio_command(row[4], (row[5] or "").split(",") if row[5] else None)
+        raise ToolExecutionError(
+            "stdio MCP servers cannot be used through this tool; an "
+            "administrator manages them through the MCP server API"
+        )
 
     config = MCPServerConfig(
         name=row[1],
@@ -4604,12 +4658,16 @@ async def _handle_invoke_external_mcp_tool(
 
     row = (
         await db.execute(
-            text("SELECT id, name, url, transport_type, command, args, api_key FROM mcp_servers WHERE id = :id"),
+            text(
+                "SELECT id, name, url, transport_type, command, args, api_key, "
+                "owner_user_id FROM mcp_servers WHERE id = :id"
+            ),
             {"id": arguments["server_id"]},
         )
     ).first()
     if row is None:
         raise ToolExecutionError(f"MCP server {arguments['server_id']} not registered")
+    _assert_mcp_row_usable(row, user_id)
 
     try:
         from adapters.implementations.ai.mcp_client_adapter import (
@@ -4620,10 +4678,13 @@ async def _handle_invoke_external_mcp_tool(
     except Exception as e:
         return {"status": "feature_pending", "available": False, "message": str(e)}
 
-    # Defense-in-depth: re-validate the stdio launcher at connect time, in case a
-    # server row predates the registration-time gate.
+    # Same rule at connect time, for rows that predate it: this surface does not
+    # start host processes.
     if str(row[3]).lower() == "stdio":
-        _validate_stdio_command(row[4], (row[5] or "").split(",") if row[5] else None)
+        raise ToolExecutionError(
+            "stdio MCP servers cannot be used through this tool; an "
+            "administrator manages them through the MCP server API"
+        )
 
     config = MCPServerConfig(
         name=row[1],
@@ -4666,8 +4727,11 @@ async def _handle_list_registered_mcp_servers(
         await db.execute(
             text(
                 "SELECT id, name, transport_type, url, status, last_checked "
-                "FROM mcp_servers ORDER BY name"
-            )
+                "FROM mcp_servers "
+                "WHERE owner_user_id IS NULL OR owner_user_id = :owner "
+                "ORDER BY name"
+            ),
+            {"owner": _caller_owner_id(user_id)},
         )
     ).all()
     return {
@@ -4690,6 +4754,19 @@ async def _handle_unregister_mcp_server(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
     from sqlalchemy import text
+
+    row = (
+        await db.execute(
+            text(
+                "SELECT id, name, url, transport_type, command, args, api_key, "
+                "owner_user_id FROM mcp_servers WHERE id = :id"
+            ),
+            {"id": arguments["server_id"]},
+        )
+    ).first()
+    if row is None:
+        raise ToolExecutionError(f"MCP server {arguments['server_id']} not registered")
+    _assert_mcp_row_usable(row, user_id)
 
     try:
         await db.execute(
