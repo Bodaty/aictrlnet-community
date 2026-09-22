@@ -1,171 +1,122 @@
-"""MCP Client Node for consuming external MCP services in workflows."""
+"""MCP Client Node for calling tools on an external MCP server."""
 
 import logging
 from typing import Any, Dict, Optional
-from datetime import datetime
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
-from adapters.mcp.dispatcher import MCPDispatcher
+from adapters.implementations.ai.mcp_client_adapter import (
+    MCPConnection,
+    MCPServerConfig,
+    MCPTransportType,
+)
+from core.ssrf import validate_outbound_url
 from events.event_bus import event_bus
 
 
 logger = logging.getLogger(__name__)
 
+# What the MCP protocol offers a client: tools. The node used to advertise
+# message/quality/workflow operations that the protocol has no notion of, and
+# handed them to an adapter speaking a private /mcp/v1/* dialect instead.
+SUPPORTED_OPERATIONS = ("tool",)
+
 
 class MCPClientNode(BaseNode):
-    """Node that connects to external MCP servers.
-    
-    This node allows workflows to consume services from external MCP servers,
-    enabling integration with third-party AI providers, tools, and services.
-    
+    """Node that calls a tool on an external MCP server.
+
     Parameters:
-    - mcp_server_url: URL of the external MCP server
-    - api_key: API key for authentication (optional)
-    - server_name: Name to identify the server (default: "external_mcp")
-    - operation: Type of MCP operation (message, quality, workflow)
-    - timeout: Request timeout in seconds (default: 30)
+    - mcp_server_url: URL of the MCP server (HTTP transport)
+    - api_key: bearer token for that server (optional)
+    - server_name: label used in logs and events (optional)
+    - operation: "tool"
+    - tool_name / arguments: what to call, also accepted from the node input
     """
-    
+
     def __init__(self, config: NodeConfig):
         super().__init__(config)
-        self.mcp_dispatcher: Optional[MCPDispatcher] = None
-        self._initialized = False
-    
-    async def initialize(self, context: Dict[str, Any]) -> None:
-        """Initialize MCP connection.
 
-        Registering used to write the node's URL and api_key into
-        ``mcp_servers`` as an owner-less row — visible to every tenant — and to
-        flip any existing row with the same URL to active, on a workflow run by
-        any user. It also probed the URL before any of that. The node never
-        worked past this point either: the dispatch call below it passes a
-        `timeout` argument the dispatcher has never accepted (ledger A-26).
-
-        So it stops here, loudly, instead of leaving that trail. The working
-        client over the MCP protocol is the next change in this series.
-        """
-        raise NotImplementedError(
-            "The mcpClient node is being rebuilt on the MCP protocol client and "
-            "is unavailable in this version; use the MCP server API to register "
-            "a server, or the mcp node's tool operation."
-        )
-    
     async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute MCP client request. Returns output dict for BaseNode.run() to wrap."""
-        # Ensure initialization
-        if not self._initialized:
-            await self.initialize(context)
+        """Call the configured tool and return its result."""
+        operation = self.config.parameters.get("operation", "tool")
+        if operation not in SUPPORTED_OPERATIONS:
+            raise ValueError(
+                f"Unsupported MCP operation '{operation}'. An MCP server exposes "
+                f"tools; use operation='tool' with a tool_name."
+            )
 
-        # Get operation type and timeout
-        operation = self.config.parameters.get("operation", "message")
-        timeout = self.config.parameters.get("timeout", 30)
+        server_url = self.config.parameters.get("mcp_server_url")
+        if not server_url:
+            raise ValueError("mcp_server_url is required")
 
-        # Build MCP task based on operation
-        mcp_task = self._build_mcp_task(operation, input_data)
+        tool_name = self.config.parameters.get("tool_name") or input_data.get("tool_name")
+        if not tool_name:
+            raise ValueError("tool_name is required for the tool operation")
 
-        # Dispatch task to external MCP server
-        result = await self.mcp_dispatcher.dispatch_task(mcp_task, timeout=timeout)
+        arguments = dict(self.config.parameters.get("arguments") or {})
+        arguments.update(input_data.get("arguments") or {})
 
-        # Publish execution event
-        await event_bus.publish(
-            "node.mcp_client.executed",
-            {
-                "node_id": self.config.id,
-                "server_name": self.config.parameters.get("server_name"),
-                "operation": operation,
-                "success": True
-            }
+        # Validated here rather than inside the client: the client reports a
+        # refused connection as False, which would surface as "could not
+        # connect" instead of naming the reason.
+        import asyncio
+
+        await asyncio.to_thread(validate_outbound_url, server_url)
+
+        api_key = self.config.parameters.get("api_key")
+        server_name = self.config.parameters.get("server_name") or server_url
+        connection = MCPConnection(
+            MCPServerConfig(
+                name=server_name,
+                command="",
+                transport=MCPTransportType.HTTP_SSE,
+                url=server_url,
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
+            )
         )
 
-        return result
-    
-    def _build_mcp_task(self, operation: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Build MCP task structure based on operation type."""
-        base_task = {
-            "destination": "mcp",
-            "server_name": self.config.parameters.get("server_name", "external_mcp")
-        }
-        
-        if operation == "message":
-            # MCP message processing
-            messages = input_data.get("messages", [])
-            if not messages and "content" in input_data:
-                # Convert simple content to message format
-                messages = [
-                    {"role": "user", "content": input_data["content"]}
-                ]
-            
-            base_task["payload"] = {
-                "api_type": "message",
-                "messages": messages,
-                "parameters": input_data.get("parameters", {})
+        try:
+            if not await connection.connect():
+                raise RuntimeError(f"Could not connect to MCP server '{server_name}'")
+
+            result = await connection.call_tool(tool_name, arguments)
+            if isinstance(result, dict) and (result.get("error") or result.get("isError")):
+                # A failed call is a failed node, not a completed one carrying
+                # an error payload.
+                raise RuntimeError(
+                    f"MCP tool '{tool_name}' failed: {result.get('error') or result.get('content')}"
+                )
+
+            await event_bus.publish(
+                "node.mcp_client.executed",
+                {
+                    "node_id": self.config.id,
+                    "server_name": server_name,
+                    "tool_name": tool_name,
+                    "success": True,
+                },
+            )
+            return {
+                "tool_result": result,
+                "tool_name": tool_name,
+                "server_name": server_name,
             }
-            
-        elif operation == "quality":
-            # Quality assessment
-            base_task["payload"] = {
-                "api_type": "quality",
-                "content": input_data.get("content", ""),
-                "content_type": input_data.get("content_type", "text"),
-                "criteria": input_data.get("criteria", {})
-            }
-            
-        elif operation == "workflow":
-            # Workflow creation/execution
-            base_task["payload"] = {
-                "api_type": "workflow",
-                "workflow_definition": input_data.get("workflow_definition", {}),
-                "execute_immediately": input_data.get("execute_immediately", False)
-            }
-            
-        elif operation == "tool":
-            # Tool execution (if MCP server supports tools)
-            base_task["payload"] = {
-                "api_type": "tool",
-                "tool_name": input_data.get("tool_name"),
-                "arguments": input_data.get("arguments", {})
-            }
-            
-        elif operation == "custom":
-            # Custom MCP operation
-            base_task["payload"] = {
-                "api_type": input_data.get("api_type", "custom"),
-                **input_data
-            }
-            
-        else:
-            raise ValueError(f"Unsupported MCP operation: {operation}")
-        
-        return base_task
-    
+        finally:
+            disconnect = getattr(connection, "disconnect", None)
+            if callable(disconnect):
+                try:
+                    await disconnect()
+                except Exception:  # noqa: BLE001 - teardown must not mask the result
+                    logger.debug("MCP client node: disconnect failed", exc_info=True)
+
     def validate_config(self) -> bool:
         """Validate node configuration."""
-        # Required parameters
         if not self.config.parameters.get("mcp_server_url"):
             raise ValueError("mcp_server_url is required")
-        
-        # Validate operation
-        operation = self.config.parameters.get("operation", "message")
-        valid_operations = ["message", "quality", "workflow", "tool", "custom"]
-        if operation not in valid_operations:
-            raise ValueError(f"Invalid operation: {operation}. Must be one of {valid_operations}")
-        
-        # Validate timeout
-        timeout = self.config.parameters.get("timeout", 30)
-        if not isinstance(timeout, (int, float)) or timeout <= 0:
-            raise ValueError("timeout must be a positive number")
-        
+
+        operation = self.config.parameters.get("operation", "tool")
+        if operation not in SUPPORTED_OPERATIONS:
+            raise ValueError(
+                f"Invalid operation: {operation}. Must be one of {list(SUPPORTED_OPERATIONS)}"
+            )
         return True
-    
-    async def cleanup(self) -> None:
-        """Cleanup MCP connections."""
-        if self.mcp_dispatcher and self._initialized:
-            try:
-                server_name = self.config.parameters.get("server_name", "external_mcp")
-                await self.mcp_dispatcher.unregister_server(server_name)
-                logger.info(f"MCP Client Node cleaned up for server: {server_name}")
-            except Exception as e:
-                logger.error(f"Error during MCP Client Node cleanup: {str(e)}")
-        
-        self._initialized = False

@@ -35,7 +35,9 @@ COMMUNITY_ROWS = [
     Row("browserAutomation", {"actions": [{"type": "render_html", "html": "<h1>tier-a</h1>"}, {"type": "extract_text"}]},
         required_keys=("results",), note="render_html+extract_text via browser-service:8005 (no network)"),
     Row("mcpClient", {"mcp_server_url": MCP_TRANSPORT, "api_key": DEV_TOKEN, "operation": "tool"},
-        input={"tool_name": "list_workflows", "arguments": {}}, note="tool op against our own MCP transport"),
+        input={"tool_name": "list_workflows", "arguments": {}},
+        raises=Exception, match=REFUSED,
+        note="private target refused by core.ssrf (positive path unverified-live)"),
     Row("aiProcess", {"prompt": "Reply with the single word OK."},
         note="DECISION: needs Ollama at host.docker.internal:11434; fails loudly if down"),
     Row("fileProcess", {"file_path": "__STAGED__/tier-a.txt"}, required_keys=("extracted", "content_type"), note="text file"),
@@ -67,7 +69,6 @@ ENTERPRISE_ROWS = [
 
 ROWS = COMMUNITY_ROWS
 KNOWN_FAILING_ROWS = {
-    "mcpClient:tool op against our own MCP tran": "A-26",
 }
 
 

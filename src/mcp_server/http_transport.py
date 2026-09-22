@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_active_user
+from core.mcp_access import mcp_caller
 from core.tenant_context import get_current_tenant_id
 
 from .protocol import MCPProtocolHandler
@@ -111,7 +112,11 @@ async def handle_mcp_request(
 
     body = await request.json()
 
-    user_id = str(getattr(current_user, "id", "anonymous"))
+    # The authenticated principal, not a string: the MCP server tools authorize
+    # against it, and a caller whose id cannot be resolved must own nothing
+    # rather than share an "anonymous" bucket with every other such caller.
+    caller = mcp_caller(current_user)
+    user_id = caller.user_id or "anonymous"
     api_key = getattr(request.state, "api_key", None)
     tenant_id = get_current_tenant_id()
 
@@ -121,6 +126,7 @@ async def handle_mcp_request(
         user_id=user_id,
         api_key=api_key,
         tenant_id=tenant_id,
+        caller=caller,
     )
 
     # JSON-RPC 2.0 batch support — array of requests

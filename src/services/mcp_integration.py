@@ -45,20 +45,23 @@ class MCPTaskIntegration:
     @staticmethod
     async def route_task(
         task: Dict[str, Any],
-        control_plane_url: Optional[str] = None
+        control_plane_url: Optional[str] = None,
+        *,
+        caller,
+        db,
     ) -> Tuple[Dict[str, Any], int]:
-        """Route a task to an appropriate MCP server"""
+        """Route a task to a server the caller may use.
+
+        `caller` and `db` are required so the dispatcher can apply the per-owner
+        rule on the caller's own session.
+        """
         try:
             logger.debug(f"MCPTaskIntegration.route_task received task: {task}")
-            
-            # Get or create dispatcher
+
             dispatcher = create_mcp_dispatcher(control_plane_url)
-            
-            # Ensure dispatcher is initialized
-            await dispatcher.initialize()
-            
+
             # Dispatch the task
-            result = await dispatcher.dispatch_task(task)
+            result = await dispatcher.dispatch_task(task, caller=caller, db=db)
             
             if not result.get("success", False):
                 error_msg = result.get("error", "Unknown error")
@@ -125,13 +128,12 @@ class MCPTaskIntegration:
         return task
     
     @staticmethod
-    async def list_mcp_capabilities() -> Dict[str, Any]:
-        """List all available MCP capabilities across servers"""
+    async def list_mcp_capabilities(*, caller, db) -> Dict[str, Any]:
+        """List the MCP capabilities the caller can see."""
         try:
             dispatcher = create_mcp_dispatcher()
-            await dispatcher.initialize()
-            
-            servers = await dispatcher.list_available_servers()
+
+            servers = await dispatcher.list_available_servers(caller=caller, db=db)
             
             # Aggregate capabilities
             all_capabilities = set()
@@ -154,39 +156,3 @@ class MCPTaskIntegration:
         except Exception as e:
             logger.error(f"Failed to list MCP capabilities: {str(e)}")
             raise InternalServerError(f"Failed to list capabilities: {str(e)}")
-    
-    @staticmethod
-    async def get_preferred_server(
-        api_type: str,
-        preferences: Optional[Dict[str, Any]] = None
-    ) -> Optional[str]:
-        """Get the preferred MCP server for a given API type"""
-        try:
-            dispatcher = create_mcp_dispatcher()
-            await dispatcher.initialize()
-            
-            servers = await dispatcher.list_available_servers(capability=api_type)
-            
-            if not servers:
-                return None
-            
-            # Apply preferences if provided
-            if preferences:
-                # Filter by service type
-                if "service_type" in preferences:
-                    servers = [
-                        s for s in servers 
-                        if s.get("service_type") == preferences["service_type"]
-                    ]
-                
-                # Filter by specific model
-                if "model" in preferences:
-                    # This would require additional metadata about supported models
-                    pass
-            
-            # Return first matching server
-            return servers[0]["name"] if servers else None
-            
-        except Exception as e:
-            logger.error(f"Failed to get preferred server: {str(e)}")
-            return None

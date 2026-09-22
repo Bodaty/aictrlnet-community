@@ -90,12 +90,14 @@ class MCPProtocolHandler:
         user_id: str,
         api_key: Optional[Any] = None,
         tenant_id: Optional[str] = None,
+        caller: Optional[Any] = None,
     ):
         self.tools_registry = tools_registry
         self.db = db
         self.user_id = user_id
         self.api_key = api_key
         self.tenant_id = tenant_id
+        self.caller = caller
         # Per-request PlanService — cache is scoped to this JSON-RPC
         # HTTP request / batch so plan lookups are not repeated.
         self.plan_service = PlanService(db)
@@ -218,6 +220,7 @@ class MCPProtocolHandler:
                 api_key=self.api_key,
                 tenant_id=self.tenant_id,
                 plan_service=self.plan_service,
+                caller=self.caller,
             )
             return _jsonrpc_result(msg_id, {
                 "content": [{"type": "text", "text": json.dumps(result, default=str)}],

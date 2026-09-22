@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from adapters.base_adapter import BaseAdapter
+from core.ssrf import SSRFError
 from adapters.models import (
     AdapterCapability,
     AdapterConfig,
@@ -134,6 +135,9 @@ class MCPConnection:
             else:
                 logger.error(f"Unknown transport type: {self.config.transport}")
                 return False
+        except SSRFError:
+            # A refused destination is a reason, not a failed handshake.
+            raise
         except Exception as e:
             logger.error(f"Failed to connect to MCP server {self.config.name}: {e}")
             return False
@@ -200,10 +204,19 @@ class MCPConnection:
             logger.error(f"HTTP/SSE transport requires a URL for server {self.config.name}")
             return False
 
-        self._http_client = httpx.AsyncClient(
+        # The url reaches here from a stored row or a node parameter, so it is
+        # validated before the connection and the client is pinned to the
+        # address that was checked (a DNS answer can change in between).
+        import asyncio as _asyncio
+
+        from core.ssrf import pin_outbound_client, validate_outbound_url
+
+        await _asyncio.to_thread(validate_outbound_url, self.config.url)
+
+        self._http_client = pin_outbound_client(httpx.AsyncClient(
             timeout=30.0,
             headers=self.config.headers or {},
-        )
+        ))
         self._http_url = self.config.url.rstrip("/")
 
         # Perform initialization handshake over HTTP

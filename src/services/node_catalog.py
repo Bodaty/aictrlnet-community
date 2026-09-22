@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 import logging
 
+from core.mcp_access import readable
 from models.community_complete import Adapter, MCPTool, MCPServer
 from models.iam import IAMAgent
 from schemas.workflow_node import (
@@ -25,8 +26,10 @@ logger = logging.getLogger(__name__)
 class DynamicNodeCatalogService:
     """Service for generating dynamic workflow node catalog."""
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, caller=None):
         self.db = db
+        # The principal whose view of MCP servers this catalog reflects.
+        self.caller = caller
         self.adapter_service = AdapterService(db)
         self.iam_service = IAMService(db)
         self.mcp_service = MCPService(db)
@@ -590,8 +593,9 @@ class DynamicNodeCatalogService:
                     "mcp_server_url": {"type": "string", "required": True, "description": "URL of external MCP server"},
                     "api_key": {"type": "string", "required": False, "description": "API key for authentication"},
                     "server_name": {"type": "string", "default": "external_mcp", "description": "Name to identify server"},
-                    "operation": {"type": "select", "default": "message", "options": ["message", "quality", "workflow", "tool", "custom"]},
-                    "timeout": {"type": "number", "default": 30, "description": "Request timeout in seconds"}
+                    "operation": {"type": "select", "default": "tool", "options": ["tool"], "description": "An MCP server exposes tools"},
+                    "tool_name": {"type": "string", "required": True, "description": "Tool to call on that server"},
+                    "arguments": {"type": "object", "required": False, "description": "Arguments passed to the tool"}
                 }
             ),
             NodeMetadata(
@@ -661,9 +665,12 @@ class DynamicNodeCatalogService:
         # Dynamic MCP tool nodes
         try:
             # Get MCP servers and tools
-            servers_result = await self.db.execute(
-                select(MCPServer).where(MCPServer.status == "active")
-            )
+            # Only servers this caller may see: the catalog lists one node per
+            # server tool, which would otherwise name every tenant's servers.
+            server_query = select(MCPServer).where(MCPServer.status == "active")
+            if self.caller is not None:
+                server_query = server_query.where(readable(MCPServer, self.caller))
+            servers_result = await self.db.execute(server_query)
             servers = servers_result.scalars().all()
             
             for server in servers:

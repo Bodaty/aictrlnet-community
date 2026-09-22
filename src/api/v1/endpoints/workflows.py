@@ -40,6 +40,7 @@ from schemas.workflow_templates import (
 from services.workflow import WorkflowService
 from services.workflow_template_service import create_workflow_template_service
 from services.workflow_execution import WorkflowExecutionService
+from core.mcp_access import mcp_caller
 from services.node_catalog import DynamicNodeCatalogService
 from services.workflow_scheduler import WorkflowScheduler as _CommunityScheduler, TriggerType
 from api.v1.endpoints._auth_helpers import get_safe_user_id, get_safe_attr
@@ -126,7 +127,7 @@ async def get_workflow_catalog(
     edition = get_safe_attr(current_user, "edition", "community")
 
     # Use dynamic catalog service
-    catalog_service = DynamicNodeCatalogService(db)
+    catalog_service = DynamicNodeCatalogService(db, caller=mcp_caller(current_user))
     catalog = await catalog_service.get_catalog(tenant_id, edition)
     
     return catalog
@@ -1220,7 +1221,7 @@ async def validate_workflow(
     edges = workflow_definition.get("edges", [])
     
     # Use catalog service for validation
-    catalog_service = DynamicNodeCatalogService(db)
+    catalog_service = DynamicNodeCatalogService(db, caller=mcp_caller(current_user))
     validation_result = await catalog_service.validate_workflow_definition(
         nodes=nodes,
         edges=edges,

@@ -2,6 +2,8 @@
 
 from typing import Dict, Any, Optional, List
 import httpx
+
+from core.ssrf import SSRFError, pin_outbound_client, validate_outbound_url
 import time
 import uuid
 import json
@@ -34,46 +36,28 @@ class MCPServerAdapter:
         self.mcp_server_url = mcp_server_url.rstrip('/')
         self.api_key = api_key
         self.server_name = server_name or f"mcp-server-{int(time.time())}"
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = pin_outbound_client(httpx.AsyncClient(timeout=30.0))
         self.capabilities = {}
         self.server_info = {}
         self.server_id = None
         
-    async def register_mcp_server(self) -> Dict[str, Any]:
-        """Register this MCP server and fetch capabilities"""
-        try:
-            # Fetch server info from MCP server
-            server_info = await self._fetch_server_info()
-            self.server_info = server_info
-            self.capabilities = self._extract_capabilities(server_info)
-            
-            # Store in database
-            await self._store_server_information()
-            
-            return {
-                "success": True,
-                "server_name": self.server_name,
-                "server_url": self.mcp_server_url,
-                "mcp_server_info": server_info,
-                "capabilities": self.capabilities,
-                "server_id": self.server_id
-            }
-        except Exception as e:
-            logger.error(f"Failed to register MCP server: {str(e)}")
-            raise AdapterError(f"MCP server registration failed: {str(e)}")
-    
     async def _fetch_server_info(self) -> Dict[str, Any]:
         """Fetch server information from /mcp/v1/info endpoint"""
         headers = self._get_headers()
         
         try:
             response = await self.client.get(
-                f"{self.mcp_server_url}/mcp/v1/info",
+                await self._validated_url("/mcp/v1/info"),
                 headers=headers
             )
             response.raise_for_status()
             return response.json()
+        except SSRFError:
+            # A refused destination is not "the info endpoint is missing".
+            raise
         except httpx.HTTPError as e:
+            if type(e).__name__ == "SSRFProtectionError":
+                raise
             logger.error(f"Failed to fetch server info: {str(e)}")
             # Return basic info if endpoint doesn't exist
             return {
@@ -83,6 +67,13 @@ class MCPServerAdapter:
                 "status": "active"
             }
     
+    async def _validated_url(self, path: str) -> str:
+        """Check the destination before each send: a stored url can change."""
+        import asyncio as _asyncio
+
+        await _asyncio.to_thread(validate_outbound_url, self.mcp_server_url)
+        return f"{self.mcp_server_url}{path}"
+
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for MCP server requests"""
         headers = {
@@ -118,81 +109,6 @@ class MCPServerAdapter:
             capabilities = {"message": True, "completion": True}
         
         return capabilities
-    
-    async def _store_server_information(self) -> None:
-        """Store server information in database"""
-        SessionLocal = get_session_maker()
-        async with SessionLocal() as db:
-            try:
-                # Create or update server record
-                result = await db.execute(
-                    select(MCPServer).filter_by(url=self.mcp_server_url)
-                )
-                server = result.scalar_one_or_none()
-                
-                if not server:
-                    server = MCPServer(
-                        id=str(uuid.uuid4()),
-                        name=self.server_name,
-                        url=self.mcp_server_url,
-                        api_key=self.api_key,  # Should be encrypted in production
-                        service_type=self._determine_service_type(),
-                        status="active",
-                        last_checked=datetime.utcnow().timestamp(),
-                        server_info=json.dumps(self.server_info)
-                    )
-                    db.add(server)
-                else:
-                    server.status = "active"
-                    server.last_checked = datetime.utcnow().timestamp()
-                    server.server_info = json.dumps(self.server_info)
-                
-                await db.commit()
-                self.server_id = server.id
-                
-                # Store capabilities
-                for capability, supported in self.capabilities.items():
-                    result = await db.execute(
-                        select(MCPServerCapability).filter_by(
-                            server_id=server.id,
-                            capability=capability
-                        )
-                    )
-                    cap_record = result.scalar_one_or_none()
-                    
-                    if not cap_record:
-                        cap_record = MCPServerCapability(
-                            id=str(uuid.uuid4()),
-                            server_id=server.id,
-                            capability=capability,
-                            supported=supported,
-                            details=json.dumps({"source": "auto-detected"})
-                        )
-                        db.add(cap_record)
-                
-                await db.commit()
-                
-            except Exception as e:
-                await db.rollback()
-                logger.error(f"Failed to store server information: {str(e)}")
-                raise
-    
-    def _determine_service_type(self) -> str:
-        """Determine service type from URL or server info"""
-        url_lower = self.mcp_server_url.lower()
-        
-        if "openai" in url_lower:
-            return "openai"
-        elif "anthropic" in url_lower or "claude" in url_lower:
-            return "anthropic"
-        elif "google" in url_lower or "gemini" in url_lower:
-            return "google"
-        elif "huggingface" in url_lower:
-            return "huggingface"
-        elif "localhost" in url_lower or "127.0.0.1" in url_lower:
-            return "local"
-        else:
-            return "custom"
     
     async def process_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Process a task using the external MCP server"""
@@ -236,7 +152,7 @@ class MCPServerAdapter:
         
         try:
             response = await self.client.post(
-                f"{self.mcp_server_url}/mcp/v1/messages",
+                await self._validated_url("/mcp/v1/messages"),
                 headers=headers,
                 json=request_body
             )
@@ -283,7 +199,7 @@ class MCPServerAdapter:
         
         try:
             response = await self.client.post(
-                f"{self.mcp_server_url}/mcp/v1/embeddings",
+                await self._validated_url("/mcp/v1/embeddings"),
                 headers=headers,
                 json=request_body
             )
@@ -328,7 +244,7 @@ class MCPServerAdapter:
         
         try:
             response = await self.client.post(
-                f"{self.mcp_server_url}/mcp/v1/tools/execute",
+                await self._validated_url("/mcp/v1/tools/execute"),
                 headers=headers,
                 json=request_body
             )

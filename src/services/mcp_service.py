@@ -70,53 +70,6 @@ class MCPService:
     
     # Server Management
     
-    async def register_server(self, server_data: MCPServerCreate) -> MCPServerResponse:
-        """Create a new MCP server."""
-        try:
-            server_id = str(uuid.uuid4())
-            server = MCPServer(
-                id=server_id,
-                name=server_data.name,
-                url=server_data.url,
-                description=server_data.description,
-                service_type=server_data.provider or "general",
-                status="active",
-                server_info=json.dumps(server_data.config) if server_data.config else None
-            )
-            
-            self.db.add(server)
-            
-            # Add capabilities
-            for cap_name in server_data.capabilities:
-                capability = MCPServerCapability(
-                    id=str(uuid.uuid4()),
-                    server_id=server.id,
-                    capability=cap_name,
-                    supported=True,
-                    created_at=datetime.utcnow().timestamp()
-                )
-                self.db.add(capability)
-            
-            await self.db.commit()
-            await self.db.refresh(server)
-            
-            # Register with dispatcher
-            await self.dispatcher.register_server(server.id, {
-                "url": server.url,
-                "provider": server.service_type,
-                "capabilities": server_data.capabilities
-            })
-            
-            return self._server_to_response(server)
-            
-        except IntegrityError:
-            await self.db.rollback()
-            raise ValueError(f"Server with name {server_data.name} already exists")
-    
-    async def create_server(self, server_data: MCPServerCreate) -> MCPServerResponse:
-        """Alias for register_server to match endpoint expectations."""
-        return await self.register_server(server_data)
-    
     async def get_server(self, server_id: str) -> Optional[MCPServerResponse]:
         """Get MCP server by ID."""
         result = await self.db.execute(
@@ -230,69 +183,6 @@ class MCPService:
         return discovered
     
     # Execution
-    
-    async def execute_method(self, request: MCPExecuteRequest) -> MCPExecuteResponse:
-        """Execute a method on an MCP server."""
-        # Validate server exists and is active
-        server = await self.get_server(request.server_id)
-        if not server:
-            raise ValueError(f"Server {request.server_id} not found")
-        if server.status != "active":
-            raise ValueError(f"Server {request.server_id} is not active")
-        
-        # Execute via dispatcher
-        try:
-            start_time = datetime.utcnow()
-            result = await self.dispatcher.dispatch(
-                request.server_id,
-                request.method,
-                request.params
-            )
-            duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-            
-            # Record invocation
-            invocation = MCPInvocation(
-                server_id=request.server_id,
-                tool_id=str(uuid.uuid4()),  # Mock tool ID for now
-                request_data={"method": request.method, "params": request.params},
-                response_data=result,
-                status="success",
-                duration_ms=duration_ms
-            )
-            self.db.add(invocation)
-            await self.db.commit()
-            
-            return MCPExecuteResponse(
-                server_id=request.server_id,
-                method=request.method,
-                result=result,
-                duration_ms=duration_ms,
-                status="success"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error executing method {request.method}: {e}")
-            
-            # Record failed invocation
-            invocation = MCPInvocation(
-                server_id=request.server_id,
-                tool_id=str(uuid.uuid4()),
-                request_data={"method": request.method, "params": request.params},
-                response_data=None,
-                status="failed",
-                error_message=str(e),
-                duration_ms=0
-            )
-            self.db.add(invocation)
-            await self.db.commit()
-            
-            return MCPExecuteResponse(
-                server_id=request.server_id,
-                method=request.method,
-                result=None,
-                error=str(e),
-                status="failed"
-            )
     
     # Tools
     

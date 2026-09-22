@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Set
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
+from core.mcp_access import MCPCaller, can_read, can_use
 from core.tenant_context import DEFAULT_TENANT_ID
 
 from . import observability, self_server
@@ -155,8 +156,15 @@ async def execute_tool(
     api_key: Optional[Any] = None,
     tenant_id: Optional[str] = None,
     plan_service: Optional[PlanService] = None,
+    caller: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Execute an MCP tool through the full pipeline."""
+    """Execute an MCP tool through the full pipeline.
+
+    ``caller`` is the authenticated principal, needed by the tools that act on
+    MCP server rows. A missing one becomes a plain owner with this ``user_id``,
+    which fails closed: a superuser is only ever recognised from a real
+    principal, never inferred.
+    """
 
     # One PlanService per HTTP request (passed in from protocol.py).
     # If not supplied, create a per-call one (safe but loses batch caching).
@@ -239,6 +247,12 @@ async def execute_tool(
             raise ToolExecutionError(f"Unknown tool: {tool_name}")
 
         async def run_handler():
+            if tool_name in _CALLER_AWARE_TOOLS:
+                return await handler(
+                    arguments, db, user_id,
+                    caller=caller or MCPCaller(user_id=_caller_owner_id(user_id),
+                                               tenant_id=tenant_id),
+                )
             return await handler(arguments, db, user_id)
 
         try:
@@ -4476,6 +4490,16 @@ def _validate_stdio_command(command, args) -> None:
         raise ToolExecutionError("stdio command must not contain shell metacharacters")
 
 
+# The MCP server tools authorize per row, so they receive the principal.
+_CALLER_AWARE_TOOLS = frozenset({
+    "register_mcp_server",
+    "discover_mcp_server_tools",
+    "invoke_external_mcp_tool",
+    "list_registered_mcp_servers",
+    "unregister_mcp_server",
+})
+
+
 # Rows registered through this surface belong to the caller. Sentinel ids the
 # transport substitutes when it cannot resolve a user own nothing, so they can
 # never become a bucket every such caller shares.
@@ -4487,21 +4511,44 @@ def _caller_owner_id(user_id) -> Optional[str]:
     return None if uid.lower() in _SENTINEL_CALLER_IDS else uid
 
 
-def _assert_mcp_row_usable(row, user_id) -> None:
-    """Refuse a row the caller does not own exactly as an unknown id is refused.
+def _mcp_config_for_row(row, config_cls, transport_cls):
+    """Build a client config from an mcp_servers row.
 
-    Superuser handling arrives with the caller plumbing; until then this
-    surface treats everyone as a plain owner, which fails closed.
+    Three mismatches made this raise before it could connect: the config has no
+    `api_key` field (the key travels as an Authorization header, as
+    adapters/mcp/server_adapter.py sends it), the tool's transport vocabulary is
+    http/sse while the client's enum is stdio/http_sse, and `command` is a
+    required field that http rows do not have.
     """
+    transport = str(row[3] or "http").lower()
+    transport = transport_cls.STDIO if transport == "stdio" else transport_cls.HTTP_SSE
+    api_key = row[6]
+    return config_cls(
+        name=str(row[0]),
+        transport=transport,
+        url=row[2],
+        command=row[4] or "",
+        args=(row[5] or "").split(",") if row[5] else [],
+        headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
+    )
+
+
+def _principal(caller, user_id) -> "MCPCaller":
+    """The principal to authorize with; absent one, a plain owner (fail closed)."""
+    return caller or MCPCaller(user_id=_caller_owner_id(user_id))
+
+
+def _assert_mcp_row_usable(row, caller: "MCPCaller") -> None:
+    """Refuse a row the caller may not use exactly as an unknown id is refused."""
     owner = row[7] if len(row) > 7 else None
-    caller = _caller_owner_id(user_id)
-    if owner is not None and caller is not None and str(owner) == caller:
+    if can_use(str(owner) if owner is not None else None, caller):
         return
     raise ToolExecutionError(f"MCP server {row[0]} not registered")
 
 
 async def _handle_register_mcp_server(
-    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str,
+    caller: Optional["MCPCaller"] = None,
 ) -> Dict[str, Any]:
     """Persist an external MCP server config to ``mcp_servers`` table."""
     import time
@@ -4512,8 +4559,12 @@ async def _handle_register_mcp_server(
 
     from core.tenant_context import get_current_tenant_id
 
+    principal = _principal(caller, user_id)
     server_id = str(uuid.uuid4())
-    tenant = get_current_tenant_id() or "default"
+    # The caller's own tenant, not the request's: an OAuth client resolves the
+    # request tenant to the client's tenant (mcp-dcr-public for DCR clients),
+    # which is a bucket shared by every such client.
+    tenant = principal.tenant_id or get_current_tenant_id() or "default"
     transport = arguments.get("transport", "http")
     now = time.time()
 
@@ -4555,7 +4606,7 @@ async def _handle_register_mcp_server(
                 "transport": transport,
                 "command": arguments.get("command"),
                 "args": ",".join(arguments.get("args") or []) or None,
-                "owner": _caller_owner_id(user_id),
+                "owner": principal.user_id,
                 "tenant": tenant,
             },
         )
@@ -4581,7 +4632,8 @@ async def _handle_register_mcp_server(
 
 
 async def _handle_discover_mcp_server_tools(
-    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str,
+    caller: Optional["MCPCaller"] = None,
 ) -> Dict[str, Any]:
     """Connect to a registered external MCP server and enumerate its tools."""
     from sqlalchemy import text
@@ -4597,7 +4649,7 @@ async def _handle_discover_mcp_server_tools(
     ).first()
     if row is None:
         raise ToolExecutionError(f"MCP server {arguments['server_id']} not registered")
-    _assert_mcp_row_usable(row, user_id)
+    _assert_mcp_row_usable(row, _principal(caller, user_id))
 
     try:
         from adapters.implementations.ai.mcp_client_adapter import (
@@ -4616,14 +4668,7 @@ async def _handle_discover_mcp_server_tools(
             "administrator manages them through the MCP server API"
         )
 
-    config = MCPServerConfig(
-        name=row[1],
-        transport=MCPTransportType(row[3]),
-        url=row[2],
-        command=row[4],
-        args=(row[5] or "").split(",") if row[5] else None,
-        api_key=row[6],
-    )
+    config = _mcp_config_for_row(row, MCPServerConfig, MCPTransportType)
     conn = MCPConnection(config)
     try:
         ok = await conn.connect()
@@ -4651,7 +4696,8 @@ async def _handle_discover_mcp_server_tools(
 
 
 async def _handle_invoke_external_mcp_tool(
-    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str,
+    caller: Optional["MCPCaller"] = None,
 ) -> Dict[str, Any]:
     """Call a tool on a registered external MCP server."""
     from sqlalchemy import text
@@ -4667,7 +4713,7 @@ async def _handle_invoke_external_mcp_tool(
     ).first()
     if row is None:
         raise ToolExecutionError(f"MCP server {arguments['server_id']} not registered")
-    _assert_mcp_row_usable(row, user_id)
+    _assert_mcp_row_usable(row, _principal(caller, user_id))
 
     try:
         from adapters.implementations.ai.mcp_client_adapter import (
@@ -4686,14 +4732,7 @@ async def _handle_invoke_external_mcp_tool(
             "administrator manages them through the MCP server API"
         )
 
-    config = MCPServerConfig(
-        name=row[1],
-        transport=MCPTransportType(row[3]),
-        url=row[2],
-        command=row[4],
-        args=(row[5] or "").split(",") if row[5] else None,
-        api_key=row[6],
-    )
+    config = _mcp_config_for_row(row, MCPServerConfig, MCPTransportType)
     conn = MCPConnection(config)
     try:
         if not await conn.connect():
@@ -4719,21 +4758,33 @@ async def _handle_invoke_external_mcp_tool(
 
 
 async def _handle_list_registered_mcp_servers(
-    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str,
+    caller: Optional["MCPCaller"] = None,
 ) -> Dict[str, Any]:
     from sqlalchemy import text
 
-    rows = (
-        await db.execute(
-            text(
-                "SELECT id, name, transport_type, url, status, last_checked "
-                "FROM mcp_servers "
-                "WHERE owner_user_id IS NULL OR owner_user_id = :owner "
-                "ORDER BY name"
-            ),
-            {"owner": _caller_owner_id(user_id)},
-        )
-    ).all()
+    principal = _principal(caller, user_id)
+    if principal.is_superuser:
+        rows = (
+            await db.execute(
+                text(
+                    "SELECT id, name, transport_type, url, status, last_checked "
+                    "FROM mcp_servers ORDER BY name"
+                )
+            )
+        ).all()
+    else:
+        rows = (
+            await db.execute(
+                text(
+                    "SELECT id, name, transport_type, url, status, last_checked "
+                    "FROM mcp_servers "
+                    "WHERE owner_user_id IS NULL OR owner_user_id = :owner "
+                    "ORDER BY name"
+                ),
+                {"owner": principal.user_id},
+            )
+        ).all()
     return {
         "servers": [
             {
@@ -4751,7 +4802,8 @@ async def _handle_list_registered_mcp_servers(
 
 
 async def _handle_unregister_mcp_server(
-    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str,
+    caller: Optional["MCPCaller"] = None,
 ) -> Dict[str, Any]:
     from sqlalchemy import text
 
@@ -4766,7 +4818,7 @@ async def _handle_unregister_mcp_server(
     ).first()
     if row is None:
         raise ToolExecutionError(f"MCP server {arguments['server_id']} not registered")
-    _assert_mcp_row_usable(row, user_id)
+    _assert_mcp_row_usable(row, _principal(caller, user_id))
 
     try:
         await db.execute(

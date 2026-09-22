@@ -22,12 +22,11 @@ router = APIRouter()
 
 
 def _assert_platform_admin(current_user, action: str) -> None:
-    """These paths reach MCP servers, or other callers' task payloads.
+    """tasks_mcp has no owner column, so its reads stay administrator-only.
 
-    Routing picks a server the caller may not own and connects with that
-    row's stored credentials, and tasks_mcp has no owner column to scope
-    reads by. Until both carry ownership (dispatcher work, next change),
-    they are administrator-only rather than open to every account.
+    Routing itself is per-owner (the dispatcher applies the rule), but a task
+    record cannot be attributed to a caller without a schema change, and
+    /tasks/route already returns the result to whoever asked for it.
     """
     if mcp_caller(current_user).is_superuser:
         return
@@ -46,8 +45,9 @@ async def route_task(
     """Route a task, potentially to MCP servers"""
     try:
         # Ensure task has required fields
-        if "task_id" not in task_data:
-            task_data["task_id"] = str(uuid.uuid4())
+        # Server-generated: the id is this table's primary key, and a
+        # caller-supplied one that collides answers with the SQL error.
+        task_data["task_id"] = str(uuid.uuid4())
         if "source_id" not in task_data:
             task_data["source_id"] = str(current_user.id)
         if "destination" not in task_data:
@@ -57,9 +57,11 @@ async def route_task(
         
         # Check if this is an MCP task
         if MCPTaskIntegration.is_mcp_task(task_data):
-            _assert_platform_admin(current_user, "Routing a task to an MCP server")
-            # Route to MCP
-            result, status_code = await MCPTaskIntegration.route_task(task_data)
+            # Routing is per-owner now: the dispatcher only reaches servers this
+            # caller may use, so an owner routes to their own again.
+            result, status_code = await MCPTaskIntegration.route_task(
+                task_data, caller=mcp_caller(current_user), db=db
+            )
             
             # Store task result in database
             task_mcp = TaskMCP(

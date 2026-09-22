@@ -12,6 +12,7 @@ See: https://modelcontextprotocol.io/specification/2025-03-26
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, false
+from sqlalchemy.exc import IntegrityError
 from typing import List, Optional, Dict, Any
 import logging
 import json
@@ -100,6 +101,22 @@ def _mcp_owner_id(current_user) -> Optional[str]:
 def _is_superuser(current_user) -> bool:
     # is_superuser() also honours is_admin, which the dict shape carries.
     return bool(is_superuser(current_user))
+
+
+async def _assert_outbound_url_allowed(url: str) -> None:
+    """A server url is a destination this platform will dial on request.
+
+    Checked when it is stored as well as when it is used, so a rejected
+    destination never becomes a row that something else probes later.
+    """
+    import asyncio
+
+    from core.ssrf import SSRFError, validate_outbound_url
+
+    try:
+        await asyncio.to_thread(validate_outbound_url, url)
+    except SSRFError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 def _assert_may_run_stdio(current_user) -> None:
@@ -322,15 +339,22 @@ async def register_mcp_server(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="url is required for http_sse transport"
                 )
+            await _assert_outbound_url_allowed(server_data.url)
 
-        # Check if server already exists by name
+        # Per owner, not globally: a global check answers "does anyone have a
+        # server by this name?" for rows the caller cannot see, and lets one
+        # caller occupy a name another needs.
+        caller = mcp_caller(current_user)
         existing = await db.execute(
-            select(MCPServer).filter_by(name=server_data.name)
+            select(MCPServer).filter(
+                MCPServer.name == server_data.name,
+                MCPServer.owner_user_id == caller.user_id,
+            )
         )
         if existing.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Server with name '{server_data.name}' already exists"
+                detail=f"You already have a server named '{server_data.name}'"
             )
 
         # Create server record in database
@@ -352,7 +376,16 @@ async def register_mcp_server(
             updated_at=datetime.utcnow().timestamp()
         )
         db.add(server)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            # The constraint text names the conflicting url, which belongs to
+            # whoever registered it first. (Per-owner uniqueness is filed.)
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This server could not be registered",
+            )
         await db.refresh(server)
 
         # For stdio transport, attempt to connect and discover capabilities
@@ -628,6 +661,9 @@ async def update_mcp_server(
     )
     if _turns_stdio or _stdio_fields_changed(server, update_dict):
         _assert_may_run_stdio(current_user)
+
+    if update_dict.get("url"):
+        await _assert_outbound_url_allowed(update_dict["url"])
     for field, value in update_dict.items():
         if field == "server_metadata" and value is not None:
             # Store metadata as JSON string
@@ -693,11 +729,8 @@ async def delete_mcp_server(
         )
     assert_mcp_mutate(server, current_user)
 
-    # Remove from dispatcher
-    dispatcher = create_mcp_dispatcher()
-    await dispatcher.remove_server(server.name)
-    
-    # Delete from database
+    # Delete from database (the dispatcher holds nothing between calls, and
+    # removing "by name" used to deactivate whichever row had that name)
     await db.delete(server)
     await db.commit()
     
@@ -808,7 +841,7 @@ async def check_server_health(
         else:
             # Fallback to old dispatcher for HTTP/SSE or legacy servers
             dispatcher = create_mcp_dispatcher()
-            health = await dispatcher.get_server_health(server.name)
+            health = await dispatcher.check_health(server)
 
             return MCPHealthCheck(
                 server_id=server.id,
@@ -877,7 +910,9 @@ async def test_server_connection(
         
         # Route task
         start_time = datetime.utcnow()
-        result, status_code = await MCPTaskIntegration.route_task(test_task)
+        result, status_code = await MCPTaskIntegration.route_task(
+            test_task, caller=mcp_caller(current_user), db=db
+        )
         end_time = datetime.utcnow()
         
         latency_ms = (end_time - start_time).total_seconds() * 1000
@@ -911,11 +946,14 @@ async def test_server_connection(
 
 @router.get("/discovery", response_model=MCPServerDiscoveryResponse)
 async def discover_mcp_resources(
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
     """Discover available MCP resources and capabilities"""
     try:
-        capabilities = await MCPTaskIntegration.list_mcp_capabilities()
+        capabilities = await MCPTaskIntegration.list_mcp_capabilities(
+            caller=mcp_caller(current_user), db=db
+        )
 
         return MCPServerDiscoveryResponse(
             servers=[
@@ -940,10 +978,10 @@ async def discover_mcp_resources(
 @router.post("/execute", response_model=MCPTaskResponse)
 async def execute_mcp_task(
     task_data: MCPTaskCreate,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Execute a task via MCP"""
-    _assert_platform_admin(current_user, "Executing a task through MCP")
+    """Execute a task via MCP (against a server the caller may use)."""
     try:
         # Prepare task
         task = MCPTaskIntegration.prepare_mcp_task({
@@ -953,7 +991,9 @@ async def execute_mcp_task(
         }, api_type=task_data.api_type)
         
         # Route task
-        result, status_code = await MCPTaskIntegration.route_task(task)
+        result, status_code = await MCPTaskIntegration.route_task(
+            task, caller=mcp_caller(current_user), db=db
+        )
         
         if status_code != 200:
             raise HTTPException(
