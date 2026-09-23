@@ -186,11 +186,26 @@ class MCPService:
     
     # Tools
     
-    async def list_tools(self, server_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List available tools."""
+    async def list_tools(
+        self, server_id: Optional[str] = None, caller=None
+    ) -> List[Dict[str, Any]]:
+        """List available tools.
+
+        With a caller, only tools belonging to servers that caller may see:
+        this list is handed to an agent as its available tools, and it used to
+        name every tenant's servers and tool schemas.
+        """
         query = select(MCPTool)
         if server_id:
             query = query.where(MCPTool.server_id == server_id)
+        if caller is not None:
+            from core.mcp_access import readable
+
+            query = query.where(
+                MCPTool.server_id.in_(
+                    select(MCPServer.id).where(readable(MCPServer, caller))
+                )
+            )
             
         result = await self.db.execute(query)
         tools = result.scalars().all()
