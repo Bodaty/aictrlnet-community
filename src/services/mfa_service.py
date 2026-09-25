@@ -17,7 +17,7 @@ from core.config import settings
 from core.cache import get_cache
 from models.user import User
 from core.enforcement_simple import LicenseEnforcer
-from core.security import verify_password
+from core.security import verify_password_async
 
 
 class MFAService:
@@ -250,7 +250,7 @@ class MFAService:
         
         # Verify password unless admin override
         if not admin_override and password:
-            if not verify_password(password, user.hashed_password):
+            if not await verify_password_async(password, user.hashed_password):
                 raise HTTPException(401, "Invalid password")
         
         # Clear MFA fields
@@ -294,7 +294,7 @@ class MFAService:
             raise HTTPException(400, "MFA not enabled")
         
         # Verify password
-        if not verify_password(password, user.hashed_password):
+        if not await verify_password_async(password, user.hashed_password):
             raise HTTPException(401, "Invalid password")
         
         # Generate new codes
