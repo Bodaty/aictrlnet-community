@@ -75,6 +75,14 @@ async def health_detail():
     except Exception as e:
         detail["db_pool"] = {"error": str(e)}
 
+    from services.conversation_service_registry import get_conversation_service_class
+    from services.conversation_turn import conversation_stats
+    service_class = get_conversation_service_class()
+    detail["conversation"] = {
+        **conversation_stats(),
+        "service_class": f"{service_class.__module__}.{service_class.__name__}",
+    }
+
     return detail
 
 

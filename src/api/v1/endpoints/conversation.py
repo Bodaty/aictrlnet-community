@@ -34,7 +34,7 @@ from schemas.conversation import (
 )
 from api.v1.endpoints._auth_helpers import get_safe_attr
 from core.upgrade_hints import attach_upgrade_hints
-from services.enhanced_conversation_manager import EnhancedConversationService
+from services.conversation_service_registry import get_conversation_service_class
 from services.action_orchestrator import ActionOrchestrator
 from services.tool_dispatcher import Edition
 from core.edition_discovery import Edition as CoreEdition
@@ -52,11 +52,14 @@ router = APIRouter()
 async def _collect_v2_response(service, session_id, content, user_id, db, user_preferences=None):
     """Collect response from process_message_v2 and return ConversationResponse-shaped dict."""
     response_data = {}
+    turn = None
     async for event in service.process_message_v2(
         session_id, content, user_id, stream=False, user_preferences=user_preferences
     ):
         if event.get("event") == "response":
             response_data = event.get("data", {})
+        elif event.get("event") == "complete":
+            turn = event.get("data")
         elif event.get("event") == "error":
             raise HTTPException(status_code=500, detail=event["data"].get("message", "Error"))
 
@@ -85,6 +88,7 @@ async def _collect_v2_response(service, session_id, content, user_id, db, user_p
         "context": response_data.get("session_context", {}),
         "quick_actions": [],
         "automation_result": response_data.get("automation_result") or response_data.get("created_workflow"),
+        "turn": turn,
     }
 
 
@@ -114,7 +118,7 @@ async def create_conversation_session(
     This starts a multi-turn conversation that maintains context
     across multiple messages.
     """
-    service = EnhancedConversationService(db)
+    service = get_conversation_service_class()(db)
     session = await service.create_session(
         user_id=current_user.id,
         initial_message=session_data.initial_message,
@@ -152,7 +156,7 @@ async def list_conversation_sessions(
     Returns active sessions by default, ordered by last activity.
     """
     attach_upgrade_hints(response, "conversations")
-    service = EnhancedConversationService(db)
+    service = get_conversation_service_class()(db)
 
     if active_only:
         sessions_result = await service.get_active_sessions(current_user.id)
@@ -278,7 +282,7 @@ async def end_conversation_session(
     
     # Record successful pattern if completed
     if session.state == "completed":
-        service = EnhancedConversationService(db)
+        service = get_conversation_service_class()(db)
         await service.record_pattern(session_id)
     
     return {"message": "Session ended successfully", "final_state": session.state}
@@ -314,11 +318,18 @@ async def send_message(
     if not session.is_active:
         raise HTTPException(status_code=400, detail="Session is not active")
     
-    service = EnhancedConversationService(db)
+    service = get_conversation_service_class()(db)
     user_preferences = get_safe_attr(current_user, 'preferences') or None
     response_data = await _collect_v2_response(service, session_id, message.content, str(current_user.id), db, user_preferences=user_preferences)
 
     return response_data
+
+
+@router.get("/budgets")
+async def get_conversation_budgets(current_user: User = Depends(get_current_user)):
+    """Turn budgets (spec §7.2) for the frontend watchdogs and Playwright waits (R7)."""
+    from services.conversation_budgets import budgets_payload
+    return budgets_payload()
 
 
 @router.post("/messages", response_model=ConversationResponse)
@@ -334,7 +345,7 @@ async def send_message_without_session(
     active session for the user. Useful for seamless conversation
     continuation.
     """
-    service = EnhancedConversationService(db)
+    service = get_conversation_service_class()(db)
 
     # Get or create session
     active_sessions = await service.get_active_sessions(current_user.id)
@@ -445,7 +456,7 @@ async def detect_intent(
     This endpoint can be used to test intent detection without
     creating a full conversation session.
     """
-    service = EnhancedConversationService(db)
+    service = get_conversation_service_class()(db)
     
     # Get session if provided
     session = None
@@ -940,7 +951,7 @@ async def chat_v5(
     async def v5_event_generator():
         try:
             # Use EnhancedConversationService with v5 unified flow
-            enhanced_service = EnhancedConversationService(db)
+            enhanced_service = get_conversation_service_class()(db)
 
             # Extract user model preferences for tier-based selection
             user_preferences = get_safe_attr(current_user, 'preferences') or None

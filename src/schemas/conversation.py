@@ -299,6 +299,9 @@ class ConversationResponse(BaseModel):
     quick_actions: List[Dict[str, Any]] = Field(default_factory=list)
     requires_clarification: bool = False
     clarification_options: List[Dict[str, Any]] = Field(default_factory=list)
+    # Terminal-event block of the turn (turn_id, timings, route, model, budget):
+    # CONVERSATION_ORCHESTRATION_SPEC.md §7.8, non-streaming collector.
+    turn: Optional[Dict[str, Any]] = None
     # Company automation result for rich UX display
     automation_result: Optional[Dict[str, Any]] = Field(
         default=None,

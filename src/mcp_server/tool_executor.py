@@ -744,9 +744,9 @@ async def _handle_assess_quality(
 async def _handle_send_message(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    from services.enhanced_conversation_manager import EnhancedConversationService
+    from services.conversation_service_registry import get_conversation_service_class
 
-    svc = EnhancedConversationService(db)
+    svc = get_conversation_service_class()(db)
     active_sessions = await svc.get_active_sessions(user_id)
     if active_sessions:
         session = active_sessions[0]
@@ -2451,9 +2451,9 @@ async def _handle_delete_memory(
 async def _handle_list_conversations(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    from services.enhanced_conversation_manager import EnhancedConversationService
+    from services.conversation_service_registry import get_conversation_service_class
 
-    svc = EnhancedConversationService(db)
+    svc = get_conversation_service_class()(db)
     sessions = await svc.get_active_sessions(user_id)
     # get_active_sessions returns either list or dict{"sessions": [...]}
     if isinstance(sessions, dict):
@@ -2614,9 +2614,9 @@ async def _handle_send_channel_message(
     # 2. Dispatch through conversation service (which wraps the channel
     # gateway). EnhancedConversationService.process_message already
     # supports multi-channel delivery.
-    from services.enhanced_conversation_manager import EnhancedConversationService
+    from services.conversation_service_registry import get_conversation_service_class
 
-    svc = EnhancedConversationService(db)
+    svc = get_conversation_service_class()(db)
     active_sessions = await svc.get_active_sessions(user_id)
     if isinstance(active_sessions, dict):
         active_sessions = active_sessions.get("sessions") or []

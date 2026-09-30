@@ -506,7 +506,7 @@ class LLMService:
             )
             if result.text:
                 yield {"type": "text_delta", "text": result.text}
-            yield {"type": "complete", "response": result}
+            yield {"type": "complete", "response": _with_resolution_source(result, temp_request)}
             return
 
         # Native tool calling with streaming
@@ -522,7 +522,7 @@ class LLMService:
                 )
                 if result.text:
                     yield {"type": "text_delta", "text": result.text}
-                yield {"type": "complete", "response": result}
+                yield {"type": "complete", "response": _with_resolution_source(result, temp_request)}
                 return
 
             tc_request = self._build_tool_calling_request(
@@ -566,7 +566,7 @@ class LLMService:
                 start_time=start_time, tools=tools, tool_choice=tool_choice,
                 model=model, user_settings=user_settings,
             )
-            yield {"type": "complete", "response": llm_response}
+            yield {"type": "complete", "response": _with_resolution_source(llm_response, temp_request)}
 
         except Exception as e:
             logger.error(f"{provider.value} streaming tool calling failed: {e}")
@@ -581,7 +581,7 @@ class LLMService:
             )
             if result.text:
                 yield {"type": "text_delta", "text": result.text}
-            yield {"type": "complete", "response": result}
+            yield {"type": "complete", "response": _with_resolution_source(result, temp_request)}
 
     def _supports_native_tools(self, provider: ModelProvider, model: str) -> bool:
         """Check if a provider supports native tool calling via adapter."""
@@ -1525,3 +1525,11 @@ OUTPUT FORMAT for each step:
 
 # Global instance for easy access
 llm_service = LLMService()
+
+
+def _with_resolution_source(response, request):
+    """Carry the model-resolution source onto a streamed response (spec §7.8 `model`)."""
+    source = getattr(request, "resolution_source", None)
+    if response is not None and source:
+        response.metadata = {**(getattr(response, "metadata", None) or {}), "resolution_source": source}
+    return response

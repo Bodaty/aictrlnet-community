@@ -1987,6 +1987,47 @@ Response (just the sentence, no quotes):"""
         file_id: str = None,
         user_preferences: dict = None,
     ) -> "AsyncGenerator[Dict[str, Any], None]":
+        """One v5 conversation turn, traced end to end (spec §7.3 R1, R8).
+
+        Owns the turn's TurnTrace so every exit carries the turn id and is
+        counted: the body's own handler covers failures inside its main
+        try; this wrapper covers everything before it, and records a turn
+        the client abandoned (disconnect, cancellation) that reached no
+        terminal event. Editions override `_process_turn_v2`, not this.
+        """
+        from core.config import get_settings
+        from llm.tier_resolver import get_environment_default_provider
+        from services.conversation_turn import TurnTrace
+
+        trace = TurnTrace(
+            get_settings().EDITION, get_environment_default_provider(), session_id=session_id
+        )
+        try:
+            async for event in self._process_turn_v2(
+                trace, session_id, content, user_id,
+                stream=stream, file_id=file_id, user_preferences=user_preferences,
+            ):
+                yield event
+        except Exception as e:
+            logger.exception(f"[v5] turn {trace.turn_id} failed outside the turn handler: {e}")
+            if not stream:
+                trace.error_data(str(e))
+                raise
+            if not trace.finished:
+                yield {"event": "error", "data": trace.error_data(str(e))}
+        finally:
+            trace.abandon_if_unfinished()
+
+    async def _process_turn_v2(
+        self,
+        trace,
+        session_id: UUID,
+        content: str,
+        user_id: str,
+        stream: bool = True,
+        file_id: str = None,
+        user_preferences: dict = None,
+    ) -> "AsyncGenerator[Dict[str, Any], None]":
         """
         v5 Unified conversation with LLM-as-brain architecture.
 
@@ -2013,6 +2054,7 @@ Response (just the sentence, no quotes):"""
             Dict events: thinking, knowledge_retrieved, tool_start, tool_complete, response, complete
         """
         from typing import AsyncGenerator
+        import time as _time
         from services.tool_dispatcher import ToolDispatcher, Edition
 
         # Yield thinking IMMEDIATELY so the client sees "Thinking..." in <1s
@@ -2026,7 +2068,7 @@ Response (just the sentence, no quotes):"""
         # =====================================================================
         session, conversation_history = await self._load_session_with_history(session_id)
         if not session:
-            yield {"event": "error", "data": {"message": f"Session {session_id} not found"}}
+            yield {"event": "error", "data": trace.error_data(f"Session {session_id} not found")}
             return
 
         logger.info(f"[v5] Loaded {len(conversation_history)} messages from history")
@@ -2057,14 +2099,16 @@ Response (just the sentence, no quotes):"""
         # =====================================================================
         # Step 3: Determine fast path, retrieve knowledge conditionally
         # =====================================================================
-        needs_tools = self._needs_tools(content)
+        with trace.stage("route"):
+            needs_tools = self._needs_tools(content)
 
         if needs_tools:
-            knowledge_items = await self.knowledge_service.find_relevant_knowledge(
-                query=content,
-                context=session.context or {},
-                limit=10
-            )
+            with trace.stage("knowledge"):
+                knowledge_items = await self.knowledge_service.find_relevant_knowledge(
+                    query=content,
+                    context=session.context or {},
+                    limit=10
+                )
         else:
             knowledge_items = []
 
@@ -2096,20 +2140,21 @@ Response (just the sentence, no quotes):"""
         except Exception:
             logger.debug("[v5] Could not load PersonalAgentConfig for prompt")
 
-        if needs_tools:
-            system_prompt = await self.prompt_assembler.assemble(
-                edition="community",
-                session=session,
-                knowledge_items=knowledge_items,
-                conversation_history=conversation_history,
-                user_id=user_id,
-                personal_agent_config=personal_agent_config,
-            )
-        else:
-            system_prompt = self.prompt_assembler.assemble_minimal(
-                edition="community",
-                personal_agent_config=personal_agent_config,
-            )
+        with trace.stage("prompt"):
+            if needs_tools:
+                system_prompt = await self.prompt_assembler.assemble(
+                    edition="community",
+                    session=session,
+                    knowledge_items=knowledge_items,
+                    conversation_history=conversation_history,
+                    user_id=user_id,
+                    personal_agent_config=personal_agent_config,
+                )
+            else:
+                system_prompt = self.prompt_assembler.assemble_minimal(
+                    edition="community",
+                    personal_agent_config=personal_agent_config,
+                )
 
         # Inject any tracked entities from prior turns so the LLM can
         # resolve references like "that workflow" / "the one from earlier".
@@ -2142,6 +2187,11 @@ Response (just the sentence, no quotes):"""
             )
         else:
             tools = []  # Greeting/farewell — skip tool definitions entirely
+        trace.set_route(
+            "unrouted" if needs_tools else "chat",
+            ["needs_tools" if needs_tools else "no_tool_phrase_or_short"],
+            offered=len(tools),
+        )
 
         if stream:
             yield {
@@ -2149,7 +2199,9 @@ Response (just the sentence, no quotes):"""
                 "data": {
                     "tools_available": len(tools),
                     "history_messages": len(conversation_history),
-                    "message": "Context assembled"
+                    "message": "Context assembled",
+                    "turn_id": trace.turn_id,
+                    "budget": trace.budget_block(),
                 }
             }
 
@@ -2194,14 +2246,14 @@ Response (just the sentence, no quotes):"""
                     "clarification": True,
                 }
                 yield {"event": "response", "data": response_data}
-                yield {"event": "complete", "data": {"status": "clarification"}}
+                yield {"event": "complete", "data": trace.complete_data("clarification")}
                 return
 
         # =====================================================================
         # Step 5: LLM generation with full context - LLM DECIDES what to do
         # =====================================================================
         if not self._enhanced_llm_service:
-            yield {"event": "error", "data": {"message": "LLM service unavailable"}}
+            yield {"event": "error", "data": trace.error_data("LLM service unavailable")}
             return
 
         # Build structured messages for LLM (proper role separation instead of flat text)
@@ -2238,6 +2290,7 @@ Response (just the sentence, no quotes):"""
             accumulated_text = ""
 
             task_type = "quick_analysis" if not needs_tools else "tool_use"
+            trace_round = trace.start_round()
             async for event in self._enhanced_llm_service.generate_with_tools_stream(
                 prompt=None, tools=tools, messages=messages,
                 system_prompt=system_prompt,
@@ -2250,9 +2303,10 @@ Response (just the sentence, no quotes):"""
                     yield {"event": "text_delta", "data": {"text": event["text"]}}
                 elif event["type"] == "complete":
                     llm_response = event["response"]
+            trace.end_round_llm(trace_round, llm_response)
 
             if not llm_response:
-                yield {"event": "error", "data": {"message": "LLM returned no response"}}
+                yield {"event": "error", "data": trace.error_data("LLM returned no response")}
                 return
 
             # =====================================================================
@@ -2334,12 +2388,14 @@ Response (just the sentence, no quotes):"""
                             for k in knowledge_items if k.type == 'template'
                         ]
 
+                    tool_started = _time.perf_counter()
                     result = await tool_dispatcher.invoke(
                         tool_name=tool_call.name,
                         arguments=tool_call.arguments,
                         user_id=user_id,
                         context=tool_context
                     )
+                    trace.record_tool(trace_round, tool_call.name, tool_started, result.success)
 
                     if result.data is None:
                         result.data = {}
@@ -2390,6 +2446,7 @@ Response (just the sentence, no quotes):"""
                 accumulated_text = ""
                 await self.db.close()  # Release DB before second LLM call
 
+                synthesis_started = _time.perf_counter()
                 async for event in self._enhanced_llm_service.generate_with_tools_stream(
                     prompt=None, tools=[], messages=synthesis_messages,
                     temperature=0.5, user_settings=user_settings,
@@ -2398,6 +2455,9 @@ Response (just the sentence, no quotes):"""
                     if event["type"] == "text_delta" and stream and event.get("text"):
                         accumulated_text += event["text"]
                         yield {"event": "text_delta", "data": {"text": event["text"]}}
+                    elif event["type"] == "complete":
+                        trace.observe_model(event.get("response"))
+                trace.stages["synthesis"] = int((_time.perf_counter() - synthesis_started) * 1000)
 
                 response_content = accumulated_text
             else:
@@ -2411,6 +2471,7 @@ Response (just the sentence, no quotes):"""
             # Step 8: Persist assistant response and update session context
             # (batched into single commit)
             # =====================================================================
+            persist_started = _time.perf_counter()
             assistant_message = await self._store_message(
                 session_id=session_id,
                 role="assistant",
@@ -2449,6 +2510,7 @@ Response (just the sentence, no quotes):"""
             # Single commit for both message + context update
             await self.db.commit()
             await self.db.refresh(assistant_message)
+            trace.stages["persist"] = int((_time.perf_counter() - persist_started) * 1000)
 
             # =====================================================================
             # Step 9: Return final response
@@ -2508,13 +2570,13 @@ Response (just the sentence, no quotes):"""
                 "data": response_data
             }
 
-            yield {"event": "complete", "data": {"status": "done"}}
+            yield {"event": "complete", "data": trace.complete_data("done")}
 
         except Exception as e:
             logger.error(f"[v5] Error in process_message_v2: {e}")
             import traceback
             logger.error(f"[v5] Traceback: {traceback.format_exc()}")
-            yield {"event": "error", "data": {"message": str(e)}}
+            yield {"event": "error", "data": trace.error_data(str(e))}
 
     async def _load_session_with_history(self, session_id: UUID):
         """Load session and conversation history in a single DB round trip."""
