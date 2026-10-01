@@ -1335,10 +1335,11 @@ Response (just the sentence, no quotes):"""
     # Tool pruning for Ollama compatibility
     # =========================================================================
 
-    _ALWAYS_INCLUDE_TOOLS = {
-        'search_api_capabilities', 'get_help', 'get_system_status',
-        'list_api_endpoints', 'list_integrations', 'update_onboarding',
-    }
+    @staticmethod
+    def _is_always_include(tool) -> bool:
+        """Discovery-class tools ride on every non-chat turn (spec §7.6)."""
+        from services.tool_classes import DISCOVERY, DISCOVERY_TOOLS
+        return getattr(tool, "tool_class", None) == DISCOVERY or tool.name in DISCOVERY_TOOLS
 
     # Intent → tool-category bias. Phase 2 of the conversation flow classifies
     # the user message as one of the 3 intents in action_planner.py:35
@@ -1402,23 +1403,31 @@ Response (just the sentence, no quotes):"""
             return cls._DEFAULT_TOOL_CAP
         return cls._ADAPTER_TOOL_CAPS.get(adapter.lower(), cls._DEFAULT_TOOL_CAP)
 
-    _NO_TOOL_PHRASES = frozenset({
-        'hello', 'hi', 'hey', 'hi there', 'hey there', 'hello there',
-        'what can you do', 'what can you help me with',
-        'who are you', 'how are you', 'what are you',
-        'good morning', 'good afternoon', 'good evening',
-        'thanks', 'thank you', 'thank you so much',
-        'bye', 'goodbye', 'see you', 'talk later',
-    })
+    @staticmethod
+    def _route_context(session, conversation_history, personal_agent_config) -> Dict[str, Any]:
+        """What the router may know about the session beyond the message (spec §7.6).
 
-    def _needs_tools(self, message: str) -> bool:
-        words = message.strip().split()
-        if len(words) < 3:
-            return False
-        lower = message.lower().strip().rstrip('?!.')
-        if lower in self._NO_TOOL_PHRASES:
-            return False
-        return True
+        `conversation_history` ends with the current user message; the
+        assistant turn before it decides whether a bare "yes" is consent.
+        """
+        context: Dict[str, Any] = {}
+        pending = (getattr(session, "context", None) or {}).get("pending_proposal")
+        if pending:
+            context["pending_proposal"] = pending
+        previous = next(
+            (m.get("content") or "" for m in reversed(conversation_history[:-1])
+             if m.get("role") == "assistant"),
+            "",
+        )
+        context["assistant_asked"] = "?" in previous[-300:]
+        if isinstance(personal_agent_config, dict):
+            state = personal_agent_config.get("onboarding_state")
+        else:
+            state = getattr(personal_agent_config, "onboarding_state", None)
+        context["onboarding_active"] = (
+            isinstance(state, dict) and state.get("status", "not_started") in ("not_started", "in_progress")
+        )
+        return context
 
     def _prune_tools(
         self,
@@ -1427,6 +1436,8 @@ Response (just the sentence, no quotes):"""
         max_tools: Optional[int] = None,
         adapter: Optional[str] = None,
         intent: Optional[str] = None,
+        mode: Optional[str] = None,
+        pinned_tools=frozenset(),
     ) -> list:
         """Prune tools to stay within the LLM's effective tool limit.
 
@@ -1491,7 +1502,7 @@ Response (just the sentence, no quotes):"""
         # create_workflow on the user's first "hello".
         scored = []
         for tool in tools:
-            if tool.name in self._ALWAYS_INCLUDE_TOOLS:
+            if self._is_always_include(tool) or tool.name in pinned_tools:
                 scored.append((tool, 200, 200, "always_include"))
                 continue
 
@@ -1578,6 +1589,8 @@ Response (just the sentence, no quotes):"""
             "top_scores": [(t.name, s) for t, s, _, _ in scored[:5]],
             "top_keyword_scores": top_keyword_scores,
             "took_ms": took_ms,
+            "mode": mode,
+            "admitted_classes": sorted({getattr(t, "tool_class", "read") for t in tools}),
         }
         return selected
 
@@ -2099,8 +2112,27 @@ Response (just the sentence, no quotes):"""
         # =====================================================================
         # Step 3: Determine fast path, retrieve knowledge conditionally
         # =====================================================================
+        from collections import Counter
+        from services.conversation_router import CHAT, CONFIRM, route
+
+        # Load PersonalAgentConfig for personality + onboarding injection (and
+        # the router: an active onboarding interview admits its save tool).
+        personal_agent_config = None
+        try:
+            from sqlalchemy import select as sa_select
+            from models.personal_agent import PersonalAgentConfig
+            pa_result = await self.db.execute(
+                sa_select(PersonalAgentConfig).where(PersonalAgentConfig.user_id == user_id)
+            )
+            personal_agent_config = pa_result.scalar_one_or_none()
+        except Exception:
+            logger.debug("[v5] Could not load PersonalAgentConfig for prompt")
+
         with trace.stage("route"):
-            needs_tools = self._needs_tools(content)
+            decision = route(
+                content, self._route_context(session, conversation_history, personal_agent_config)
+            )
+        needs_tools = decision.mode != CHAT or bool(decision.extra_tools)
 
         if needs_tools:
             with trace.stage("knowledge"):
@@ -2128,18 +2160,6 @@ Response (just the sentence, no quotes):"""
         # =====================================================================
         # Step 4: Build comprehensive LLM context (the key to v5)
         # =====================================================================
-        # Load PersonalAgentConfig for personality + onboarding injection
-        personal_agent_config = None
-        try:
-            from sqlalchemy import select as sa_select
-            from models.personal_agent import PersonalAgentConfig
-            pa_result = await self.db.execute(
-                sa_select(PersonalAgentConfig).where(PersonalAgentConfig.user_id == user_id)
-            )
-            personal_agent_config = pa_result.scalar_one_or_none()
-        except Exception:
-            logger.debug("[v5] Could not load PersonalAgentConfig for prompt")
-
         with trace.stage("prompt"):
             if needs_tools:
                 system_prompt = await self.prompt_assembler.assemble(
@@ -2168,7 +2188,12 @@ Response (just the sentence, no quotes):"""
         # is populated even when under the cap — enables the ambiguity check
         # below. The pruner no-ops (returns all) when total <= cap.
         tool_dispatcher = ToolDispatcher(self.db, Edition.COMMUNITY)
-        all_tools = tool_dispatcher.get_available_tools()
+        # Admission by class happens here, before ranking (spec §7.3 R3).
+        all_tools = tool_dispatcher.get_available_tools(
+            allowed_classes=decision.allowed_classes,
+            only_tools={decision.proposed_tool} if decision.mode == CONFIRM else None,
+            extra_tools=decision.extra_tools,
+        )
         if needs_tools:
             # Resolve the active adapter so pruning caps match the provider's
             # reliable tool-calling budget (Ollama≈32, OpenAI/Anthropic≈64).
@@ -2184,13 +2209,14 @@ Response (just the sentence, no quotes):"""
                 content,
                 adapter=active_adapter,
                 intent=getattr(session, "primary_intent", None),
+                mode=decision.mode,
+                pinned_tools=decision.extra_tools,
             )
         else:
             tools = []  # Greeting/farewell — skip tool definitions entirely
         trace.set_route(
-            "unrouted" if needs_tools else "chat",
-            ["needs_tools" if needs_tools else "no_tool_phrase_or_short"],
-            offered=len(tools),
+            decision.mode, decision.reasons, offered=len(tools),
+            admitted_by_class=dict(Counter(t.tool_class for t in all_tools)),
         )
 
         if stream:
@@ -2322,6 +2348,9 @@ Response (just the sentence, no quotes):"""
             inferred_tool_call = None
             if not has_proper_tool_calls and llm_response.text:
                 inferred_tool_call = self._parse_json_tool_call(llm_response.text, content)
+                # Only a tool this turn offered may be inferred from text (R3).
+                if inferred_tool_call and inferred_tool_call.get('tool') not in {t.name for t in tools}:
+                    inferred_tool_call = None
 
             if has_proper_tool_calls or inferred_tool_call:
                 tool_calls_to_execute = []
@@ -2389,7 +2418,8 @@ Response (just the sentence, no quotes):"""
                         ]
 
                     tool_started = _time.perf_counter()
-                    result = await tool_dispatcher.invoke(
+                    from services.tool_dispatcher import refuse_unoffered
+                    result = refuse_unoffered(tool_call.name, {t.name for t in tools}) or await tool_dispatcher.invoke(
                         tool_name=tool_call.name,
                         arguments=tool_call.arguments,
                         user_id=user_id,

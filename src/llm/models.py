@@ -1,7 +1,7 @@
 """LLM module data models."""
 
 from pydantic import BaseModel, ConfigDict
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Literal, Optional
 from enum import Enum
 from datetime import datetime
 
@@ -328,6 +328,9 @@ class ToolDefinition(BaseModel):
     category: Optional[str] = None  # Primary category for pruning (e.g. "workflow", "access_control")
     subcategory: Optional[str] = None  # Subcategory (e.g. "api_keys", "rbac")
     tags: List[str] = []  # Searchable tags for keyword matching
+    # Admission class (CONVERSATION_ORCHESTRATION_SPEC.md §7.6), set for every
+    # registered tool by services.tool_classes.classify_tools.
+    tool_class: Literal["discovery", "read", "write", "long_running"] = "read"
 
     def to_openai_format(self) -> Dict[str, Any]:
         """Convert to OpenAI function calling format."""

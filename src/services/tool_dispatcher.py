@@ -19,7 +19,7 @@ Tool Categories (Community - 35 tools):
 import logging
 import time
 from enum import Enum
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, Iterable, List, Optional, Callable
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1640,6 +1640,48 @@ CORE_TOOLS: Dict[str, ToolDefinition] = {
     ),
 }
 
+# Admission classes and default categories (spec §7.6), decided in one place.
+from services.tool_classes import classify_tools as _classify_tools  # noqa: E402
+
+_classify_tools(CORE_TOOLS)
+
+
+def admit_tools(
+    tools: List[ToolDefinition],
+    allowed_classes: Optional[Iterable[str]] = None,
+    only_tools: Optional[Iterable[str]] = None,
+    extra_tools: Optional[Iterable[str]] = None,
+) -> List[ToolDefinition]:
+    """Filter tools by admission class and, optionally, by name (spec §7.3 R3).
+
+    `extra_tools` are admitted whatever their class (a session-scoped
+    exception such as the onboarding interview's save tool).
+    """
+    extra = set(extra_tools or ())
+    if allowed_classes is not None:
+        allowed = set(allowed_classes)
+        tools = [t for t in tools if t.tool_class in allowed or t.name in extra]
+    if only_tools is not None:
+        names = set(only_tools) | extra
+        tools = [t for t in tools if t.name in names]
+    return tools
+
+
+def refuse_unoffered(tool_name: str, offered_names) -> Optional[ToolResult]:
+    """R3 at execution time: a call to a tool this turn did not offer never runs.
+
+    The model can name any tool — hallucinated, parsed from text, or remembered
+    from an earlier turn. Enforced in the turn loops, not in `invoke`, which
+    MCP and agents share with no route.
+    """
+    if tool_name in offered_names:
+        return None
+    return ToolResult(
+        success=False,
+        error=f"Tool '{tool_name}' was not offered on this turn and was not run.",
+        error_type="not_admitted",
+    )
+
 
 def get_tools_for_edition(edition: Edition, include_internal: bool = False) -> List[ToolDefinition]:
     """Get all tools available for the given edition.
@@ -1897,9 +1939,22 @@ class ToolDispatcher:
         """
         return CORE_TOOLS
 
-    def get_available_tools(self) -> List[ToolDefinition]:
-        """Get tools available for the current edition."""
-        return get_tools_for_edition(self.edition)
+    def get_available_tools(
+        self,
+        allowed_classes: Optional[Iterable[str]] = None,
+        only_tools: Optional[Iterable[str]] = None,
+        extra_tools: Optional[Iterable[str]] = None,
+    ) -> List[ToolDefinition]:
+        """Get tools available for the current edition.
+
+        `allowed_classes` admits tools by class (spec §7.3 R3) — a conversation
+        turn passes its route's classes; `None` means unfiltered, for callers
+        that are not turns. `only_tools` narrows to named tools (confirm mode);
+        `extra_tools` admits named tools regardless of class (onboarding).
+        """
+        return admit_tools(
+            get_tools_for_edition(self.edition), allowed_classes, only_tools, extra_tools
+        )
 
     async def invoke(
         self,

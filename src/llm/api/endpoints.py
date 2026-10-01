@@ -203,6 +203,11 @@ async def generate_workflow_steps(
 
         return steps
 
+    except UpstreamResponseError as e:
+        # 502: the model timed out or returned nothing usable. Previously this
+        # answered 200 with steps parsed from the text "Failed to generate
+        # workflow steps" — success reported, nothing delivered.
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=e.message)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

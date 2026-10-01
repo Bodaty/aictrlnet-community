@@ -19,6 +19,7 @@ from .model_selection import (
     EnhancedModelSelector
 )
 from core.config import get_settings
+from core.exceptions import UpstreamResponseError
 from core.phi_egress import (
     PHIEgressRefused,
     assert_phi_provider_allowed,
@@ -494,9 +495,15 @@ class LLMGenerationEngine:
                     temperature=request.temperature or 0.7,
                     timeout=60.0
                 )
-                
+                if not steps:
+                    # The adapter logged why (timeout, HTTP error, unparseable
+                    # output). Answering with "Failed to generate" text as if it
+                    # were a model response reported success and delivered
+                    # nothing; the callers parsed that sentence into steps.
+                    raise UpstreamResponseError(f"{model} returned no usable workflow steps")
+
                 # Convert steps to text
-                text = self._steps_to_text(steps) if steps else "Failed to generate workflow steps"
+                text = self._steps_to_text(steps)
                 
                 return LLMResponse(
                     text=text,
@@ -602,8 +609,10 @@ Return ONLY the JSON array, no other text or explanation."""
                     temperature=request.temperature or 0.7,
                     timeout=60.0
                 )
+                if not steps:
+                    raise UpstreamResponseError(f"{model} returned no usable workflow steps")
 
-                text = self._steps_to_text(steps) if steps else "Failed to generate workflow steps"
+                text = self._steps_to_text(steps)
 
                 return LLMResponse(
                     text=text,

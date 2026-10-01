@@ -89,9 +89,23 @@ class ToolAwareConversationService:
         self._tools_initialized = True
         logger.info(f"[v4] Tool dispatcher ready with {len(self.tool_dispatcher.get_available_tools())} tools")
 
-    def _get_tool_definitions_for_llm(self) -> List[ToolDefinition]:
-        """Get tool definitions available for the current edition."""
-        return self.tool_dispatcher.get_available_tools()
+    def _refuse_unoffered(self, tool_name: str):
+        """None when the tool may run; a not_admitted ToolResult when it was not offered."""
+        offered = getattr(self, "_offered_tool_names", None)
+        if offered is None:
+            return None  # no turn has offered tools yet (direct execute_tool_calls callers)
+        from services.tool_dispatcher import refuse_unoffered
+        return refuse_unoffered(tool_name, offered)
+
+    def _get_tool_definitions_for_llm(self, content: str) -> List[ToolDefinition]:
+        """Tools the router admits for this message (spec §7.3 R3)."""
+        from services.conversation_router import route
+        tools = self.tool_dispatcher.get_available_tools(
+            allowed_classes=route(content).allowed_classes
+        )
+        # Execution checks against this set: an unoffered call never runs (R3).
+        self._offered_tool_names = {t.name for t in tools}
+        return tools
 
     async def execute_tool_calls(
         self,
@@ -114,7 +128,7 @@ class ToolAwareConversationService:
         for tool_call in tool_calls:
             logger.info(f"[v4] Executing tool: {tool_call.name}")
 
-            result = await self.tool_dispatcher.invoke(
+            result = self._refuse_unoffered(tool_call.name) or await self.tool_dispatcher.invoke(
                 tool_name=tool_call.name,
                 arguments=tool_call.arguments,
                 user_id=user_id,
@@ -184,7 +198,7 @@ class ToolAwareConversationService:
         await self._ensure_tools_initialized()
 
         # Get tools
-        tools = self._get_tool_definitions_for_llm()
+        tools = self._get_tool_definitions_for_llm(content)
         system_prompt = await self.prompt_assembler.assemble(
             edition=self.edition.value,
             session_context=session_context,
@@ -226,7 +240,7 @@ class ToolAwareConversationService:
                         }
                     }
 
-                    result = await self.tool_dispatcher.invoke(
+                    result = self._refuse_unoffered(tool_call.name) or await self.tool_dispatcher.invoke(
                         tool_name=tool_call.name,
                         arguments=tool_call.arguments,
                         user_id=user_id,

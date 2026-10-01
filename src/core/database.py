@@ -6,8 +6,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
     async_sessionmaker,
 )
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import String, DateTime, func, text
+from sqlalchemy.orm import Mapped, Session, mapped_column
+from sqlalchemy import String, DateTime, event, func, text
 import uuid
 from datetime import datetime
 import logging
@@ -80,6 +80,29 @@ def get_engine():
     return _engine
 
 
+def bind_session_tenant(session: AsyncSession, tenant_id: str) -> None:
+    """Bind a session to a tenant for RLS, for the session's whole life.
+
+    Applying the tenant once with set_config on whatever connection the session
+    happens to hold is not enough: the pool resets a released connection to the
+    default tenant, and a rolled-back transaction reverts the setting. A
+    session that releases its connection mid-request (the conversation turn
+    does, before every LLM round) or rolls back would run every later query as
+    the default tenant. The binding is re-applied at every transaction begin.
+    """
+    session.info["tenant_id"] = tenant_id
+
+
+@event.listens_for(Session, "after_begin")
+def _apply_bound_tenant(session, transaction, connection):
+    tenant_id = session.info.get("tenant_id")
+    if tenant_id:
+        connection.execute(
+            text("SELECT set_config('app.current_tenant_id', :tenant_id, false)"),
+            {"tenant_id": tenant_id},
+        )
+
+
 def get_session_maker():
     """Get or create the async session maker."""
     global _async_session_maker
@@ -101,15 +124,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     async with get_session_maker()() as session:
         try:
-            # Set tenant context at PostgreSQL session level for RLS
-            # Using set_config() instead of SET because asyncpg doesn't support
-            # parameterized SET statements
+            # Tenant context for RLS, re-applied at every transaction begin
+            # (see bind_session_tenant).
             tenant_id = get_current_tenant_id()
             if tenant_id:
-                await session.execute(
-                    text("SELECT set_config('app.current_tenant_id', :tenant_id, false)"),
-                    {"tenant_id": tenant_id}
-                )
+                bind_session_tenant(session, tenant_id)
             yield session
             # Don't auto-commit - let the service layer handle it
         except Exception:
