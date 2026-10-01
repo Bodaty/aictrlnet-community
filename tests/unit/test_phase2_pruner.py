@@ -35,6 +35,15 @@ def test_adapter_cap_known_providers():
     assert svc._max_tools_for_adapter("OpenAI") == 64  # case-insensitive
     assert svc._max_tools_for_adapter("anthropic") == 64
     assert svc._max_tools_for_adapter("bedrock") == 48
+    assert svc._max_tools_for_adapter("vllm") == 64
+
+
+def test_agent_tool_cap_is_the_class_budget_lowered_by_the_adapter_cap():
+    svc = _svc()
+    assert svc._agent_tool_cap("ollama") == 20       # local max_tools < ollama cap 32
+    assert svc._agent_tool_cap("vllm") == 64         # self-hosted max_tools == vllm cap
+    assert svc._agent_tool_cap("vertex_ai") == 48    # cloud max_tools == vertex cap
+    assert svc._agent_tool_cap("cohere") == 32       # cloud 48, adapter cap 32 wins
 
 
 def test_adapter_cap_unknown_falls_back_to_default():

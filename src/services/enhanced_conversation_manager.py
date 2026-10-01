@@ -1383,6 +1383,9 @@ Response (just the sentence, no quotes):"""
         "cohere": 32,
         "deepseek": 32,
         "dashscope": 32,
+        # Measured 2026-10-01 on Beast (Gemma-4 26B-A4B AWQ): 64 tools, 1.3 s
+        # cold round, correct tool chosen; spec §7.2 `max_tools`.
+        "vllm": 64,
     }
     _DEFAULT_TOOL_CAP = 32  # Safe default if provider unknown
 
@@ -1402,6 +1405,14 @@ Response (just the sentence, no quotes):"""
         if not adapter:
             return cls._DEFAULT_TOOL_CAP
         return cls._ADAPTER_TOOL_CAPS.get(adapter.lower(), cls._DEFAULT_TOOL_CAP)
+
+    @classmethod
+    def _agent_tool_cap(cls, provider: Optional[str]) -> int:
+        """Tools offered in one agent round: the provider's class budget
+        (spec §7.2 `max_tools`), lowered by its reliability cap."""
+        from services.conversation_budgets import budgets_for
+
+        return min(cls._max_tools_for_adapter(provider), budgets_for(provider or "").max_tools)
 
     async def _resolve_turn_provider(self, task_type: str, user_settings, org_settings) -> Optional[str]:
         """Provider of the model generation will pick for this turn (spec §7.1).

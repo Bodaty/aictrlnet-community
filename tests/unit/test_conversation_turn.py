@@ -151,7 +151,7 @@ def _tiny(provider_class="local"):
     return ConversationBudgets(
         provider_class=provider_class, route_ms=5, prompt_warm_ms=150, prompt_cold_ms=1500,
         knowledge_ms=2000, llm_round_s=1, tool_max_s=1, tool_hard_cap_s=60, job_ack_s=2,
-        loop_s=4, turn_s=6, chat_turn_s=2, first_event_s=30, idle_s=3, client_grace_s=10,
+        loop_s=4, turn_s=6, chat_turn_s=2, first_event_s=30, idle_s=3, client_grace_s=10, max_tools=20,
     )
 
 

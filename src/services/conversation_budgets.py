@@ -35,13 +35,14 @@ class ConversationBudgets:
     first_event_s: int
     idle_s: int
     client_grace_s: int
+    max_tools: int
 
     def as_dict(self) -> Dict[str, object]:
         return asdict(self)
 
 
 def _budgets(provider_class: str, llm_round_s: int, loop_s: int, turn_s: int,
-             chat_turn_s: int, idle_s: int) -> ConversationBudgets:
+             chat_turn_s: int, idle_s: int, max_tools: int) -> ConversationBudgets:
     return ConversationBudgets(
         provider_class=provider_class,
         route_ms=5,
@@ -58,13 +59,17 @@ def _budgets(provider_class: str, llm_round_s: int, loop_s: int, turn_s: int,
         first_event_s=30,
         idle_s=idle_s,
         client_grace_s=10,
+        max_tools=max_tools,
     )
 
 
 BUDGETS: Dict[str, ConversationBudgets] = {
-    LOCAL: _budgets(LOCAL, llm_round_s=45, loop_s=120, turn_s=150, chat_turn_s=15, idle_s=60),
-    SELF_HOSTED: _budgets(SELF_HOSTED, llm_round_s=20, loop_s=90, turn_s=100, chat_turn_s=8, idle_s=35),
-    CLOUD: _budgets(CLOUD, llm_round_s=15, loop_s=60, turn_s=75, chat_turn_s=6, idle_s=30),
+    LOCAL: _budgets(LOCAL, llm_round_s=45, loop_s=120, turn_s=150, chat_turn_s=15, idle_s=60,
+                    max_tools=20),
+    SELF_HOSTED: _budgets(SELF_HOSTED, llm_round_s=20, loop_s=90, turn_s=100, chat_turn_s=8, idle_s=35,
+                          max_tools=64),
+    CLOUD: _budgets(CLOUD, llm_round_s=15, loop_s=60, turn_s=75, chat_turn_s=6, idle_s=30,
+                    max_tools=48),
 }
 
 
