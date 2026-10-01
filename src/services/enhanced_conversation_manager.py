@@ -2139,7 +2139,9 @@ Response (just the sentence, no quotes):"""
         # Step 1: Load session and conversation history in one query
         # =====================================================================
         session, conversation_history = await self._load_session_with_history(session_id)
-        if not session:
+        # A session is only ever continued by its owner: another user's id
+        # gets the same answer as a session that does not exist.
+        if not session or str(session.user_id) != str(user_id):
             yield {"event": "error", "data": trace.error_data(f"Session {session_id} not found")}
             return
 

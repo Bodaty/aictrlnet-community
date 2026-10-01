@@ -2487,9 +2487,13 @@ async def _handle_get_conversation(
     session_id = arguments["session_id"]
     limit = min(int(arguments.get("message_limit", 50)), 500)
 
+    # Only the caller's own conversations: RLS isolates tenants, not users.
     session = (
         await db.execute(
-            select(ConversationSession).where(ConversationSession.id == session_id)
+            select(ConversationSession).where(
+                ConversationSession.id == session_id,
+                ConversationSession.user_id == user_id,
+            )
         )
     ).scalar_one_or_none()
     if not session:

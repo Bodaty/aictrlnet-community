@@ -948,6 +948,16 @@ async def chat_v5(
     Assistant: [Executes tools] "Created the workflow with..."
     ```
     """
+    # Only the owner may continue a session.
+    owned = await db.execute(
+        select(ConversationSession.id).where(
+            ConversationSession.id == session_id,
+            ConversationSession.user_id == current_user.id,
+        )
+    )
+    if owned.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     async def v5_event_generator():
         from services.conversation_turn import StreamTerminalGuard
         guard = StreamTerminalGuard()
