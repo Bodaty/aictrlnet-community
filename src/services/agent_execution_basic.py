@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from core.config import get_settings
+from llm.ollama_options import ollama_url as _ollama_url, with_request_options
 from services.agent_config_service import AgentConfigService
 from services.llm_helpers import get_user_llm_settings, get_system_llm_settings
 from llm import llm_service, UserLLMSettings
@@ -194,7 +195,7 @@ class BasicAgentExecutor:
         config: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Execute using Ollama (local, free)."""
-        ollama_url = config.get("ollama_url", "http://localhost:11434")
+        ollama_url = config.get("ollama_url") or _ollama_url()
         
         # Prepare prompt based on agent type
         prompt = self._prepare_prompt(agent_name, task)
@@ -205,7 +206,7 @@ class BasicAgentExecutor:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{ollama_url}/api/generate",
-                json={
+                json=await with_request_options(ollama_url, {
                     "model": model,
                     "prompt": prompt,
                     "stream": False,
@@ -213,7 +214,7 @@ class BasicAgentExecutor:
                         "temperature": 0.3,
                         "num_predict": 500  # Limit response size
                     }
-                }
+                })
             )
             
             if response.status_code != 200:

@@ -285,6 +285,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             
             if "options" in request.parameters:
                 payload["options"] = request.parameters["options"]
+            await self._apply_request_options(payload)
             
             stream = request.parameters.get("stream", False)
             payload["stream"] = stream
@@ -373,6 +374,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             
             if "options" in request.parameters:
                 payload["options"] = request.parameters["options"]
+            await self._apply_request_options(payload)
             
             stream = request.parameters.get("stream", False)
             payload["stream"] = stream
@@ -447,6 +449,8 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             
             if "options" in request.parameters:
                 payload["options"] = request.parameters["options"]
+            # No num_ctx floor here: embedding models have small native contexts
+            # and do not share a runner with the conversation model.
             
             # Make request
             response = await self.client.post("/api/embeddings", json=payload)
@@ -698,6 +702,15 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
 
     # ── ToolCallingMixin implementation ──────────────────────────────────
 
+    async def _apply_request_options(self, payload: Dict[str, Any], keep_warm: bool = False) -> None:
+        """`num_ctx` on every request (spec §7.5; see llm/ollama_options.py); `keep_alive`
+        for the conversation's tool-calling rounds, whose model must stay loaded."""
+        from llm.ollama_options import conversation_keep_alive, with_request_options
+
+        await with_request_options(
+            self.base_url, payload, keep_alive=conversation_keep_alive() if keep_warm else None,
+        )
+
     async def chat_with_tools(self, request: ToolCallingRequest) -> ToolCallingResponse:
         """Execute tool-augmented chat via Ollama's native tool calling API."""
         import uuid
@@ -751,6 +764,10 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
                 "num_predict": request.max_tokens or 2000
             }
         }
+        if request.tool_choice == "none" or not ollama_tools:
+            # Ollama has no tool_choice: "none" means the tools are not sent.
+            del payload["tools"]
+        await self._apply_request_options(payload, keep_warm=True)
 
         logger.info(f"Ollama chat_with_tools: {[t['function']['name'] for t in ollama_tools]}")
 
@@ -868,9 +885,11 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
                 "num_predict": request.max_tokens or 2000
             }
         }
-        # Remove None tools to avoid Ollama API issues
-        if payload["tools"] is None:
+        # Remove None tools to avoid Ollama API issues; Ollama has no
+        # tool_choice, so "none" means the tools are not sent.
+        if payload["tools"] is None or request.tool_choice == "none":
             del payload["tools"]
+        await self._apply_request_options(payload, keep_warm=True)
 
         client = self.client
         if client is None:

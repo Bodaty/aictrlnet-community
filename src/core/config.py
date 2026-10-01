@@ -235,14 +235,12 @@ class Settings(BaseSettings):
     # its roster by hand.
     AICTRLNET_PHI_FHIR_HOSTS: str = Field(default="", env="AICTRLNET_PHI_FHIR_HOSTS")
     # Local model endpoints, promoted from bare os.environ reads so the PHI
-    # guard can see them (a guard cannot enforce what it cannot see). Four
-    # names feed two endpoints with three precedences: vllm_adapter reads
-    # VLLM_BASE_URL then VLLM_URL; llm/generation.py reads VLLM_URL and
-    # settings.OLLAMA_URL; llm/service.py reads OLLAMA_BASE_URL. Deliberately
-    # not unified here — that is a behavioural change with its own item.
+    # guard can see them (a guard cannot enforce what it cannot see). Ollama
+    # has one: OLLAMA_URL (above), read by every Ollama call site since T4d.
+    # vLLM still has two precedences: vllm_adapter reads VLLM_BASE_URL then
+    # VLLM_URL; llm/generation.py reads VLLM_URL.
     VLLM_URL: Optional[str] = Field(default=None, env="VLLM_URL")
     VLLM_BASE_URL: Optional[str] = Field(default=None, env="VLLM_BASE_URL")
-    OLLAMA_BASE_URL: Optional[str] = Field(default=None, env="OLLAMA_BASE_URL")
     # Where uploaded and generated documents are staged. Promoted from a bare
     # os.environ read so the PHI guard can see it — a guard cannot enforce what
     # it cannot see. The default must stay this literal rather than deriving from

@@ -349,12 +349,12 @@ def phi_boot_problems(settings) -> list[str]:
                 f"{ALLOWLIST_SETTING}."
             )
 
-    # Every env name a local provider's endpoint can come from. Four names,
-    # three precedences (vllm_adapter, llm/generation.py, llm/service.py);
-    # checking a URL nothing reads would be a worthless check, so every set
-    # one is checked and none is unified here.
+    # Every env name a local provider's endpoint can come from. Ollama has one
+    # (OLLAMA_URL, unified in T4d); vLLM still has two precedences
+    # (vllm_adapter, llm/generation.py). Checking a URL nothing reads would be
+    # a worthless check, so every name that is read is checked.
     endpoint_settings = {
-        "ollama": ("OLLAMA_URL", "OLLAMA_BASE_URL"),
+        "ollama": ("OLLAMA_URL",),
         "vllm": ("VLLM_URL", "VLLM_BASE_URL"),
     }
     for provider in sorted(allowed & LOCAL_PROVIDERS):

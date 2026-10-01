@@ -12,6 +12,8 @@ from typing import List, Dict, Any, Optional, Tuple
 from abc import ABC, abstractmethod
 import httpx
 
+from llm.ollama_options import with_request_options
+
 # Import WorkflowStep from LLM module for consistency
 try:
     from llm import WorkflowStep
@@ -56,7 +58,10 @@ logger = logging.getLogger(__name__)
 class ModelAdapter(ABC):
     """Base class for model-specific adapters."""
     
-    def __init__(self, ollama_url: str = "http://host.docker.internal:11434"):
+    def __init__(self, ollama_url: Optional[str] = None):
+        if ollama_url is None:
+            from llm.ollama_options import ollama_url as _setting
+            ollama_url = _setting()
         self.ollama_url = ollama_url
     
     @abstractmethod
@@ -184,7 +189,7 @@ Return ONLY the JSON array, no other text."""
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     f"{self.ollama_url}/api/generate",
-                    json={
+                    json=await with_request_options(self.ollama_url, {
                         "model": model_name,
                         "prompt": f"{system_prompt}\n\nUser request: {prompt}",
                         "stream": False,
@@ -192,7 +197,7 @@ Return ONLY the JSON array, no other text."""
                         "options": {
                             "num_predict": 2000
                         }
-                    }
+                    })
                 )
                 
                 if response.status_code != 200:
@@ -295,7 +300,7 @@ Return ONLY the JSON array, no other text."""
 class MultiModelAdapter(ModelAdapter):
     """Adapter that tries multiple strategies to get the best result."""
     
-    def __init__(self, ollama_url: str = "http://host.docker.internal:11434"):
+    def __init__(self, ollama_url: Optional[str] = None):
         super().__init__(ollama_url)
         self.llama_adapter = LlamaAdapter(ollama_url)
     
@@ -338,13 +343,13 @@ class MultiModelAdapter(ModelAdapter):
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(
                     f"{self.ollama_url}/api/generate",
-                    json={
+                    json=await with_request_options(self.ollama_url, {
                         "model": model_name,
                         "prompt": f"List the specific steps needed for this request: {prompt}\n\nList each step on a new line.",
                         "stream": False,
                         "temperature": temperature,
                         "options": {"num_predict": 1000}
-                    }
+                    })
                 )
                 
                 if response.status_code != 200:
@@ -425,7 +430,7 @@ class MultiModelAdapter(ModelAdapter):
 
 
 # Factory function
-def get_model_adapter(model_name: str, ollama_url: str = "http://host.docker.internal:11434") -> ModelAdapter:
+def get_model_adapter(model_name: str, ollama_url: Optional[str] = None) -> ModelAdapter:
     """Get the appropriate adapter for a model."""
     # R-04: every adapter here POSTs prompts straight to Ollama, bypassing the
     # provider-adapter guard; this factory is their single constructor.

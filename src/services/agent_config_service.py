@@ -9,6 +9,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from core.config import get_settings
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ class AgentConfigService:
             "enabled_agents": ["basic_nlp", "basic_workflow", "basic_assistant"],  # All 3 enabled by default
             "api_provider": "ollama",
             "api_config": {
-                "ollama_url": "http://localhost:11434"
+                "ollama_url": get_settings().OLLAMA_URL
             },
             "model_tier": "fast"
         }

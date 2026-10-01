@@ -107,7 +107,11 @@ BACKEND_CORS_ORIGINS=https://app.example.com,https://admin.example.com
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL — the only Ollama endpoint setting; every platform Ollama call reads it |
+| `OLLAMA_NUM_CTX` | `16384` | Context every platform Ollama call asks for (one value for all callers: a different size reloads the model) |
+| `OLLAMA_NUM_CTX_MAX` | `32768` | Largest context an oversized request may ask for (never below `OLLAMA_NUM_CTX`); above it Ollama drops the oldest context and a warning is logged |
+| `OLLAMA_KEEP_ALIVE` | `30m` | How long the conversation model stays loaded after a tool-calling round |
+| `CONVERSATION_BUDGETS` | `observe` | `observe` reports turn-budget breaches; `enforce` applies the deadlines and fallback ladder (CONVERSATION_ORCHESTRATION_SPEC.md §7) |
 | `DEFAULT_LLM_MODEL` | `llama3.1:8b-instruct-q4_K_M` | Default LLM model ID |
 | `LLM_SERVICE_URL` | - | External LLM service URL (optional) |
 | `ML_SERVICE_URL` | - | ML microservice URL (for AI governance) |
@@ -181,7 +185,7 @@ afford to re-enter should set the explicit variable. `AICTRLNET_PHI_MODE` requir
 | `AICTRLNET_PHI_MODE` | `false` | Opt-in for deployments handling protected health information |
 | `AICTRLNET_PHI_LLM_PROVIDERS` | empty | Comma-separated model providers that may receive PHI (e.g. `vllm,ollama`). Read only under PHI mode |
 | `AICTRLNET_PHI_BAA_PROVIDERS` | empty | Comma-separated non-local providers with a Business Associate Agreement on file. A cloud provider in the allowlist without an entry here is a boot failure |
-| `VLLM_URL` / `VLLM_BASE_URL` / `OLLAMA_BASE_URL` | unset | Local model endpoints, promoted from bare `os.environ` reads so the PHI guard can check them. Four names feed two endpoints with three precedences (`vllm_adapter`: `VLLM_BASE_URL` then `VLLM_URL`; `llm/generation.py`: `VLLM_URL` and `OLLAMA_URL`; `llm/service.py`: `OLLAMA_BASE_URL`); every set one is checked |
+| `VLLM_URL` / `VLLM_BASE_URL` | unset | Local vLLM endpoints, promoted from bare `os.environ` reads so the PHI guard can check them (`vllm_adapter`: `VLLM_BASE_URL` then `VLLM_URL`; `llm/generation.py`: `VLLM_URL`); every set one is checked. Ollama has one endpoint setting, `OLLAMA_URL` |
 
 When `AICTRLNET_PHI_MODE` is set, the application **refuses to start** unless every one of
 the following holds. The check runs in each edition's startup lifespan, and the error names

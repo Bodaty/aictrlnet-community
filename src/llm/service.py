@@ -82,6 +82,7 @@ class _AdapterProvider:
         """Create an adapter instance for the given provider."""
         import os
         from adapters.models import AdapterConfig, AdapterCategory
+        from core.config import get_settings
 
         try:
             if provider == ModelProvider.OLLAMA:
@@ -90,7 +91,7 @@ class _AdapterProvider:
                     name="ollama-tools",
                     version="1.0.0",
                     category=AdapterCategory.AI,
-                    base_url=os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
+                    base_url=get_settings().OLLAMA_URL,
                     credentials={},
                     timeout_seconds=300.0,
                 ))

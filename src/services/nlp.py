@@ -42,7 +42,8 @@ class NLPService:
         self.adapter_service = AdapterService(db)
         self.security_service = WorkflowSecurityService()
         # Connect to native Ollama via host network
-        self.ollama_url = "http://host.docker.internal:11434"
+        from llm.ollama_options import ollama_url
+        self.ollama_url = ollama_url()
         self._available_models = None
         self._cached_adapters = None
         

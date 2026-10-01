@@ -8,6 +8,8 @@ to improve workflow generation performance.
 from typing import Dict, Any, Optional, List, Tuple
 import logging
 import httpx
+
+from llm.ollama_options import with_request_options
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -138,7 +140,7 @@ def get_model_config(tier: str) -> Dict[str, Any]:
     return MODEL_CONFIGS.get(tier, MODEL_CONFIGS[ModelTier.BALANCED])
 
 
-async def get_ai_complexity_assessment(prompt: str, ollama_url: str = "http://host.docker.internal:11434") -> str:
+async def get_ai_complexity_assessment(prompt: str, ollama_url: Optional[str] = None) -> str:
     """
     Use AI to assess the complexity of a prompt.
     
@@ -149,19 +151,22 @@ async def get_ai_complexity_assessment(prompt: str, ollama_url: str = "http://ho
     Returns:
         Complexity classification: "SIMPLE", "MEDIUM", or "COMPLEX"
     """
+    if ollama_url is None:
+        from llm.ollama_options import ollama_url as _setting
+        ollama_url = _setting()
     try:
         classification_prompt = f'Classify the complexity of this request as SIMPLE, MEDIUM, or COMPLEX (respond with just one word): "{prompt}"'
         
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.post(
                 f"{ollama_url}/api/generate",
-                json={
+                json=await with_request_options(ollama_url, {
                     "model": "llama3.2:1b",
                     "prompt": classification_prompt,
                     "stream": False,
                     "temperature": 0.1,
                     "options": {"num_predict": 10}  # We only need one word
-                }
+                })
             )
             
             if response.status_code == 200:
@@ -186,7 +191,7 @@ async def get_ai_complexity_assessment(prompt: str, ollama_url: str = "http://ho
         return "MEDIUM"  # Safe default on error
 
 
-async def estimate_complexity_hybrid(prompt: str, ollama_url: str = "http://host.docker.internal:11434") -> float:
+async def estimate_complexity_hybrid(prompt: str, ollama_url: Optional[str] = None) -> float:
     """
     Hybrid complexity estimation using both keyword analysis and AI assessment.
     

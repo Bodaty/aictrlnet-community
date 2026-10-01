@@ -764,8 +764,8 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
         # Handle tool_choice
         if request.tool_choice == "required":
             payload["tool_choice"] = "required"
-        elif request.tool_choice == "auto":
-            payload["tool_choice"] = "auto"
+        elif request.tool_choice in ("auto", "none"):
+            payload["tool_choice"] = request.tool_choice
         else:
             payload["tool_choice"] = {"type": "function", "function": {"name": request.tool_choice}}
 

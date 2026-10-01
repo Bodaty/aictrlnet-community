@@ -3,6 +3,8 @@
 import logging
 import os
 import httpx
+
+from llm.ollama_options import with_request_options
 from typing import List, Dict, Any, Optional, Tuple, Union
 from datetime import datetime
 
@@ -518,7 +520,7 @@ class LLMGenerationEngine:
                 async with httpx.AsyncClient(timeout=300.0) as client:
                     response = await client.post(
                         f"{self.ollama_url}/api/generate",
-                        json={
+                        json=await with_request_options(self.ollama_url, {
                             "model": model,
                             "prompt": request.prompt,
                             "system": request.system_prompt,
@@ -527,7 +529,7 @@ class LLMGenerationEngine:
                             "options": {
                                 "num_predict": request.max_tokens or 1000
                             }
-                        }
+                        })
                     )
                     
                     if response.status_code == 200:

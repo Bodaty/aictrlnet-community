@@ -646,6 +646,8 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
         # Handle tool_choice
         if request.tool_choice == "required":
             payload["tool_choice"] = {"type": "any"}
+        elif request.tool_choice == "none":
+            payload["tool_choice"] = {"type": "none"}
         elif request.tool_choice != "auto":
             payload["tool_choice"] = {"type": "tool", "name": request.tool_choice}
 
