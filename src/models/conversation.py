@@ -188,3 +188,34 @@ class ConversationPattern(Base):
     # Promotion to template
     is_promoted = Column(Boolean, default=False, nullable=False)
     promoted_at = Column(DateTime, nullable=True)
+
+
+class ConversationJob(Base):
+    """A long-running conversation tool run in the background (spec §7.3 R2).
+
+    The turn starts the job and answers at once; the job never writes the
+    conversation session — the next turn harvests a finished job into it
+    (`harvested_at`). Liveness is a lease the running task renews; a row
+    whose lease lapsed reads as `stale`. Separate from `mcp_async_tasks`
+    (the MCP task protocol), deliberately.
+    """
+    __tablename__ = "conversation_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(String(36), nullable=False, index=True)
+    session_id = Column(UUID(as_uuid=True), ForeignKey('conversation_sessions.id', ondelete='CASCADE'),
+                        nullable=False, index=True)
+    user_id = Column(String(36), nullable=False)
+    tool_name = Column(String(100), nullable=False)
+    arguments = Column(JSON, default=dict, nullable=False)
+    # running | succeeded | failed | needs_input | stale
+    status = Column(String(20), nullable=False, default="running")
+    progress = Column(Text, nullable=True)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    owner_token = Column(String(64), nullable=False)
+    lease_expires_at = Column(DateTime, nullable=False)
+    harvested_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    finished_at = Column(DateTime, nullable=True)

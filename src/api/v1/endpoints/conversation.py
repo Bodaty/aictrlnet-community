@@ -591,6 +591,13 @@ async def get_entity_status(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    if entity_type == "job":
+        # A background job (T5): read straight from its row — this never writes
+        # the session (the next turn folds a finished job into it).
+        from services.conversation_jobs import status_for
+        job = await status_for(db, session_id, get_safe_attr(current_user, 'id'), entity_id)
+        return {"entity_type": entity_type, "entity_id": entity_id, "tracked": job["status"] is not None, **job}
+
     tracked = (session.context or {}).get("tracked_entities") or {}
     key = f"{entity_type}:{entity_id}"
     cached = tracked.get(key)

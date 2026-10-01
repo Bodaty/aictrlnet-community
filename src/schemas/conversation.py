@@ -40,6 +40,7 @@ TrackedEntityType = Literal[
     "execution",
     "policy",
     "risk_assessment",
+    "job",
 ]
 
 
@@ -73,6 +74,7 @@ UIBlockType = Literal[
     "governance_report",
     "nav_hint",
     "reasoning_steps",
+    "job_card",
 ]
 
 UIBlockActionVerb = Literal[
@@ -130,6 +132,8 @@ def ui_block_to_text(block: UIBlock) -> str:
     if t == "reasoning_steps":
         steps = d.get("steps", [])
         return f"Reasoning ({len(steps)} step(s))"
+    if t == "job_card":
+        return d.get("message") or f"Started {d.get('tool_name', 'a task')} in the background"
     return ""
 
 

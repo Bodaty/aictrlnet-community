@@ -230,6 +230,13 @@ class AICtrlNetApp:
 
             # Shutdown
             try:
+                # Background conversation jobs this worker was running cannot
+                # finish now: say so instead of waiting for their lease to lapse.
+                from services.conversation_jobs import fail_owned_on_shutdown
+                await fail_owned_on_shutdown()
+            except Exception as e:
+                logger.warning(f"Could not close out running conversation jobs: {e}")
+            try:
                 from api.v1.endpoints.mcp_agent import cleanup_mcp_singletons
                 await cleanup_mcp_singletons()
                 logger.info("MCP singletons cleaned up")

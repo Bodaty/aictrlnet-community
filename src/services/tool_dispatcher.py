@@ -19,6 +19,7 @@ Tool Categories (Community - 35 tools):
 import asyncio
 import json
 import logging
+import re
 import time
 from enum import Enum
 from typing import Dict, Any, Iterable, List, Optional, Callable
@@ -1713,6 +1714,28 @@ def _abandon_guarded(task, session) -> None:
     task.add_done_callback(disposed)
 
 
+def clean_workflow_name(name: str) -> str:
+    """Strip instruction text a model sometimes passes as the name ("Create a workflow named 'X'")."""
+    prefixes_pattern = r"^(?:Create\s+)?(?:a\s+)?(?:A\s+)?[Ww]orkflow\s+(?:[Nn]amed|[Cc]alled)\s+['\"]?"
+    return re.sub(prefixes_pattern, '', name or '', flags=re.IGNORECASE).strip("'\" \t")
+
+
+def missing_workflow_name(name: str) -> Optional[ToolResult]:
+    """A generic or placeholder name is refused: the user is asked for a real one."""
+    generic_names = {'new workflow', 'workflow', 'new', 'untitled', 'test', ''}
+    if len(name) < 3 or name.lower() in generic_names:
+        return ToolResult(
+            success=False,
+            error="missing_name",
+            data={
+                "message": "Please provide a specific name for your workflow. What would you like to call it?",
+                "needs_clarification": True,
+                "field": "name"
+            }
+        )
+    return None
+
+
 def refuse_unoffered(tool_name: str, offered_names) -> Optional[ToolResult]:
     """R3 at execution time: a call to a tool this turn did not offer never runs.
 
@@ -2410,29 +2433,10 @@ class ToolDispatcher:
             )
 
         try:
-            # Clean up the name in case LLM passed verbose instructions
-            name = args.get('name', '')
-
-            # Use regex to remove common instructional prefixes
-            # Pattern matches: "Create a/A workflow named 'X'" or similar
-            prefixes_pattern = r"^(?:Create\s+)?(?:a\s+)?(?:A\s+)?[Ww]orkflow\s+(?:[Nn]amed|[Cc]alled)\s+['\"]?"
-            name = re.sub(prefixes_pattern, '', name, flags=re.IGNORECASE)
-
-            # Strip leading/trailing quotes and whitespace
-            name = name.strip("'\" \t")
-
-            # CRITICAL: Reject generic/placeholder names - force user to provide actual name
-            generic_names = {'new workflow', 'workflow', 'new', 'untitled', 'test', ''}
-            if len(name) < 3 or name.lower() in generic_names:
-                return ToolResult(
-                    success=False,
-                    error="missing_name",
-                    data={
-                        "message": "Please provide a specific name for your workflow. What would you like to call it?",
-                        "needs_clarification": True,
-                        "field": "name"
-                    }
-                )
+            name = clean_workflow_name(args.get('name', ''))
+            missing = missing_workflow_name(name)
+            if missing:
+                return missing
 
             description = args.get('description', '')
 

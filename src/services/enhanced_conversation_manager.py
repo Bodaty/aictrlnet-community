@@ -1425,11 +1425,106 @@ Response (just the sentence, no quotes):"""
             logger.debug(f"[turn] could not resolve the turn's provider: {e}")
             return None
 
+    async def _dispatch_tool(self, tool_dispatcher, trace, tool_name: str, arguments, user_id: str,
+                             context, offered_names, session_id):
+        """Run one tool call of a turn. Returns (ToolResult, started_job).
+
+        Order (spec §7.3): R3 refusal of a tool the turn did not offer; then a
+        long-running tool starts a background job when jobs are on (R2, T5) —
+        never in dry-run, where the call is simulated inline; anything else
+        runs inline under its deadline (`invoke_guarded`).
+        """
+        from services import conversation_jobs
+        from services.tool_dispatcher import clean_workflow_name, missing_workflow_name, refuse_unoffered
+
+        refused = refuse_unoffered(tool_name, offered_names)
+        if refused:
+            return refused, False
+        tool = tool_dispatcher.tool_definition(tool_name)
+        if (tool is not None and tool.tool_class == "long_running" and conversation_jobs.enabled()
+                and not (context or {}).get("is_dry_run")):
+            if tool_name == "create_workflow":
+                # Ask for a real name now, not minutes later from inside the job.
+                missing = missing_workflow_name(clean_workflow_name((arguments or {}).get("name", "")))
+                if missing:
+                    return missing, False
+            result = await conversation_jobs.start(
+                tool_dispatcher, tool_name, arguments or {}, user_id, context, session_id,
+            )
+            if result.data and result.data.get("job_id"):
+                trace.job_ids.append(result.data["job_id"])
+            return result, True
+        result = await tool_dispatcher.invoke_guarded(
+            tool_name=tool_name, arguments=arguments, user_id=user_id, context=context,
+            timeout_s=trace.tool_timeout_s(tool),
+        )
+        return result, False
+
+    @staticmethod
+    def _job_started_answer(result, held_back: int = 0) -> str:
+        """The deterministic answer when a turn started a background job (no model claims it is done).
+
+        `held_back`: further tool calls in the same response that were not run —
+        they may depend on what the job builds, so the user is told to ask again.
+        """
+        data = result.data or {}
+        answer = (f"{data.get('message', 'Started that in the background.')} It usually takes a few minutes — "
+                  "the card below updates when it's ready, and you can keep chatting meanwhile.")
+        if held_back:
+            answer += (" I held back the other step(s) you asked for until it finishes — "
+                       "ask me again once the card says it's done.")
+        return answer
+
+    async def _harvest_finished_jobs(self, session) -> None:
+        """Fold background jobs that finished since the last turn into the session (T5).
+
+        Jobs never write the session themselves (that would race this turn's
+        own write of the same JSON column); the turn claims them here, in its
+        own transaction, before anything else reads the session.
+        """
+        from sqlalchemy.orm.attributes import flag_modified
+        from services import conversation_jobs
+
+        if session is None:
+            return
+        try:
+            # A savepoint: a failed claim must not roll back (and expire) the
+            # session this turn has already loaded.
+            async with self.db.begin_nested():
+                claimed = await conversation_jobs.claim_finished(self.db, session.id)
+        except Exception as e:
+            logger.warning(f"[jobs] could not harvest finished jobs: {e}")
+            return
+        if not claimed:
+            await self.db.commit()  # release the row locks taken by the claim
+            return
+        for job in claimed:
+            meaning = job["outcome"]
+            entity = meaning.get("entity")
+            if entity:
+                self._register_entity(session, entity_type=entity["type"], entity_id=entity["id"],
+                                      label=entity.get("label") or entity["id"], summary=meaning.get("summary"))
+                if entity["type"] == "workflow":
+                    v5 = (session.context or {}).setdefault("v5_parameters", {})
+                    v5["workflow_id"] = entity["id"]
+                    v5["workflow_name"] = entity.get("label")
+            self._register_entity(session, entity_type="job", entity_id=job["job_id"],
+                                  label=job["tool_name"], summary=f"{job['status']}: {meaning.get('summary', '')}")
+        flag_modified(session, "context")
+        try:
+            await self.db.commit()
+        except Exception as e:
+            logger.warning(f"[jobs] could not record harvested jobs: {e}")
+            await self.db.rollback()
+            await self.db.refresh(session)
+
     def _summarize_tool_result(self, tool_name: str, result) -> str:
         """One plain line per tool result — the deterministic rung of the §7.4 ladder."""
         if not result.success:
             return f"Failed: {result.error}"
         data = result.data or {}
+        if data.get('job_id'):
+            return "Started in the background"
         if 'workflow_id' in data:
             return f"Created workflow: {data.get('workflow_name', data['workflow_id'])}"
         if 'count' in data:
@@ -1747,6 +1842,19 @@ Response (just the sentence, no quotes):"""
 
         Community-edition mappings. Business/Enterprise override/extend.
         """
+        if data.get("job_id"):
+            # A long-running tool started in the background (T5): the card polls it.
+            return [{
+                "type": "job_card",
+                "data": {
+                    "job_id": data["job_id"],
+                    "tool_name": tool_name,
+                    "status": data.get("status", "running"),
+                    "message": data.get("message"),
+                },
+                "actions": [],
+                "entity_ref": {"type": "job", "id": data["job_id"]},
+            }]
         if tool_name in ("create_workflow", "instantiate_template"):
             return [self._workflow_card(data, is_new=True)]
 
@@ -1932,6 +2040,13 @@ Response (just the sentence, no quotes):"""
                 continue
             data = getattr(result, "data", None) or {}
             tool_name = data.get("tool_name") or ""
+
+            if data.get("job_id"):
+                # Started in the background: the job is the entity until a later
+                # turn harvests what it produced.
+                self._register_entity(session, entity_type="job", entity_id=str(data["job_id"]),
+                                      label=tool_name, summary="running")
+                continue
 
             mapping = self._TOOL_ENTITY_MAP.get(tool_name)
             if mapping:
@@ -2144,6 +2259,7 @@ Response (just the sentence, no quotes):"""
         if not session or str(session.user_id) != str(user_id):
             yield {"event": "error", "data": trace.error_data(f"Session {session_id} not found")}
             return
+        await self._harvest_finished_jobs(session)
 
         logger.info(f"[v5] Loaded {len(conversation_history)} messages from history")
 
@@ -2424,6 +2540,8 @@ Response (just the sentence, no quotes):"""
             # Step 6: Execute tools if LLM decided to call any
             # =====================================================================
             tool_results = []
+            job_started_result = None
+            job_held_back = 0
             ui_blocks: List[Dict[str, Any]] = []  # Typed UI blocks emitted after tool execution
 
             # First check for proper tool calls
@@ -2503,17 +2621,13 @@ Response (just the sentence, no quotes):"""
                         ]
 
                     tool_started = _time.perf_counter()
-                    from services.tool_dispatcher import refuse_unoffered
-                    result = refuse_unoffered(tool_call.name, {t.name for t in tools}) or await tool_dispatcher.invoke_guarded(
-                        tool_name=tool_call.name,
-                        arguments=tool_call.arguments,
-                        user_id=user_id,
-                        context=tool_context,
-                        timeout_s=trace.tool_timeout_s(tool_dispatcher.tool_definition(tool_call.name)),
+                    result, started_job = await self._dispatch_tool(
+                        tool_dispatcher, trace, tool_call.name, tool_call.arguments, user_id, tool_context,
+                        {t.name for t in tools}, session.id,
                     )
                     timed_out = result.error_type == "timeout"
                     trace.record_tool(trace_round, tool_call.name, tool_started, result.success,
-                                      status="timeout" if timed_out else None)
+                                      status="job" if started_job else ("timeout" if timed_out else None))
                     if timed_out:
                         trace.degrade("tool_timeout")
 
@@ -2532,6 +2646,11 @@ Response (just the sentence, no quotes):"""
                                 "error": result.error if not result.success else None
                             }
                         }
+                    if started_job:
+                        # The work continues in the background: run nothing after it.
+                        job_started_result = result
+                        job_held_back = len(tool_calls_to_execute) - i - 1
+                        break
 
                 # =====================================================================
                 # Emit typed UI blocks (Phase 1). Blocks LINK to canonical pages;
@@ -2567,7 +2686,14 @@ Response (just the sentence, no quotes):"""
                 await self.db.close()  # Release DB before second LLM call
 
                 synthesis_started = _time.perf_counter()
-                if not trace.can_start_round(synthesis=True):
+                if job_started_result is not None:
+                    # No synthesis: a model asked to summarise would claim it is done.
+                    accumulated_text = self._with_degraded_note(
+                        self._job_started_answer(job_started_result, job_held_back), trace,
+                    )
+                    if stream:
+                        yield {"event": "text_delta", "data": {"text": accumulated_text}}
+                elif not trace.can_start_round(synthesis=True):
                     # §7.4 rung 3: no budget for a synthesis round.
                     trace.degrade("synthesis_skipped")
                 else:
@@ -2586,7 +2712,7 @@ Response (just the sentence, no quotes):"""
                         logger.warning(f"[v5] synthesis: {synth_timeout}")
                         trace.degrade("synthesis_timeout")
                 synthesis_cut = "synthesis_timeout" in trace.rungs or "synthesis_skipped" in trace.rungs
-                if synthesis_cut or not accumulated_text:
+                if job_started_result is None and (synthesis_cut or not accumulated_text):
                     # §7.4 rung 3: the model-free summary, after whatever synthesis streamed.
                     summary = ("\n\n" if accumulated_text else "") + self._deterministic_summary(tool_results)
                     accumulated_text += summary
@@ -2632,8 +2758,12 @@ Response (just the sentence, no quotes):"""
             # Copy tracked_entities from the detached session's mutations
             # (they may have been pre-populated earlier in the flow).
             if session.context and session.context.get("tracked_entities"):
+                # Merge, never replace: the stored row may hold entities this
+                # turn's copy does not.
                 live_session.context = live_session.context or {}
-                live_session.context["tracked_entities"] = session.context["tracked_entities"]
+                merged = dict(live_session.context.get("tracked_entities") or {})
+                merged.update(session.context["tracked_entities"])
+                live_session.context["tracked_entities"] = merged
 
             # Update session context with any new information
             await self._update_session_context_v5(
