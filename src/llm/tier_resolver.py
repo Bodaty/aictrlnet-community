@@ -309,6 +309,84 @@ SYSTEM_TIER_DEFAULTS = {
 }
 
 
+def effective_tier_map(available_models: List[str]) -> dict:
+    """The model each tier resolves to on this environment when no user, org or
+    explicit choice applies (spec §7.1).
+
+    A non-Ollama DEFAULT_LLM_MODEL (self-hosted vLLM, cloud Vertex) answers every
+    tier — one resident model. A local Ollama default defers to SYSTEM_TIER_DEFAULTS,
+    then to the largest pulled model in the tier, then to the default itself.
+    `pulled` is None where the table does not apply.
+    """
+    from services.conversation_budgets import provider_class_for
+
+    env_default = get_environment_default_model()
+    use_table = is_ollama_model(env_default)
+    tiers = {}
+    for tier in (ModelTier.FAST, ModelTier.BALANCED, ModelTier.QUALITY):
+        if not use_table:
+            tiers[tier.value] = {"model": env_default, "source": "environment_default", "pulled": None}
+            continue
+        table = SYSTEM_TIER_DEFAULTS[tier]
+        model = get_dynamic_system_default_for_tier(tier, available_models)
+        if model == table:
+            source = "table"
+        elif model:
+            source = "discovered"
+        else:
+            model, source = env_default, "environment_default"
+        tiers[tier.value] = {
+            "model": model,
+            "source": source,
+            "table_default": table,
+            "pulled": table in available_models,
+        }
+    return {
+        "provider_class": provider_class_for(provider_for_model_name(env_default)),
+        "default_model": env_default,
+        "tiers": tiers,
+    }
+
+
+def log_tier_map(tier_map: dict) -> None:
+    """One `[tier-map]` line at startup; a WARNING per local tier whose table
+    default is not pulled (that tier silently runs a bigger, slower model)."""
+    tiers = tier_map["tiers"]
+    logger.info(
+        "[tier-map] class=%s default=%s %s",
+        tier_map["provider_class"],
+        tier_map["default_model"],
+        " ".join(f"{t}={v['model']}({v['source']})" for t, v in tiers.items()),
+    )
+    for name, t in tiers.items():
+        if t["pulled"] is False:
+            logger.warning(
+                "[tier-map] %s tier default %s is not pulled; using %s. Run `make preflight-models`.",
+                name, t["table_default"], t["model"],
+            )
+
+
+async def log_startup_tier_map() -> None:
+    """Startup hook for the three lifespans. Bounded and best-effort: an
+    unreachable Ollama is reported, never a boot failure."""
+    try:
+        available: List[str] = []
+        if is_ollama_model(get_environment_default_model()):
+            import httpx
+            from core.config import get_settings
+
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.get(f"{get_settings().OLLAMA_URL}/api/tags")
+                    resp.raise_for_status()
+                    available = [m["name"] for m in resp.json().get("models", [])]
+            except Exception as e:
+                logger.warning("[tier-map] Ollama model list unavailable: %s", e)
+        log_tier_map(effective_tier_map(available))
+    except Exception as e:
+        logger.warning("[tier-map] could not resolve the tier map: %s", e)
+
+
 def get_system_default_for_tier(tier: ModelTier) -> str:
     """
     Get the system default model for a specific tier.
@@ -322,6 +400,9 @@ def get_system_default_for_tier(tier: ModelTier) -> str:
         Model name for the tier
     """
     return SYSTEM_TIER_DEFAULTS.get(tier, SYSTEM_TIER_DEFAULTS[ModelTier.QUALITY])
+
+
+_NON_CHAT_MARKERS = ("ocr", "embed", "rerank", "whisper", "vision-only")
 
 
 def get_dynamic_system_default_for_tier(
@@ -341,12 +422,19 @@ def get_dynamic_system_default_for_tier(
     if default and default in available_models:
         return default
 
-    # Classify available models and find best match for this tier
+    # Classify available models and find best match for this tier. Only local
+    # chat models with a known size qualify: an unsized name (glm-ocr:latest)
+    # classifies as BALANCED by default, and an Ollama `:cloud` model sends the
+    # prompt off the machine.
     candidates = []
     for model in available_models:
-        model_tier = classify_model_tier(model)
-        if model_tier == tier:
-            size = _estimate_model_size_billions(model) or 0.0
+        lowered = model.lower()
+        if lowered.endswith(":cloud") or "-cloud" in lowered or any(k in lowered for k in _NON_CHAT_MARKERS):
+            continue
+        size = _estimate_model_size_billions(model)
+        if size is None:
+            continue
+        if classify_model_tier(model) == tier:
             candidates.append((model, size))
 
     if candidates:

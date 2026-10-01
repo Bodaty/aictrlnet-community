@@ -47,6 +47,8 @@ class AICtrlNetApp:
             validate_phi_mode(self.settings)
             from llm.scripted import assert_scripted_mode_allowed
             assert_scripted_mode_allowed(self.settings)  # scripted model answers: local gates only
+            from llm.tier_resolver import log_startup_tier_map
+            await log_startup_tier_map()  # [tier-map]: which model answers each tier here
 
             # Initialize database
             await init_db()
@@ -295,6 +297,11 @@ class AICtrlNetApp:
         # Tenant middleware (middle — sets tenant context)
         from middleware.tenant import TenantMiddleware
         self.app.add_middleware(TenantMiddleware)
+
+        # Directly inside CORS: an unhandled exception becomes a 500 that
+        # still gets CORS headers (Starlette renders its own 500 outside CORS).
+        from middleware.error_boundary import ErrorBoundaryMiddleware
+        self.app.add_middleware(ErrorBoundaryMiddleware)
 
         # CORS MUST be added LAST so it wraps outermost — ALL responses
         # (including errors from Tenant/Enforcement) get CORS headers.
