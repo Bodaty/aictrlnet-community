@@ -277,11 +277,26 @@ class LLMGenerationEngine:
         except Exception:
             available_models = []
 
+        # A stored preference may name a vLLM model the server stopped serving
+        # (Beast moved Qwen → Gemma); that call 404s into an empty answer. Check
+        # the served list only when a preference names a vLLM model.
+        vllm_served: List[str] = []
+        if self._prefers_vllm_model(request.user_settings, request.org_settings):
+            try:
+                vllm_served = await self._get_vllm_models()
+            except Exception:
+                vllm_served = []
+
+        def _available(m: str) -> bool:
+            if m.lower().startswith("vllm:"):
+                return not vllm_served or m.split(":", 1)[1] in vllm_served
+            return m in available_models or self._is_api_model(m)
+
         resolution = resolve_model(
             user_settings=request.user_settings,
             org_settings=request.org_settings,
             tier=tier,
-            is_available=lambda m: m in available_models or self._is_api_model(m),
+            is_available=_available,
         )
         request.resolution_source = resolution.source
         logger.info(
@@ -1171,6 +1186,10 @@ Return ONLY the JSON array, no other text or explanation."""
         )
 
         response = await adapter.execute(adapter_request)
+        if getattr(response, "status", "success") == "error":
+            # An error must reach the caller (fallback chain, turn ladder), not
+            # become an empty "successful" answer (spec §7.3 R9).
+            raise RuntimeError(f"{provider.value} adapter error: {response.error or 'no detail'}")
 
         # Extract text from response - handle different adapter formats
         text = ""
@@ -1408,6 +1427,17 @@ Return ONLY the JSON array, no other text or explanation."""
             if ollama_model != exclude:
                 return ollama_model
         return None
+
+    @staticmethod
+    def _prefers_vllm_model(*settings_objects: Any) -> bool:
+        """True when any user/org model preference names a `vllm:` model."""
+        for settings in settings_objects:
+            if settings is None:
+                continue
+            values = settings.values() if isinstance(settings, dict) else vars(settings).values()
+            if any(isinstance(v, str) and v.lower().startswith("vllm:") for v in values):
+                return True
+        return False
 
     def _is_api_model(self, model: str) -> bool:
         """Check if model requires API access (cloud or self-hosted)."""

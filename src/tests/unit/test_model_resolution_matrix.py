@@ -127,3 +127,33 @@ async def test_trial_org_falls_to_system_default(engine, monkeypatch):
 
     assert model == "vllm:Qwen/Qwen3-30B-A3B-Instruct-2507-AWQ-4bit"
     assert request.resolution_source == "system_default"
+
+
+async def test_user_preference_for_a_vllm_model_the_server_no_longer_serves_is_skipped(engine, monkeypatch):
+    # Seen on Beast 1 Oct: dev@'s tier preferences still named the Qwen model after
+    # vLLM switched to Gemma; every turn got a 404 and answered with nothing.
+    monkeypatch.setenv("DEFAULT_LLM_MODEL", "vllm:cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit")
+    monkeypatch.setattr(engine, "_get_ollama_models", AsyncMock(return_value=[]))
+    monkeypatch.setattr(engine, "_get_vllm_models",
+                        AsyncMock(return_value=["cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit", "gemma4"]))
+    stale = "vllm:cpatonn/Qwen3-30B-A3B-Instruct-2507-AWQ-4bit"
+    request = LLMRequest(prompt="hi", task_type="general",
+                         user_settings=_settings(preferredQualityModel=stale, selected_model=stale))
+
+    model, _ = await engine._select_model(request)
+
+    assert model == "vllm:cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit"
+    assert request.resolution_source == "system_default"
+
+
+async def test_vllm_preference_kept_when_the_model_list_is_unavailable(engine, monkeypatch):
+    # No list (vLLM unreachable) is not evidence the model is gone.
+    monkeypatch.setattr(engine, "_get_ollama_models", AsyncMock(return_value=[]))
+    monkeypatch.setattr(engine, "_get_vllm_models", AsyncMock(return_value=[]))
+    pref = "vllm:cpatonn/Qwen3-30B-A3B-Instruct-2507-AWQ-4bit"
+    request = LLMRequest(prompt="hi", task_type="general",
+                         user_settings=_settings(preferredQualityModel=pref, selected_model=pref))
+
+    model, _ = await engine._select_model(request)
+
+    assert model == pref
