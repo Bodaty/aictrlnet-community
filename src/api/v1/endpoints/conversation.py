@@ -949,6 +949,8 @@ async def chat_v5(
     ```
     """
     async def v5_event_generator():
+        from services.conversation_turn import StreamTerminalGuard
+        guard = StreamTerminalGuard()
         try:
             # Use EnhancedConversationService with v5 unified flow
             enhanced_service = get_conversation_service_class()(db)
@@ -966,7 +968,9 @@ async def chat_v5(
             ):
                 # Format as SSE
                 event_data = serialize_for_json(event.get('data', {}))
-                yield f"event: {event['event']}\ndata: {json.dumps(event_data)}\n\n"
+                frame = f"event: {event['event']}\ndata: {json.dumps(event_data)}\n\n"
+                guard.saw(event)
+                yield frame
 
         except Exception as e:
             import logging
@@ -974,7 +978,9 @@ async def chat_v5(
             logger.error(f"[v5 Chat] Error: {e}")
             import traceback
             logger.error(f"[v5 Chat] Traceback: {traceback.format_exc()}")
-            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+            failure = guard.failure_event(e)  # spec §7.3 R1
+            if failure:
+                yield f"event: {failure[0]}\ndata: {json.dumps(failure[1])}\n\n"
 
     return StreamingResponse(
         v5_event_generator(),

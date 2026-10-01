@@ -16,6 +16,8 @@ Tool Categories (Community - 35 tools):
 - API Introspection (3): list_api_endpoints, get_endpoint_detail, search_api_capabilities
 """
 
+import asyncio
+import json
 import logging
 import time
 from enum import Enum
@@ -1667,6 +1669,50 @@ def admit_tools(
     return tools
 
 
+# Cancelled guarded tools and their disposal tasks, kept alive until done.
+_GUARDED_TASKS: set = set()
+
+
+def _timeout_result(tool_name: str, timeout_s: float, started: bool) -> ToolResult:
+    if not started:
+        error = f"'{tool_name}' was not started: no time was left in this turn."
+    else:
+        error = (
+            f"'{tool_name}' took longer than {timeout_s:.0f}s and was stopped. "
+            "If it was making a change, it may have partly completed — check before retrying."
+        )
+    return ToolResult(
+        success=False, error=error, error_type="timeout", recovery_strategy=ToolRecoveryStrategy.RETRY,
+    )
+
+
+def _abandon_guarded(task, session) -> None:
+    """Cancel a guarded tool and invalidate its session once it has stopped
+    (its connection may be mid-statement)."""
+    task.cancel()
+    _GUARDED_TASKS.add(task)
+
+    def disposed(t) -> None:
+        _GUARDED_TASKS.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.warning(f"[tool-guard] cancelled tool raised: {t.exception()!r}")
+
+        async def dispose() -> None:
+            try:
+                await asyncio.wait_for(session.invalidate(), timeout=5)
+            except Exception as exc:
+                logger.warning(f"[tool-guard] could not invalidate a cancelled tool's session: {exc}")
+
+        try:
+            cleanup = asyncio.get_running_loop().create_task(dispose())
+        except RuntimeError:
+            return  # loop closed (shutdown)
+        _GUARDED_TASKS.add(cleanup)
+        cleanup.add_done_callback(_GUARDED_TASKS.discard)
+
+    task.add_done_callback(disposed)
+
+
 def refuse_unoffered(tool_name: str, offered_names) -> Optional[ToolResult]:
     """R3 at execution time: a call to a tool this turn did not offer never runs.
 
@@ -1955,6 +2001,83 @@ class ToolDispatcher:
         return admit_tools(
             get_tools_for_edition(self.edition), allowed_classes, only_tools, extra_tools
         )
+
+    def tool_definition(self, tool_name: str) -> Optional[ToolDefinition]:
+        """This edition's definition of a tool, if it offers one."""
+        return next((t for t in self.get_available_tools() if t.name == tool_name), None)
+
+    async def invoke_guarded(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user_id: str,
+        context: Optional[Dict[str, Any]] = None,
+        timeout_s: Optional[float] = None,
+    ) -> ToolResult:
+        """Invoke a tool under a deadline (spec §7.3 R2) — conversation turns only.
+
+        With no deadline this is `invoke`. With one, the tool runs on a fresh
+        dispatcher of the same edition over its OWN database session, bound to
+        the turn's tenant, so a cancelled tool can never leave the turn's
+        session mid-statement (the turn still has to persist its answer). The
+        tool's session commits only if the tool succeeded and is rolled back
+        otherwise; a failing commit is a failed tool, never a failed turn. On
+        timeout the tool is cancelled, its session invalidated in the
+        background, and a `timeout` ToolResult returned at once — without
+        waiting for a tool that ignores cancellation. If the turn itself is
+        cancelled meanwhile, the tool is cancelled with it.
+        """
+        if timeout_s is None:
+            return await self.invoke(tool_name, arguments, user_id, context)
+        if timeout_s <= 0:
+            return _timeout_result(tool_name, 0, started=False)
+
+        from fastapi.encoders import jsonable_encoder
+
+        from core.database import bind_session_tenant, get_session_maker
+        from core.tenant_context import get_current_tenant_id
+
+        session = get_session_maker()()
+        tenant_id = (getattr(self.db, "info", None) or {}).get("tenant_id") or get_current_tenant_id()
+        bind_session_tenant(session, tenant_id)
+        dispatcher = type(self)(session, self.edition)
+
+        async def run() -> ToolResult:
+            result = await dispatcher.invoke(tool_name, arguments, user_id, context)
+            if isinstance(result.data, dict):
+                # Same encoding as the SSE path; nothing bound to this session
+                # may outlive it.
+                result.data = jsonable_encoder(result.data)
+            try:
+                if result.success:
+                    await session.commit()
+                else:
+                    await session.rollback()
+            except Exception as exc:
+                logger.error(f"[tool-guard] {tool_name}: could not finish its transaction: {exc}")
+                return ToolResult(
+                    success=False,
+                    error=f"'{tool_name}' could not save its changes: {exc}",
+                    error_type="execution_error",
+                    recovery_strategy=ToolRecoveryStrategy.FAIL,
+                )
+            return result
+
+        task = asyncio.ensure_future(run())
+        try:
+            done, _ = await asyncio.wait({task}, timeout=timeout_s)
+        except asyncio.CancelledError:
+            _abandon_guarded(task, session)
+            raise
+        if task in done:
+            try:
+                return task.result()
+            finally:
+                await session.close()
+
+        _abandon_guarded(task, session)
+        logger.warning(f"[tool-guard] {tool_name} exceeded {timeout_s:.1f}s and was cancelled")
+        return _timeout_result(tool_name, timeout_s, started=True)
 
     async def invoke(
         self,

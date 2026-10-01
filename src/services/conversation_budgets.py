@@ -93,3 +93,17 @@ def budgets_payload() -> Dict[str, object]:
         "default_class": provider_class_for(get_environment_default_provider()),
         "classes": {cls: b.as_dict() for cls, b in BUDGETS.items()},
     }
+
+
+OBSERVE = "observe"
+ENFORCE = "enforce"
+
+
+def enforcement_mode() -> str:
+    """`CONVERSATION_BUDGETS=observe|enforce` (spec §7.7). Observe measures and
+    reports breaches; enforce applies the deadlines and the §7.4 ladder.
+    Defaults to observe so a deployment collects timings before turning it on."""
+    import os
+
+    mode = os.environ.get("CONVERSATION_BUDGETS", OBSERVE).strip().lower()
+    return ENFORCE if mode == ENFORCE else OBSERVE

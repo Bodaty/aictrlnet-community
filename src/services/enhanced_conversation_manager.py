@@ -1403,6 +1403,59 @@ Response (just the sentence, no quotes):"""
             return cls._DEFAULT_TOOL_CAP
         return cls._ADAPTER_TOOL_CAPS.get(adapter.lower(), cls._DEFAULT_TOOL_CAP)
 
+    async def _resolve_turn_provider(self, task_type: str, user_settings, org_settings) -> Optional[str]:
+        """Provider of the model generation will pick for this turn (spec §7.1).
+
+        Asks the engine's own selector — same precedence and the same
+        availability check as the rounds — so the budget class matches the
+        model that serves the turn. A provider change mid-turn is recorded as
+        `fallback_from` when the rounds report their model. None when it cannot
+        be resolved (the environment default then stands).
+        """
+        try:
+            from llm.model_selection import get_provider_from_model
+            from llm.models import LLMRequest
+
+            engine = self._enhanced_llm_service.generation_engine
+            model, _tier = await engine._select_model(LLMRequest(
+                prompt="", task_type=task_type, user_settings=user_settings, org_settings=org_settings,
+            ))
+            return get_provider_from_model(model).value
+        except Exception as e:
+            logger.debug(f"[turn] could not resolve the turn's provider: {e}")
+            return None
+
+    def _summarize_tool_result(self, tool_name: str, result) -> str:
+        """One plain line per tool result — the deterministic rung of the §7.4 ladder."""
+        if not result.success:
+            return f"Failed: {result.error}"
+        data = result.data or {}
+        if 'workflow_id' in data:
+            return f"Created workflow: {data.get('workflow_name', data['workflow_id'])}"
+        if 'count' in data:
+            return f"Found {data['count']} results"
+        if 'automation_result' in data:
+            return "Automation completed"
+        return "Completed successfully"
+
+    def _deterministic_summary(self, tool_results) -> str:
+        """Answer without a model when there is no budget left to write one (§7.4)."""
+        lines = [
+            f"- {(r.data or {}).get('tool_name', 'step')}: {self._summarize_tool_result((r.data or {}).get('tool_name', ''), r)}"
+            for r in tool_results
+        ]
+        if not lines:
+            return "I wasn't able to finish that within the time limit."
+        return "Here's what was done:\n" + "\n".join(lines)
+
+    @staticmethod
+    def _with_degraded_note(text: str, trace) -> str:
+        """R9: an answer that took a lower rung says so."""
+        note = trace.degraded_note() if trace is not None else ""
+        if not note or note in (text or ""):
+            return text
+        return f"{text}\n\n{note}" if text else note
+
     @staticmethod
     def _route_context(session, conversation_history, personal_agent_config) -> Dict[str, Any]:
         """What the router may know about the session beyond the message (spec §7.6).
@@ -2020,6 +2073,8 @@ Response (just the sentence, no quotes):"""
                 trace, session_id, content, user_id,
                 stream=stream, file_id=file_id, user_preferences=user_preferences,
             ):
+                if event.get("event") == "response":
+                    trace.response_sent = True
                 yield event
         except Exception as e:
             logger.exception(f"[v5] turn {trace.turn_id} failed outside the turn handler: {e}")
@@ -2027,7 +2082,11 @@ Response (just the sentence, no quotes):"""
                 trace.error_data(str(e))
                 raise
             if not trace.finished:
-                yield {"event": "error", "data": trace.error_data(str(e))}
+                if trace.response_sent:
+                    trace.degrade("post_response_failure")
+                    yield {"event": "complete", "data": trace.complete_data("degraded")}
+                else:
+                    yield {"event": "error", "data": trace.error_data(str(e))}
         finally:
             trace.abandon_if_unfinished()
 
@@ -2219,6 +2278,26 @@ Response (just the sentence, no quotes):"""
             admitted_by_class=dict(Counter(t.tool_class for t in all_tools)),
         )
 
+        # LLM settings first: the budget class comes from the model the resolver
+        # will pick (spec §7.1), and context_ready carries that class's budgets.
+        user_settings = None
+        if user_preferences:
+            from llm.models import UserLLMSettings
+            user_settings = UserLLMSettings(
+                user_id=user_id,
+                selected_model=user_preferences.get('preferredQualityModel', ''),
+                preferredFastModel=user_preferences.get('preferredFastModel'),
+                preferredBalancedModel=user_preferences.get('preferredBalancedModel'),
+                preferredQualityModel=user_preferences.get('preferredQualityModel'),
+            )
+        # Load org LLM settings once (memoized) before the DB connection is
+        # released — the synthesis call reuses the cached value.
+        org_settings = await self._get_org_llm_settings()
+        if self._enhanced_llm_service:
+            trace.resolve_class(await self._resolve_turn_provider(
+                "tool_use" if needs_tools else "quick_analysis", user_settings, org_settings
+            ))
+
         if stream:
             yield {
                 "event": "context_ready",
@@ -2286,23 +2365,6 @@ Response (just the sentence, no quotes):"""
         messages = [{"role": "system", "content": system_prompt}] + conversation_history
 
         try:
-            # Build UserLLMSettings from user preferences if available
-            user_settings = None
-            if user_preferences:
-                from llm.models import UserLLMSettings
-                user_settings = UserLLMSettings(
-                    user_id=user_id,
-                    selected_model=user_preferences.get('preferredQualityModel', ''),
-                    preferredFastModel=user_preferences.get('preferredFastModel'),
-                    preferredBalancedModel=user_preferences.get('preferredBalancedModel'),
-                    preferredQualityModel=user_preferences.get('preferredQualityModel'),
-                )
-
-            # Load org LLM settings once (memoized) BEFORE releasing the DB
-            # connection below — the synthesis call further down reuses this
-            # cached value with no further DB access.
-            org_settings = await self._get_org_llm_settings()
-
             # Release DB connection before LLM call (30-120s idle wait).
             # Session will lazily re-acquire a connection on the next DB operation.
             await self.db.close()
@@ -2315,21 +2377,42 @@ Response (just the sentence, no quotes):"""
             llm_response = None
             accumulated_text = ""
 
+            from services.conversation_turn import RoundTimeout, bounded_stream
+            from llm.models import LLMToolResponse
+
             task_type = "quick_analysis" if not needs_tools else "tool_use"
+            trace.start_loop()
             trace_round = trace.start_round()
-            async for event in self._enhanced_llm_service.generate_with_tools_stream(
-                prompt=None, tools=tools, messages=messages,
-                system_prompt=system_prompt,
-                task_type=task_type, temperature=0.4,
-                user_settings=user_settings,
-                org_settings=org_settings,
-            ):
-                if event["type"] == "text_delta" and stream and event.get("text"):
-                    accumulated_text += event["text"]
-                    yield {"event": "text_delta", "data": {"text": event["text"]}}
-                elif event["type"] == "complete":
-                    llm_response = event["response"]
-            trace.end_round_llm(trace_round, llm_response)
+            round_cut = False
+            try:
+                if not trace.can_start_round():
+                    trace.degrade("nothing_ran")  # §7.4 rung 4: no budget for even one round
+                    raise RoundTimeout("no budget left for the first round")
+                async for event in bounded_stream(self._enhanced_llm_service.generate_with_tools_stream(
+                    prompt=None, tools=tools, messages=messages,
+                    system_prompt=system_prompt,
+                    task_type=task_type, temperature=0.4,
+                    user_settings=user_settings,
+                    org_settings=org_settings,
+                ), trace.round_timeout_s()):
+                    if event["type"] == "text_delta" and stream and event.get("text"):
+                        accumulated_text += event["text"]
+                        yield {"event": "text_delta", "data": {"text": event["text"]}}
+                    elif event["type"] == "complete":
+                        llm_response = event["response"]
+            except RoundTimeout as round_err:
+                # §7.4: keep what streamed, say why it stopped (R9), run no tool.
+                logger.warning(f"[v5] {round_err}")
+                round_cut = True
+                if "nothing_ran" not in trace.rungs:
+                    trace.degrade("round_timeout")
+                note = self._with_degraded_note("", trace)
+                if stream:
+                    yield {"event": "text_delta", "data": {"text": ("\n\n" if accumulated_text else "") + note}}
+                accumulated_text = self._with_degraded_note(accumulated_text, trace)
+            trace.end_round_llm(trace_round, None if round_cut else llm_response)
+            if round_cut:
+                llm_response = LLMToolResponse(text=accumulated_text)
 
             if not llm_response:
                 yield {"event": "error", "data": trace.error_data("LLM returned no response")}
@@ -2346,7 +2429,7 @@ Response (just the sentence, no quotes):"""
 
             # Also check if LLM output JSON that looks like a tool call
             inferred_tool_call = None
-            if not has_proper_tool_calls and llm_response.text:
+            if not has_proper_tool_calls and llm_response.text and not round_cut:
                 inferred_tool_call = self._parse_json_tool_call(llm_response.text, content)
                 # Only a tool this turn offered may be inferred from text (R3).
                 if inferred_tool_call and inferred_tool_call.get('tool') not in {t.name for t in tools}:
@@ -2419,13 +2502,18 @@ Response (just the sentence, no quotes):"""
 
                     tool_started = _time.perf_counter()
                     from services.tool_dispatcher import refuse_unoffered
-                    result = refuse_unoffered(tool_call.name, {t.name for t in tools}) or await tool_dispatcher.invoke(
+                    result = refuse_unoffered(tool_call.name, {t.name for t in tools}) or await tool_dispatcher.invoke_guarded(
                         tool_name=tool_call.name,
                         arguments=tool_call.arguments,
                         user_id=user_id,
-                        context=tool_context
+                        context=tool_context,
+                        timeout_s=trace.tool_timeout_s(tool_dispatcher.tool_definition(tool_call.name)),
                     )
-                    trace.record_tool(trace_round, tool_call.name, tool_started, result.success)
+                    timed_out = result.error_type == "timeout"
+                    trace.record_tool(trace_round, tool_call.name, tool_started, result.success,
+                                      status="timeout" if timed_out else None)
+                    if timed_out:
+                        trace.degrade("tool_timeout")
 
                     if result.data is None:
                         result.data = {}
@@ -2477,19 +2565,36 @@ Response (just the sentence, no quotes):"""
                 await self.db.close()  # Release DB before second LLM call
 
                 synthesis_started = _time.perf_counter()
-                async for event in self._enhanced_llm_service.generate_with_tools_stream(
-                    prompt=None, tools=[], messages=synthesis_messages,
-                    temperature=0.5, user_settings=user_settings,
-                    org_settings=org_settings,
-                ):
-                    if event["type"] == "text_delta" and stream and event.get("text"):
-                        accumulated_text += event["text"]
-                        yield {"event": "text_delta", "data": {"text": event["text"]}}
-                    elif event["type"] == "complete":
-                        trace.observe_model(event.get("response"))
+                if not trace.can_start_round(synthesis=True):
+                    # §7.4 rung 3: no budget for a synthesis round.
+                    trace.degrade("synthesis_skipped")
+                else:
+                    try:
+                        async for event in bounded_stream(self._enhanced_llm_service.generate_with_tools_stream(
+                            prompt=None, tools=[], messages=synthesis_messages,
+                            temperature=0.5, user_settings=user_settings,
+                            org_settings=org_settings,
+                        ), trace.round_timeout_s(synthesis=True)):
+                            if event["type"] == "text_delta" and stream and event.get("text"):
+                                accumulated_text += event["text"]
+                                yield {"event": "text_delta", "data": {"text": event["text"]}}
+                            elif event["type"] == "complete":
+                                trace.observe_model(event.get("response"))
+                    except RoundTimeout as synth_timeout:
+                        logger.warning(f"[v5] synthesis: {synth_timeout}")
+                        trace.degrade("synthesis_timeout")
+                synthesis_cut = "synthesis_timeout" in trace.rungs or "synthesis_skipped" in trace.rungs
+                if synthesis_cut or not accumulated_text:
+                    # §7.4 rung 3: the model-free summary, after whatever synthesis streamed.
+                    summary = ("\n\n" if accumulated_text else "") + self._deterministic_summary(tool_results)
+                    accumulated_text += summary
+                    if stream:
+                        yield {"event": "text_delta", "data": {"text": summary}}
                 trace.stages["synthesis"] = int((_time.perf_counter() - synthesis_started) * 1000)
 
-                response_content = accumulated_text
+                response_content = self._with_degraded_note(accumulated_text, trace)
+                if stream and response_content != accumulated_text:
+                    yield {"event": "text_delta", "data": {"text": response_content[len(accumulated_text):]}}
             else:
                 # Text-only turn — use accumulated text from Phase 1
                 response_content = accumulated_text or llm_response.text or ""
@@ -2606,7 +2711,12 @@ Response (just the sentence, no quotes):"""
             logger.error(f"[v5] Error in process_message_v2: {e}")
             import traceback
             logger.error(f"[v5] Traceback: {traceback.format_exc()}")
-            yield {"event": "error", "data": trace.error_data(str(e))}
+            if trace.response_sent:
+                # R1: once `response` is out, a failure is recorded on `complete`.
+                trace.degrade("post_response_failure")
+                yield {"event": "complete", "data": trace.complete_data("degraded")}
+            else:
+                yield {"event": "error", "data": trace.error_data(str(e))}
 
     async def _load_session_with_history(self, session_id: UUID):
         """Load session and conversation history in a single DB round trip."""

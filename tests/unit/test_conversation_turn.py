@@ -131,3 +131,157 @@ def test_an_unfinished_turn_is_recorded_as_abandoned_with_its_open_round_timed()
     stats = conversation_turn.conversation_stats()
     assert stats["abandoned"] == 1 and stats["terminal_error_rate"] == 0.0
     assert "_start" not in rnd and rnd["llm_ms"] >= 0
+
+
+# ── T4a: deadlines, bounded rounds, terminal guard, after-turn work ─────
+
+import asyncio
+from types import SimpleNamespace as _NS
+
+from services.conversation_budgets import ConversationBudgets
+from services.conversation_turn import (
+    RoundTimeout,
+    StreamTerminalGuard,
+    bounded_stream,
+    run_after_turn,
+)
+
+
+def _tiny(provider_class="local"):
+    return ConversationBudgets(
+        provider_class=provider_class, route_ms=5, prompt_warm_ms=150, prompt_cold_ms=1500,
+        knowledge_ms=2000, llm_round_s=1, tool_max_s=1, tool_hard_cap_s=60, job_ack_s=2,
+        loop_s=4, turn_s=6, chat_turn_s=2, first_event_s=30, idle_s=3, client_grace_s=10,
+    )
+
+
+def test_observe_mode_sets_no_deadlines(monkeypatch):
+    monkeypatch.delenv("CONVERSATION_BUDGETS", raising=False)
+    trace = TurnTrace("business", "ollama")
+    assert trace.enforce is False
+    assert trace.round_timeout_s() is None
+    assert trace.tool_timeout_s(_NS(tool_class="read", timeout_seconds=60)) is None
+    assert trace.can_start_round() is True
+
+
+def test_enforce_mode_bounds_rounds_and_tools(monkeypatch):
+    monkeypatch.setenv("CONVERSATION_BUDGETS", "enforce")
+    trace = TurnTrace("business", "ollama")
+    trace.start_loop()
+    assert 0 < trace.round_timeout_s() <= 45
+    assert trace.tool_timeout_s(_NS(tool_class="read", timeout_seconds=60)) == 20
+    assert trace.tool_timeout_s(_NS(tool_class="read", timeout_seconds=5)) == 5
+    # Long-running tools have no job path until T5: no inline deadline yet.
+    assert trace.tool_timeout_s(_NS(tool_class="long_running", timeout_seconds=300)) is None
+
+
+def test_chat_round_is_capped_by_the_chat_budget(monkeypatch):
+    monkeypatch.setenv("CONVERSATION_BUDGETS", "enforce")
+    trace = TurnTrace("business", "ollama")
+    trace.set_route("chat", ["pleasantry"], offered=0)
+    assert trace.round_timeout_s() <= 15
+
+
+def test_no_round_starts_without_budget_for_it(monkeypatch):
+    monkeypatch.setenv("CONVERSATION_BUDGETS", "enforce")
+    trace = TurnTrace("business", "ollama")
+    trace.budgets = _tiny()
+    trace.start_loop()
+    assert trace.can_start_round()
+    monkeypatch.setattr(trace, "remaining_s", lambda include_loop=True: 0.5)
+    assert not trace.can_start_round()
+
+
+def test_resolve_class_rebinds_budgets():
+    trace = TurnTrace("business", "ollama")
+    trace.resolve_class("vertex_ai")
+    assert trace.budgets.provider_class == "cloud" and trace.complete_data()["budget"]["turn_s"] == 75
+
+
+def test_a_rung_marks_the_turn_degraded_and_exhausted():
+    trace = TurnTrace("business", "ollama")
+    trace.degrade("tool_timeout")
+    trace.degrade("synthesis_skipped")  # the reason names the first rung...
+    data = trace.complete_data()
+    assert data["status"] == "degraded"
+    assert data["budget"]["degraded_reason"] == "tool_timeout"
+    assert data["budget"]["exhausted"] is True
+    note = trace.degraded_note()  # ...the answer names every rung taken
+    assert "too long and was stopped" in note and "plain summary" in note
+
+
+def test_synthesis_may_use_the_slack_after_the_loop(monkeypatch):
+    monkeypatch.setenv("CONVERSATION_BUDGETS", "enforce")
+    trace = TurnTrace("business", "ollama")
+    trace.budgets = _tiny()  # loop 4, turn 6, round 1
+    trace.start_loop()
+    trace._loop_deadline = trace._t0  # the loop is spent
+    assert not trace.can_start_round()
+    assert trace.can_start_round(synthesis=True)
+
+
+_closed = []
+
+
+async def _slow_stream(delay):
+    try:
+        yield {"type": "text_delta", "text": "partial"}
+        await asyncio.sleep(delay)
+        yield {"type": "complete"}
+    finally:
+        _closed.append(True)
+
+
+async def test_bounded_stream_stops_a_slow_round_and_closes_it():
+    _closed.clear()
+    seen = []
+    with pytest.raises(RoundTimeout):
+        async for event in bounded_stream(_slow_stream(5), 0.2):
+            seen.append(event)
+    assert seen == [{"type": "text_delta", "text": "partial"}]
+    assert _closed == [True]  # the provider stream was shut, not left to GC
+
+
+async def test_bounded_stream_without_deadline_passes_through():
+    events = [e async for e in bounded_stream(_slow_stream(0), None)]
+    assert [e["type"] for e in events] == ["text_delta", "complete"]
+
+
+def test_stream_guard_never_errors_after_response():
+    guard = StreamTerminalGuard()
+    guard.saw({"event": "context_ready", "data": {"turn_id": "t-1"}})
+    assert guard.failure_event(RuntimeError("x")) == ("error", {"message": "x", "turn_id": "t-1"})
+    guard.saw({"event": "response", "data": {}})
+    name, data = guard.failure_event(RuntimeError("x"))
+    assert name == "complete" and data["status"] == "degraded" and data["turn_id"] == "t-1"
+    guard.saw({"event": "complete", "data": {}})
+    assert guard.failure_event(RuntimeError("x")) is None
+
+
+async def test_after_turn_work_waits_for_turns_in_flight_on_local(monkeypatch):
+    # Traces earlier tests left unfinished would count as in flight; the turn
+    # wrapper always finishes its trace in production.
+    monkeypatch.setattr(conversation_turn, "_in_flight", 0)
+    ran = []
+    trace = TurnTrace("business", "ollama")  # one turn in flight
+
+    async def work():
+        ran.append(True)
+
+    run_after_turn("probe", "local", work, wait_s=5)
+    await asyncio.sleep(0.6)
+    assert ran == []
+    trace.complete_data()  # the turn ends
+    await asyncio.sleep(0.8)
+    assert ran == [True]
+
+
+def test_a_chat_turn_can_start_its_round_with_the_real_budgets(monkeypatch):
+    # chat_turn_s (15) is below llm_round_s (45): requiring a full round
+    # before starting would refuse every chat turn.
+    monkeypatch.setenv("CONVERSATION_BUDGETS", "enforce")
+    trace = TurnTrace("business", "ollama")
+    trace.set_route("chat", ["pleasantry"], offered=0)
+    trace.start_loop()
+    assert trace.round_floor_s() == 7.5
+    assert trace.can_start_round()
