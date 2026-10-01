@@ -1,6 +1,6 @@
 """Database configuration with async SQLAlchemy."""
 
-from typing import AsyncGenerator
+from typing import AsyncGenerator, AsyncIterator
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     create_async_engine,
@@ -136,6 +136,21 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
+
+async def closing_session(stream: AsyncIterator, session: AsyncSession) -> AsyncIterator:
+    """Close a request-scoped session when a streaming response ends.
+
+    FastAPI (>= 0.106) runs get_db's cleanup before a StreamingResponse starts
+    sending, so a generator that keeps using the session re-opens it on a fresh
+    connection that nothing returns (one leaked connection per streamed turn,
+    1 Oct 2026). Wrap the generator: StreamingResponse(closing_session(gen(), db)).
+    """
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        await session.close()
 
 
 async def get_admin_db() -> AsyncGenerator[AsyncSession, None]:

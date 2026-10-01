@@ -10,7 +10,7 @@ import json
 import asyncio
 import logging
 
-from core.database import get_db
+from core.database import get_db, closing_session
 from core.security import get_current_active_user
 from core.dependencies import get_current_user_safe
 from core.tenant_context import get_current_tenant_id
@@ -189,7 +189,7 @@ async def process_natural_language_stream(
             yield f"data: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
     
     return StreamingResponse(
-        generate(),
+        closing_session(generate(), db),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

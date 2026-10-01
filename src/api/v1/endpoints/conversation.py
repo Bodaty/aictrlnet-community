@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 import json
 import asyncio
 
-from core.database import get_db
+from core.database import get_db, closing_session
 from core.security import get_current_user
 from schemas.conversation import (
     ConversationSessionCreate,
@@ -1000,7 +1000,7 @@ async def chat_v5(
                 yield f"event: {failure[0]}\ndata: {json.dumps(failure[1])}\n\n"
 
     return StreamingResponse(
-        v5_event_generator(),
+        closing_session(v5_event_generator(), db),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
