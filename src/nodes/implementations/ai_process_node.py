@@ -218,6 +218,14 @@ class AIProcessNode(BaseNode):
         # Trial restriction: override node-specific adapter to system default
         adapter_id = await self._enforce_trial_restriction(adapter_id)
 
+        # Local test gates: every AI node answers from the script (llm/scripted.py).
+        from llm.scripted import scripted_mode
+        if scripted_mode():
+            from adapters.implementations.ai.scripted_adapter import ScriptedAdapter
+            if not adapter_registry.get_adapter_class("scripted"):
+                adapter_registry.register_adapter_class("scripted", ScriptedAdapter, AdapterCategory.AI)
+            adapter_id = "scripted"
+
         # Stash so _process_* methods can decide whether narrative routing
         # (model upgrade) applies. Only Ollama-family adapters get upgraded —
         # see _maybe_upgrade_model_for_narrative.

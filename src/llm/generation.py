@@ -150,6 +150,12 @@ class LLMGenerationEngine:
             LLM response with generated text
         """
         start_time = datetime.utcnow()
+
+        # Local test gates answer from a script, before any model selection or
+        # fallback ladder can reach a real model (spec §8.1 Tier 1).
+        from llm.scripted import generate_response, scripted_mode
+        if scripted_mode():
+            return await generate_response(request)
         
         # Select the best model
         model, tier = await self._select_model(request)
@@ -255,6 +261,11 @@ class LLMGenerationEngine:
             is_ollama_model,
             resolve_model,
         )
+
+        from llm.scripted import SCRIPTED_MODEL, scripted_mode
+        if scripted_mode():
+            request.resolution_source = "scripted"
+            return SCRIPTED_MODEL, ModelTier.QUALITY
 
         if request.model_override:
             request.resolution_source = "explicit"

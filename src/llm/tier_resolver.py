@@ -49,6 +49,8 @@ def provider_for_model_name(model: str) -> str:
     """Provider a model name routes to, by the same heuristics the auto-select
     path uses. Pure, so the PHI boot guard can apply it to a Settings value."""
     model_lower = (model or "").lower()
+    if model_lower.startswith("scripted:"):
+        return "scripted"
     if model_lower.startswith("vllm:"):
         return "vllm"
     if is_ollama_model(model):
@@ -120,6 +122,8 @@ def is_ollama_model(model: str) -> bool:
     Returns:
         True if this appears to be an Ollama model, False if it's an API model
     """
+    if (model or "").lower().startswith("scripted:"):
+        return False
     if not model:
         return False
 

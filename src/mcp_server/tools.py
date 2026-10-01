@@ -1128,9 +1128,11 @@ BUSINESS_TOOLS = [
                 "description": {"type": "string"},
                 "policy_type": {"type": "string"},
                 "rules": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "description": "Rule conditions + actions (see AGP rule schema)",
+                    "type": "object",
+                    "description": (
+                        "Rule settings as one object, e.g. "
+                        '{"block_harmful": true, "toxicity_threshold": 0.8}'
+                    ),
                 },
                 "applies_to": {
                     "type": "array",

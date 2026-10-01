@@ -10,6 +10,7 @@ class ModelProvider(str, Enum):
     """LLM model providers."""
     OLLAMA = "ollama"
     VLLM = "vllm"
+    SCRIPTED = "scripted"  # local test gates only (llm/scripted.py)
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     GEMINI = "gemini"

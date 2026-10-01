@@ -15,9 +15,12 @@ router = APIRouter()
 async def health_check(db: AsyncSession = Depends(get_db)):
     """Check system health."""
     settings = get_settings()
+    from llm.scripted import scripted_mode
     services = {
         "api": "ok",
         "edition": settings.EDITION,
+        # "scripted" means every model answer comes from a test script (local gates).
+        "llm_mode": "scripted" if scripted_mode() else "model",
     }
     
     # Check database
@@ -36,7 +39,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         services["ai"] = "not_implemented"
     
     return HealthResponse(
-        status="ok" if all(v == "ok" for v in services.values() if v != "not_implemented") else "degraded",
+        status="ok" if all(v == "ok" for k, v in services.items() if v != "not_implemented" and k not in ("edition", "llm_mode")) else "degraded",
         edition=settings.EDITION,
         version=settings.VERSION,
         services=services,

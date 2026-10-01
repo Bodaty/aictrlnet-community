@@ -45,6 +45,8 @@ class AICtrlNetApp:
             # encrypted volume or credentials sit in plaintext env vars.
             from core.config import validate_phi_mode
             validate_phi_mode(self.settings)
+            from llm.scripted import assert_scripted_mode_allowed
+            assert_scripted_mode_allowed(self.settings)  # scripted model answers: local gates only
 
             # Initialize database
             await init_db()

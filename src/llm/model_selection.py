@@ -586,6 +586,10 @@ def get_provider_from_model(model: str) -> ModelProvider:
     """Get provider from model name."""
     model_lower = model.lower()
 
+    # Scripted answers for local test gates (llm/scripted.py).
+    if model_lower.startswith("scripted:"):
+        return ModelProvider.SCRIPTED
+
     # vLLM uses an explicit prefix because served-model-name is often a
     # HuggingFace repo path (e.g. meta-llama/Llama-3.1-8B-Instruct) which
     # would otherwise fall through to the OLLAMA default. Match this first.

@@ -481,6 +481,14 @@ class LLMService:
         import uuid
         from datetime import datetime
 
+        # Local test gates answer from a script (spec §8.1 Tier 1); nothing below —
+        # model selection, adapters, the native→text fallback — is reached.
+        from llm.scripted import scripted_mode, tool_stream
+        if scripted_mode():
+            async for event in tool_stream(messages=messages, prompt=prompt, tools=tools, task_type=task_type):
+                yield event
+            return
+
         start_time = datetime.utcnow()
 
         temp_request = LLMRequest(

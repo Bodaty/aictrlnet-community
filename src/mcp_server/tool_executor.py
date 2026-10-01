@@ -1959,6 +1959,11 @@ async def _handle_create_policy(
         ) from exc
     from core.tenant_context import get_current_tenant_id
 
+    # The policies API (AIPolicyCreate.rules) and every reader expect one object;
+    # a list stored here made GET /ai-governance/policies fail for the tenant.
+    if not isinstance(arguments.get("rules"), dict):
+        raise ToolExecutionError("rules must be an object, e.g. {\"toxicity_threshold\": 0.8}")
+
     tenant_id = get_current_tenant_id() or "default-tenant"
     policy = AIPolicy(
         name=arguments["name"],
