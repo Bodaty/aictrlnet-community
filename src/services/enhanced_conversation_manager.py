@@ -1562,6 +1562,41 @@ Response (just the sentence, no quotes):"""
             return text
         return f"{text}\n\n{note}" if text else note
 
+    async def _model_free_turn(self, session, session_id, text: str, trace, stream: bool,
+                               turn_count: int, drop_proposal: bool = True):
+        """A turn answered without any model call (a declined or invalid proposal,
+        spec §7.3 R4): store the answer, drop the pending proposal, emit the
+        normal response and complete events."""
+        from sqlalchemy import select as _select
+        from models.conversation import ConversationSession as _ConvSession
+        from services import confirmation_gate
+
+        if stream:
+            yield {"event": "text_delta", "data": {"text": text}}
+        assistant_message = await self._store_message(
+            session_id=session_id, role="assistant", content=text, commit=False,
+        )
+        live = (await self.db.execute(
+            _select(_ConvSession).where(_ConvSession.id == session.id)
+        )).scalar_one_or_none()
+        if live is not None and drop_proposal:
+            confirmation_gate.persist(live, None)
+        await self.db.commit()
+        context = (live.context if live is not None else session.context) or {}
+        yield {"event": "response", "data": {
+            "content": text,
+            "message_id": str(assistant_message.id),
+            "tools_executed": [],
+            "all_successful": True,
+            "session_context": {
+                "parameters": context.get("v5_parameters", {}),
+                "turn_count": turn_count,
+                "tracked_entities": context.get("tracked_entities", {}),
+            },
+            "ui_blocks": [],
+        }}
+        yield {"event": "complete", "data": trace.complete_data("done")}
+
     @staticmethod
     def _route_context(session, conversation_history, personal_agent_config) -> Dict[str, Any]:
         """What the router may know about the session beyond the message (spec §7.6).
@@ -2178,6 +2213,7 @@ Response (just the sentence, no quotes):"""
         stream: bool = True,
         file_id: str = None,
         user_preferences: dict = None,
+        message_config: Optional[Dict[str, Any]] = None,
     ) -> "AsyncGenerator[Dict[str, Any], None]":
         """One v5 conversation turn, traced end to end (spec §7.3 R1, R8).
 
@@ -2187,6 +2223,8 @@ Response (just the sentence, no quotes):"""
         the client abandoned (disconnect, cancellation) that reached no
         terminal event. Editions override `_process_turn_v2`, not this.
         """
+        # A Confirm/Cancel button names the proposal it was shown for (T4b).
+        self._turn_proposal_id = (message_config or {}).get("proposal_id")
         from core.config import get_settings
         from llm.tier_resolver import get_environment_default_provider
         from services.conversation_turn import TurnTrace
@@ -2322,6 +2360,27 @@ Response (just the sentence, no quotes):"""
             )
         needs_tools = decision.mode != CHAT or bool(decision.extra_tools)
 
+        # T4b confirmation gate (spec §7.3 R4): per-turn state.
+        from services import confirmation_gate
+        from services.conversation_router import CANCEL
+        from core.tenant_context import get_current_tenant_id
+        self._turn_tenant_id = (getattr(self.db, "info", None) or {}).get("tenant_id") or get_current_tenant_id()
+        self._pending_proposal = None
+        claimed = None
+        confirm_level = None
+        if decision.mode not in (CONFIRM, CANCEL) and confirmation_gate.is_pending(session):
+            # Any other turn dismisses a waiting proposal — now, so an early return
+            # (clarification, error) cannot leave it to a later "yes" (review 2 Oct).
+            await confirmation_gate.clear(session.id)
+        if decision.mode == CANCEL:
+            async for event in self._model_free_turn(
+                    session, session_id, confirmation_gate.CANCELLED_ANSWER, trace, stream,
+                    len(conversation_history)):
+                yield event
+            return
+        if needs_tools and decision.mode != CONFIRM:
+            confirm_level = await confirmation_gate.resolve_turn_level(self.db, user_id, self._turn_tenant_id)
+
         if needs_tools:
             with trace.stage("knowledge"):
                 knowledge_items = await self.knowledge_service.find_relevant_knowledge(
@@ -2382,7 +2441,23 @@ Response (just the sentence, no quotes):"""
             only_tools={decision.proposed_tool} if decision.mode == CONFIRM else None,
             extra_tools=decision.extra_tools,
         )
-        if needs_tools:
+        if decision.mode == CONFIRM:
+            claimed, reason = await confirmation_gate.claim(
+                self.db, session.id, user_id=user_id, tenant_id=self._turn_tenant_id,
+                turn_id=trace.turn_id, offered={t.name for t in all_tools},
+                proposal_id=getattr(self, "_turn_proposal_id", None),
+            )
+            if claimed is None:
+                async for event in self._model_free_turn(
+                        session, session_id, confirmation_gate.INVALID_ANSWERS[reason], trace, stream,
+                        len(conversation_history), drop_proposal=False):
+                    yield event
+                return
+        if claimed is not None:
+            # Admission already narrowed the turn to the confirmed tool; scoring it
+            # against "yes" would drop it.
+            tools = list(all_tools)
+        elif needs_tools:
             # Resolve the active adapter so pruning caps match the provider's
             # reliable tool-calling budget (Ollama≈32, OpenAI/Anthropic≈64).
             from llm.tier_resolver import get_environment_default_provider
@@ -2513,22 +2588,30 @@ Response (just the sentence, no quotes):"""
             trace.start_loop()
             trace_round = trace.start_round()
             round_cut = False
+            if claimed is not None:
+                # The confirmed proposal runs as this turn's call: no model round.
+                from llm.models import ToolCall
+                llm_response = LLMToolResponse(text="", tool_calls=[
+                    ToolCall(id="confirmed", name=claimed["tool"], arguments=claimed.get("arguments") or {})])
             try:
-                if not trace.can_start_round():
+                if llm_response is not None:
+                    pass
+                elif not trace.can_start_round():
                     trace.degrade("nothing_ran")  # §7.4 rung 4: no budget for even one round
                     raise RoundTimeout("no budget left for the first round")
-                async for event in bounded_stream(self._enhanced_llm_service.generate_with_tools_stream(
-                    prompt=None, tools=tools, messages=messages,
-                    system_prompt=system_prompt,
-                    task_type=task_type, temperature=0.4,
-                    user_settings=user_settings,
-                    org_settings=org_settings,
-                ), trace.round_timeout_s()):
-                    if event["type"] == "text_delta" and stream and event.get("text"):
-                        accumulated_text += event["text"]
-                        yield {"event": "text_delta", "data": {"text": event["text"]}}
-                    elif event["type"] == "complete":
-                        llm_response = event["response"]
+                else:
+                    async for event in bounded_stream(self._enhanced_llm_service.generate_with_tools_stream(
+                        prompt=None, tools=tools, messages=messages,
+                        system_prompt=system_prompt,
+                        task_type=task_type, temperature=0.4,
+                        user_settings=user_settings,
+                        org_settings=org_settings,
+                    ), trace.round_timeout_s()):
+                        if event["type"] == "text_delta" and stream and event.get("text"):
+                            accumulated_text += event["text"]
+                            yield {"event": "text_delta", "data": {"text": event["text"]}}
+                        elif event["type"] == "complete":
+                            llm_response = event["response"]
             except RoundTimeout as round_err:
                 # §7.4: keep what streamed, say why it stopped (R9), run no tool.
                 logger.warning(f"[v5] {round_err}")
@@ -2539,7 +2622,7 @@ Response (just the sentence, no quotes):"""
                 if stream:
                     yield {"event": "text_delta", "data": {"text": ("\n\n" if accumulated_text else "") + note}}
                 accumulated_text = self._with_degraded_note(accumulated_text, trace)
-            trace.end_round_llm(trace_round, None if round_cut else llm_response)
+            trace.end_round_llm(trace_round, None if (round_cut or claimed is not None) else llm_response)
             if round_cut:
                 llm_response = LLMToolResponse(text=accumulated_text)
 
@@ -2607,7 +2690,23 @@ Response (just the sentence, no quotes):"""
                         }
                     }
 
+                offered_names = {t.name for t in tools}
                 for i, tool_call in enumerate(tool_calls_to_execute):
+                    gated = None
+                    if confirm_level is not None and tool_call.name in offered_names:
+                        gated = confirmation_gate.check(
+                            tool_dispatcher.tool_definition(tool_call.name), tool_call.arguments, confirm_level)
+                    if gated is not None and gated.error_type == confirmation_gate.NEEDS_CONFIRMATION:
+                        # Stop the batch at the first gated call (review finding 2).
+                        self._pending_proposal = confirmation_gate.make_proposal(
+                            tool_dispatcher.tool_definition(tool_call.name), tool_call.arguments or {},
+                            user_id=user_id, tenant_id=self._turn_tenant_id, user_request=content,
+                            context={"templates": [
+                                {'name': k.name, 'description': getattr(k, 'description', ''),
+                                 'category': getattr(k, 'category', ''), 'id': str(getattr(k, 'id', ''))}
+                                for k in knowledge_items if k.type == 'template']} if knowledge_items else None,
+                        )
+                        break
                     if stream:
                         yield {
                             "event": "tool_start",
@@ -2631,11 +2730,19 @@ Response (just the sentence, no quotes):"""
                             for k in knowledge_items if k.type == 'template'
                         ]
 
+                    if claimed is not None:
+                        # The confirmed call runs with the request that proposed it (finding 9).
+                        tool_context['user_request'] = claimed.get('user_request')
+                        if claimed.get('templates'):
+                            tool_context['templates'] = claimed['templates']
                     tool_started = _time.perf_counter()
-                    result, started_job = await self._dispatch_tool(
-                        tool_dispatcher, trace, tool_call.name, tool_call.arguments, user_id, tool_context,
-                        {t.name for t in tools}, session.id,
-                    )
+                    if gated is not None:  # a missing argument: answered, not run
+                        result, started_job = gated, False
+                    else:
+                        result, started_job = await self._dispatch_tool(
+                            tool_dispatcher, trace, tool_call.name, tool_call.arguments, user_id, tool_context,
+                            offered_names, session.id,
+                        )
                     timed_out = result.error_type == "timeout"
                     trace.record_tool(trace_round, tool_call.name, tool_started, result.success,
                                       status="job" if started_job else ("timeout" if timed_out else None))
@@ -2669,6 +2776,8 @@ Response (just the sentence, no quotes):"""
                 # on the frontend when present and non-empty.
                 # =====================================================================
                 built_blocks = self._build_ui_blocks(tool_results, session.context or {})
+                if self._pending_proposal is not None:
+                    built_blocks.append(confirmation_gate.proposal_block(self._pending_proposal))
                 ui_blocks.extend(built_blocks)
                 for block in built_blocks:
                     yield {
@@ -2697,7 +2806,12 @@ Response (just the sentence, no quotes):"""
                 await self.db.close()  # Release DB before second LLM call
 
                 synthesis_started = _time.perf_counter()
-                if job_started_result is not None:
+                if self._pending_proposal is not None:
+                    # No synthesis: a model told "awaiting confirmation" tends to claim it ran.
+                    accumulated_text = confirmation_gate.proposal_answer(self._pending_proposal, tool_results)
+                    if stream:
+                        yield {"event": "text_delta", "data": {"text": accumulated_text}}
+                elif job_started_result is not None:
                     # No synthesis: a model asked to summarise would claim it is done.
                     accumulated_text = self._with_degraded_note(
                         self._job_started_answer(job_started_result, job_held_back), trace,
@@ -2723,7 +2837,8 @@ Response (just the sentence, no quotes):"""
                         logger.warning(f"[v5] synthesis: {synth_timeout}")
                         trace.degrade("synthesis_timeout")
                 synthesis_cut = "synthesis_timeout" in trace.rungs or "synthesis_skipped" in trace.rungs
-                if job_started_result is None and (synthesis_cut or not accumulated_text):
+                if (job_started_result is None and self._pending_proposal is None
+                        and (synthesis_cut or not accumulated_text)):
                     # §7.4 rung 3: the model-free summary, after whatever synthesis streamed.
                     summary = ("\n\n" if accumulated_text else "") + self._deterministic_summary(tool_results)
                     accumulated_text += summary
@@ -2785,6 +2900,8 @@ Response (just the sentence, no quotes):"""
             )
             # Register tracked entities (Phase 3) on the live session.
             self._register_entities_from_results(live_session, tool_results)
+            # T4b: this turn's proposal, or none (any other turn dismisses one).
+            confirmation_gate.persist(live_session, self._pending_proposal)
             # Single commit for both message + context update
             await self.db.commit()
             await self.db.refresh(assistant_message)
@@ -2812,7 +2929,8 @@ Response (just the sentence, no quotes):"""
                         break
 
             # Method 2: Fall back to session context if tool_results didn't have it
-            if not created_workflow_info:
+            # (never on a proposal turn: nothing was created).
+            if not created_workflow_info and self._pending_proposal is None:
                 v5_params = session.context.get('v5_parameters', {})
                 logger.info(f"[v5 created_workflow] Checking session context: {v5_params}")
                 if v5_params.get('workflow_id'):
@@ -2860,6 +2978,9 @@ Response (just the sentence, no quotes):"""
                 yield {"event": "complete", "data": trace.complete_data("degraded")}
             else:
                 yield {"event": "error", "data": trace.error_data(str(e))}
+        finally:
+            if claimed is not None:
+                await confirmation_gate.clear(session.id, only_id=claimed["id"])
 
     async def _load_session_with_history(self, session_id: UUID):
         """Load session and conversation history in a single DB round trip."""

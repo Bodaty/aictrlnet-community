@@ -118,7 +118,10 @@ def ui_block_to_text(block: UIBlock) -> str:
         return f"Risk score {d.get('score', '?')} — {d.get('top_finding', 'see details')}"
     if t == "execution_preview":
         tools = d.get("tools", [])
-        return f"Running {len(tools)} tool(s): {', '.join(x.get('name', '?') for x in tools[:3])}"
+        names = ', '.join(x.get('name', '?') for x in tools[:3])
+        if d.get("status") == "awaiting_confirmation":
+            return f"Waiting for your yes: {names} (reply yes or no)"
+        return f"Running {len(tools)} tool(s): {names}"
     if t == "agent_card":
         return f"Agent '{d.get('name', '?')}' ({d.get('id', '?')}) — status: {d.get('status', 'unknown')}"
     if t == "policy_card":

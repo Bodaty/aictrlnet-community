@@ -17,12 +17,14 @@ from typing import Any, FrozenSet, List, Mapping, Optional, Tuple
 from services.tool_classes import DISCOVERY, LONG_RUNNING, READ, TOOL_CLASSES, WRITE  # noqa: F401
 
 CONFIRM = "confirm"
+CANCEL = "cancel"
 CHAT = "chat"
 DISCOVER = "discover"
 ACT = "act"
 
 _ADMITTED = {
     CHAT: frozenset(),
+    CANCEL: frozenset(),
     DISCOVER: frozenset({DISCOVERY, READ}),
     ACT: frozenset(TOOL_CLASSES),
 }
@@ -54,6 +56,35 @@ AFFIRMATIVES: FrozenSet[str] = frozenset({
 _CONSENT = re.compile(
     r"^(?:(?:yes|yeah|yep|sure|ok|okay|please|alright)\s+)*"
     r"(?:go ahead|do it|do that|do this|do so|please do|proceed|sounds good|lets do it|let s do it|make it so)\b"
+)
+
+# Consent to a pending proposal must be the whole message (review finding 4):
+# "go ahead and call it Sales Pipeline" changes the request, so it is not consent.
+# A trailing courtesy or "<verb> it" adds nothing and is allowed.
+_PROPOSAL_CONSENT = re.compile(
+    r"^(?:(?:yes|yeah|yep|sure|ok|okay|please|alright)\s+)*"
+    r"(?:yes|yeah|yep|sure|ok|okay|alright|confirm|confirmed|approve|approved|correct|right|"
+    r"absolutely|definitely|go ahead|do it|do that|do this|do so|please do|proceed|sounds good|"
+    r"lets do it|let s do it|make it so)"
+    r"(?:\s+(?:(?:do|run|send|start|create|build|make|delete|remove|execute|launch|post|save|"
+    r"schedule|approve|reject|invite|grant|revoke|apply|install|sync)\s+(?:it|that|this|them)|"
+    r"go ahead|do it|please|now|thanks|thank you))*$"
+)
+# Any refusal word makes the message not consent, whatever else it says
+# ("ok, skip it", "sure, cancel that", "yes undo that").
+_REFUSAL = re.compile(
+    r"\b(?:no|nope|nah|not|don t|dont|do not|never|cancel|stop|skip|forget|scrap|undo|abort|"
+    r"wait|hold|later)\b"
+)
+# A destructive proposal needs one of these; "ok", "right", "sure" are not enough.
+_EXPLICIT_CONSENT = re.compile(
+    r"\b(?:yes|yeah|yep|confirm|confirmed|approve|approved|absolutely|definitely|"
+    r"go ahead|do it|do that|proceed|please do|make it so)\b"
+)
+# A bare negative while a proposal is pending cancels it (review finding 13).
+_PROPOSAL_DECLINE = re.compile(
+    r"^(?:no|nope|nah|cancel|stop|don t|do not|dont|never mind|nevermind|forget it|not now)"
+    r"(?:\s+(?:thanks|thank you|please|it))*$"
 )
 
 # Function words only. Anything else counts toward the 3-content-word floor;
@@ -214,8 +245,8 @@ def _decision(mode: str, reasons: List[str], extra: FrozenSet[str]) -> RouteDeci
 def route(message: str, session_context: Optional[Mapping[str, Any]] = None) -> RouteDecision:
     """Route one turn.
 
-    `session_context` keys read: `pending_proposal` ({"tool": name}, set by the
-    confirmation gate), `assistant_asked` (the assistant's previous turn ended
+    `session_context` keys read: `pending_proposal` ({"tool", "status", "destructive"},
+    set by the confirmation gate; only status "pending" counts), `assistant_asked` (the assistant's previous turn ended
     with a question), `onboarding_active` (the onboarding interview is running).
     """
     context = session_context if isinstance(session_context, Mapping) else {}
@@ -225,12 +256,18 @@ def route(message: str, session_context: Optional[Mapping[str, Any]] = None) -> 
 
     pending = context.get("pending_proposal")
     if (isinstance(pending, Mapping) and pending.get("tool")
-            and (normalised in AFFIRMATIVES or _CONSENT.match(normalised))):
-        # Every class, narrowed to the one proposed tool by the caller (only_tools).
-        return RouteDecision(
-            CONFIRM, [f"affirms pending proposal {pending['tool']}"], frozenset(TOOL_CLASSES),
-            pending["tool"], extra,
-        )
+            and pending.get("status") == "pending"):
+        refusal = _REFUSAL.search(normalised)
+        if _PROPOSAL_DECLINE.match(normalised) or (refusal and len(normalised.split()) <= 4):
+            return RouteDecision(CANCEL, [f"declines pending proposal {pending['tool']}"],
+                                 frozenset(), pending["tool"], extra)
+        if not refusal and _PROPOSAL_CONSENT.match(normalised) and (
+                not pending.get("destructive") or _EXPLICIT_CONSENT.search(normalised)):
+            # Every class, narrowed to the one proposed tool by the caller (only_tools).
+            return RouteDecision(
+                CONFIRM, [f"affirms pending proposal {pending['tool']}"], frozenset(TOOL_CLASSES),
+                pending["tool"], extra,
+            )
 
     clauses = _clauses(message)
     if not clauses:

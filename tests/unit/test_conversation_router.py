@@ -79,9 +79,10 @@ def test_bare_consent_acts_only_after_the_assistant_asked():
 
 
 def test_pending_proposal_confirms_that_tool():
-    decision = route("yes", {"pending_proposal": {"tool": "execute_workflow"}})
+    pending = {"pending_proposal": {"tool": "execute_workflow", "status": "pending"}}
+    decision = route("yes", pending)
     assert decision.mode == CONFIRM and decision.proposed_tool == "execute_workflow"
-    assert route("go ahead", {"pending_proposal": {"tool": "execute_workflow"}}).mode == CONFIRM
+    assert route("go ahead", pending).mode == CONFIRM
 
 
 def test_onboarding_admits_its_save_tool_in_every_mode():
@@ -103,3 +104,49 @@ def test_long_input_routes_in_linear_time():
         started = time.perf_counter()
         route(message)
         assert (time.perf_counter() - started) * 1000 < 25
+
+
+# --- T4b: a pending proposal (review findings 4 and 13) -----------------------
+
+def _pending(tool="create_workflow", destructive=False):
+    return {"pending_proposal": {"tool": tool, "destructive": destructive, "status": "pending"}}
+
+
+def test_consent_must_be_the_whole_message():
+    # "go ahead and call it Sales Pipeline" changes the request; it must not run
+    # the old arguments.
+    assert route("go ahead and call it Sales Pipeline", _pending()).mode != CONFIRM
+    assert route("yes but name it Sales", _pending()).mode != CONFIRM
+    for text in ("yes", "Yes.", "yes please", "go ahead", "do it", "ok", "sure, go ahead!"):
+        assert route(text, _pending()).mode == CONFIRM, text
+
+
+def test_destructive_proposals_need_explicit_consent():
+    for text in ("ok", "right", "correct", "sure", "cool"):
+        assert route(text, _pending("delete_agent", destructive=True)).mode != CONFIRM, text
+    for text in ("yes", "confirm", "go ahead", "yes, delete it", "do it"):
+        assert route(text, _pending("delete_agent", destructive=True)).mode == CONFIRM, text
+
+
+def test_a_bare_negative_cancels_the_pending_proposal():
+    from services.conversation_router import CANCEL
+    for text in ("no", "No thanks", "cancel", "stop", "never mind", "don't"):
+        assert route(text, _pending()).mode == CANCEL, text
+    # Without a pending proposal, "no" is just small talk.
+    assert route("no").mode == CHAT
+
+
+def test_only_a_pending_status_counts():
+    done = {"pending_proposal": {"tool": "create_workflow", "status": "dismissed"}}
+    assert route("yes", done).mode != CONFIRM
+
+
+def test_a_refusal_phrased_with_consent_words_is_never_consent():
+    # Review 2 Oct: "ok, skip it" / "sure, cancel that" routed to confirm.
+    for text in ("ok, skip it", "sure, cancel that", "ok forget it", "ok stop it", "ok cancel it",
+                 "alright scrap that", "yes undo that", "yes but don't do it", "ok not now"):
+        assert route(text, _pending()).mode != CONFIRM, text
+        assert route(text, _pending("delete_agent", destructive=True)).mode != CONFIRM, text
+    from services.conversation_router import CANCEL
+    for text in ("ok, skip it", "sure, cancel that", "ok forget it"):
+        assert route(text, _pending()).mode == CANCEL, text

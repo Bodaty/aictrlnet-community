@@ -982,6 +982,7 @@ async def chat_v5(
                 stream=True,
                 file_id=message.file_id,
                 user_preferences=user_preferences,
+                message_config=message.message_config,
             ):
                 # Format as SSE
                 event_data = serialize_for_json(event.get('data', {}))
