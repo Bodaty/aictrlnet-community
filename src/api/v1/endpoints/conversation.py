@@ -8,7 +8,7 @@ to provide multi-turn conversation capabilities with backward compatibility.
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime as dt
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -323,6 +323,24 @@ async def send_message(
     response_data = await _collect_v2_response(service, session_id, message.content, str(current_user.id), db, user_preferences=user_preferences)
 
     return response_data
+
+
+@router.post("/internal/jobs/run", include_in_schema=False)
+async def run_conversation_job(request: Request):
+    """Cloud Tasks callback: run one queued conversation job inside this request,
+    so Cloud Run keeps CPU allocated while it works (spec §7.3 R2). Only a
+    Google-signed OIDC token for the configured service account is accepted."""
+    from services import conversation_jobs
+
+    if conversation_jobs.mode() != conversation_jobs.CLOUD_TASKS:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not await asyncio.to_thread(conversation_jobs.verify_task_request,
+                                   request.headers.get("authorization")):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    payload = await request.json()
+    # Always 200 once accepted: the job row records success or failure, and a
+    # retry must never run the tool twice.
+    return {"status": await conversation_jobs.run_dispatched(payload)}
 
 
 @router.get("/budgets")

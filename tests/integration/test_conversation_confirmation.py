@@ -47,11 +47,19 @@ async def _fresh_engine():
     """Each test runs on its own event loop; the app's global engine must not
     carry connections from the previous one."""
     import core.database as database
+
+    async def reset():
+        if database._engine is not None:
+            try:
+                await database._engine.dispose()
+            except Exception:
+                pass  # connections from a closed loop cannot be closed cleanly; drop them
+        database._engine = None
+        database._async_session_maker = None
+
+    await reset()
     yield
-    if database._engine is not None:
-        await database._engine.dispose()
-    database._engine = None
-    database._async_session_maker = None
+    await reset()
 
 
 @pytest.fixture

@@ -13,8 +13,12 @@ Rules that keep it honest:
 - one running job per tool per session; at most `CONVERSATION_JOB_CONCURRENCY`
   per worker; the work is bounded by `CONVERSATION_JOB_MAX_S`.
 
-Off by default: Cloud Run throttles CPU between requests, which would starve a
-job (see `.claude/plans/conversation-reliability-t5-jobs.md`, review item 1).
+Modes (`CONVERSATION_JOBS`): `off` (default: the tool runs inside the turn),
+`on` (an in-process task; needs CPU between requests — local, Beast), and
+`cloud_tasks` (Cloud Run, which throttles CPU between requests: each job is a
+Cloud Task that calls back into the service, so the job runs inside a request
+with CPU allocated — see `run_dispatched` and the 1 Oct ruling in
+`.claude/plans/conversation-reliability-t5-jobs.md`).
 """
 
 import asyncio
@@ -41,8 +45,21 @@ _LABELS = {
 }
 
 
+CLOUD_TASKS = "cloud_tasks"
+# Only these dispatchers may be named in a Cloud Task payload.
+_DISPATCHERS = {
+    "services.tool_dispatcher.ToolDispatcher",
+    "aictrlnet_business.services.tool_dispatcher.ToolDispatcher",
+}
+
+
+def mode() -> str:
+    value = os.environ.get("CONVERSATION_JOBS", "off").strip().lower()
+    return value if value in ("on", CLOUD_TASKS) else "off"
+
+
 def enabled() -> bool:
-    return os.environ.get("CONVERSATION_JOBS", "off").strip().lower() == "on"
+    return mode() != "off"
 
 
 def _env_float(name: str, default: float) -> float:
@@ -110,6 +127,9 @@ async def start(dispatcher, tool_name: str, arguments: Dict[str, Any], user_id: 
     tenant_id = (getattr(dispatcher.db, "info", None) or {}).get("tenant_id") or get_current_tenant_id()
     now = datetime.utcnow()
     owner = uuid.uuid4().hex
+    # A queued Cloud Task may take a little while to start: its first lease
+    # covers the wait, then the running job's heartbeat takes over.
+    first_lease = lease_s() + (_env_float("CONVERSATION_JOB_QUEUE_GRACE_S", 120) if mode() == CLOUD_TASKS else 0)
     db = await _bound_session(tenant_id)
     try:
         # Serialise starts of this tool in this session (double-submit, two tabs).
@@ -130,13 +150,36 @@ async def start(dispatcher, tool_name: str, arguments: Dict[str, Any], user_id: 
         job = ConversationJob(
             tenant_id=tenant_id, session_id=session_id, user_id=str(user_id), tool_name=tool_name,
             arguments=arguments or {}, status="running", progress=_LABELS.get(tool_name, "working"),
-            owner_token=owner, lease_expires_at=now + timedelta(seconds=lease_s()),
+            owner_token=owner, lease_expires_at=now + timedelta(seconds=first_lease),
         )
         db.add(job)
         await db.commit()
         job_id = str(job.id)
     finally:
         await db.close()
+
+    if mode() == CLOUD_TASKS:
+        from fastapi.encoders import jsonable_encoder
+
+        cls = type(dispatcher)
+        payload = jsonable_encoder({
+            "job_id": job_id, "owner": owner, "tenant_id": tenant_id, "tool_name": tool_name,
+            "arguments": arguments or {}, "user_id": str(user_id), "context": dict(context or {}),
+            "dispatcher": f"{cls.__module__}.{cls.__name__}",
+            "edition": getattr(dispatcher.edition, "value", dispatcher.edition),
+        })
+        try:
+            await enqueue_cloud_task(payload)
+        except Exception as exc:
+            logger.error("[jobs] could not queue %s: %s", tool_name, exc)
+            await _cas(tenant_id, job_id, owner, status="failed", error=str(exc),
+                       progress="It could not be started — please try again.", finished_at=datetime.utcnow())
+            return ToolResult(success=False, error="It could not be started — please try again.",
+                              data={"job_id": job_id, "tool_name": tool_name})
+        return ToolResult(success=True, data={
+            "job_id": job_id, "status": "running", "tool_name": tool_name,
+            "message": f"Started {_LABELS.get(tool_name, tool_name)} in the background.",
+        })
 
     _owned[job_id] = (owner, tenant_id)
     task = asyncio.get_running_loop().create_task(
@@ -279,3 +322,95 @@ async def fail_owned_on_shutdown() -> None:
         except Exception as exc:
             logger.warning("[jobs] could not mark %s failed at shutdown: %s", job_id, exc)
     _owned.clear()
+
+
+def _metadata_access_token() -> str:
+    import httpx
+
+    resp = httpx.get(
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+        headers={"Metadata-Flavor": "Google"}, timeout=5.0,
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
+
+async def enqueue_cloud_task(payload: Dict[str, Any]) -> str:
+    """Queue one job as a Cloud Task that POSTs `payload` to the run endpoint with
+    an OIDC token minted for `CONVERSATION_JOBS_TASK_SA` (REST; no client library)."""
+    import base64
+    import json
+
+    import httpx
+
+    queue = os.environ["CONVERSATION_JOBS_QUEUE"]          # projects/P/locations/L/queues/Q
+    url = os.environ["CONVERSATION_JOBS_TASK_URL"]         # …/api/v1/conversation/internal/jobs/run
+    service_account = os.environ["CONVERSATION_JOBS_TASK_SA"]
+    token = await asyncio.to_thread(_metadata_access_token)
+    deadline = int(min(1800, max(15, max_s() + 30)))
+    body = {"task": {
+        "dispatchDeadline": f"{deadline}s",
+        "httpRequest": {
+            "httpMethod": "POST", "url": url,
+            "headers": {"Content-Type": "application/json"},
+            "body": base64.b64encode(json.dumps(payload).encode()).decode(),
+            "oidcToken": {"serviceAccountEmail": service_account, "audience": url},
+        },
+    }}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(f"https://cloudtasks.googleapis.com/v2/{queue}/tasks", json=body,
+                                 headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    return resp.json().get("name", "")
+
+
+def verify_task_request(authorization: Optional[str]) -> bool:
+    """True when the request carries a Google OIDC token for the configured
+    service account and audience (what Cloud Tasks sends)."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return False
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token
+    except ImportError:  # google-auth ships with the Enterprise (Cloud Run) image only
+        logger.error("[jobs] google-auth is not installed; refusing the job callback")
+        return False
+    try:
+        claims = id_token.verify_oauth2_token(
+            authorization.split(" ", 1)[1], google_requests.Request(),
+            audience=os.environ["CONVERSATION_JOBS_TASK_URL"],
+        )
+    except Exception as exc:
+        logger.warning("[jobs] rejected a job callback: %s", exc)
+        return False
+    return (claims.get("email") == os.environ.get("CONVERSATION_JOBS_TASK_SA")
+            and bool(claims.get("email_verified")))
+
+
+async def run_dispatched(payload: Dict[str, Any]) -> str:
+    """Run a queued job inside the calling request (Cloud Tasks callback).
+
+    The job is taken over by a fresh owner token in one compare-and-set, so a
+    duplicate delivery finds it already taken and runs nothing. Returns
+    `ran` or `skipped`.
+    """
+    import importlib
+
+    name = payload.get("dispatcher", "")
+    if name not in _DISPATCHERS:
+        raise ValueError(f"unknown dispatcher {name!r}")
+    module_name, cls_name = name.rsplit(".", 1)
+    module = importlib.import_module(module_name)
+    dispatcher_cls = getattr(module, cls_name)
+    edition = getattr(module, "Edition")(payload["edition"])
+
+    tenant_id, job_id = payload["tenant_id"], payload["job_id"]
+    owner = uuid.uuid4().hex
+    if not await _cas(tenant_id, job_id, payload["owner"], owner_token=owner, status="running",
+                      lease_expires_at=datetime.utcnow() + timedelta(seconds=lease_s())):
+        logger.info("[jobs] %s was already taken or finished; skipping a repeat delivery", job_id)
+        return "skipped"
+    _owned[job_id] = (owner, tenant_id)
+    await _run(dispatcher_cls, edition, tenant_id, job_id, owner, payload["tool_name"],
+               payload.get("arguments") or {}, payload["user_id"], payload.get("context") or {})
+    return "ran"

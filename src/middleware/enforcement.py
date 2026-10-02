@@ -40,6 +40,8 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
         "/api/usage",
         "/api/v1/usage",
         "/api/v1/license",
+        # Cloud Tasks job callback: Google-signed, no user or tenant of its own.
+        "/api/v1/conversation/internal/",
         "/.well-known"
     }
 
