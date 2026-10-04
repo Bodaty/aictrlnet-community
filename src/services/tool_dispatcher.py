@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 _LEGACY_REQUIRED_TOOLS = {
     # Workflow tools — legacy has NLP generation, template instantiation, conversation trigger
     "create_workflow", "execute_workflow", "update_workflow", "instantiate_template",
+    # list_workflows — legacy returns compact rows with the limit applied; dynamic
+    # routing returned 100 raw ORM rows (unserialisable, or ~1 MB once encoded).
+    "list_workflows",
     # MCP — legacy has action-based branching (register/update/remove)
     "configure_mcp_server",
     # Integrations — legacy calls list_adapters (correct method), dynamic calls list_integrations (wrong)

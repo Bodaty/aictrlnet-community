@@ -285,3 +285,56 @@ def test_a_chat_turn_can_start_its_round_with_the_real_budgets(monkeypatch):
     trace.start_loop()
     assert trace.round_floor_s() == 7.5
     assert trace.can_start_round()
+
+
+async def test_a_bounded_stream_steps_in_the_consumers_own_task():
+    # 2 Oct: with enforcement on, every step ran in a new task
+    # (asyncio.wait_for); the HTTP stream underneath is task-bound, so a
+    # model round after the first stalled until its 45 s deadline. In observe
+    # mode (no deadline) the same turns took 23-33 s.
+    import asyncio
+    from services.conversation_turn import bounded_stream
+
+    seen = []
+
+    async def stream():
+        for i in range(3):
+            seen.append(asyncio.current_task())
+            yield i
+
+    consumer = asyncio.current_task()
+    events = [e async for e in bounded_stream(stream(), 30.0)]
+    assert events == [0, 1, 2]
+    assert seen and all(task is consumer for task in seen)
+
+
+async def test_a_bounded_stream_still_times_out():
+    import asyncio
+    import pytest
+    from services.conversation_turn import RoundTimeout, bounded_stream
+
+    async def slow():
+        yield 1
+        await asyncio.sleep(5)
+        yield 2
+
+    got = []
+    with pytest.raises(RoundTimeout):
+        async for e in bounded_stream(slow(), 0.2):
+            got.append(e)
+    assert got == [1]
+
+
+def test_the_chat_budget_is_for_small_talk_with_no_tool_offered():
+    # 2 Oct: "hi, what can you do?" during onboarding is routed `chat` but offered
+    # the onboarding save tool, so it runs a tool round and an answer round; the
+    # 15 s small-talk budget left no room for the answer under enforcement.
+    from services.conversation_turn import TurnTrace
+
+    small_talk = TurnTrace("business", "ollama", count_in_flight=False)
+    small_talk.set_route("chat", ["every clause is a pleasantry"], offered=0)
+    assert small_talk.turn_budget_s() == small_talk.budgets.chat_turn_s
+
+    with_tool = TurnTrace("business", "ollama", count_in_flight=False)
+    with_tool.set_route("chat", ["every clause is a pleasantry"], offered=1)
+    assert with_tool.turn_budget_s() == with_tool.budgets.turn_s

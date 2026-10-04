@@ -139,7 +139,7 @@ class TurnTrace:
         if not self.enforce:
             return None
         limit = self.budgets.llm_round_s
-        if self.route.get("mode") == "chat":
+        if self.is_small_talk():
             limit = min(limit, self.budgets.chat_turn_s)
         return max(0.0, min(limit, self.remaining_s(include_loop=not synthesis)))
 
@@ -222,8 +222,14 @@ class TurnTrace:
     def elapsed_ms(self) -> int:
         return _ms(self._t0)
 
+    def is_small_talk(self) -> bool:
+        """`chat` mode with no tool offered (§7.2 `chat_turn_s`). A chat turn that
+        is offered a tool (the onboarding save) runs a tool round and an answer
+        round, so it gets the turn budget."""
+        return self.route.get("mode") == "chat" and not self.route.get("offered")
+
     def turn_budget_s(self) -> int:
-        if self.route.get("mode") == "chat":
+        if self.is_small_talk():
             return self.budgets.chat_turn_s
         return self.budgets.turn_s
 
@@ -372,19 +378,22 @@ async def bounded_stream(stream, timeout_s: Optional[float]) -> AsyncIterator[An
                 yield event
             return
         # One deadline for the whole round, applied to each step of the stream.
-        # Not `asyncio.timeout` around the loop: it would also fire while this
-        # generator is suspended at a yield and cancel the consumer's await.
+        # Not around the loop: it would also fire while this generator is
+        # suspended at a yield and cancel the consumer's await. And not
+        # `asyncio.wait_for`: it runs each step in a new task, and the HTTP
+        # stream underneath is task-bound — with it, every model round after the
+        # first stalled until its deadline (2 Oct 2026).
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s
         while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
+            if deadline - loop.time() <= 0:
                 raise RoundTimeout(f"model round exceeded {timeout_s:.0f}s")
             try:
-                event = await asyncio.wait_for(stream.__anext__(), remaining)
+                async with asyncio.timeout_at(deadline):
+                    event = await stream.__anext__()
             except StopAsyncIteration:
                 return
-            except asyncio.TimeoutError as exc:
+            except TimeoutError as exc:
                 raise RoundTimeout(f"model round exceeded {timeout_s:.0f}s") from exc
             yield event
 
