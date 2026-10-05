@@ -326,7 +326,8 @@ class AICtrlNetApp:
         async def add_process_time_header(request, call_next):
             import time
             start_time = time.time()
-            response = await call_next(request)
+            from core.client_disconnect import call_next_unless_disconnected
+            response = await call_next_unless_disconnected(request, call_next)
             process_time = time.time() - start_time
             # Wedge early-warning: surface requests that should never be slow.
             # SSE/streaming responses report header-time only, so they don't
