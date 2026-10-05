@@ -90,7 +90,7 @@ def _get_redis():
             import redis.asyncio as redis_async  # type: ignore
 
             url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-            _redis_client = redis_async.from_url(url, decode_responses=True)
+            _redis_client = redis_async.from_url(url, decode_responses=True, socket_connect_timeout=2)
         except Exception as e:
             logger.warning(
                 "Redis unavailable for MCP rate buckets (%s); falling "
