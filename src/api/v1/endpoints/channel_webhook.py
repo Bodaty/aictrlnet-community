@@ -293,7 +293,7 @@ async def _handle_link_command(
     Returns a channel-formatted response with the result.
     """
     # Throttle 6-digit code guessing per channel identity: 1e6 space, so cap
-    # attempts hard (fails open if Redis is down). Without this an attacker could
+    # attempts hard (per-process window if Redis is down). Without this an attacker could
     # brute-force a valid, unexpired code from a single channel account.
     from core.rate_limit import enforce_rate_limit
     await enforce_rate_limit(

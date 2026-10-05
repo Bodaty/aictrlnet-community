@@ -466,7 +466,7 @@ async def request_password_reset(
 ) -> dict:
     """Request password reset token."""
     # Throttle reset-token generation per IP and per target email (Redis-backed,
-    # multi-instance; fails open). Stops flooding a mailbox / farming valid tokens.
+    # multi-instance; per-process window without Redis). Stops flooding a mailbox / farming valid tokens.
     ip = client_ip(request)
     await enforce_rate_limit("pwreset_req_ip", ip, limit=10, window_seconds=3600)
     await enforce_rate_limit("pwreset_req_email", reset_request.email, limit=5, window_seconds=3600)
@@ -505,7 +505,7 @@ async def confirm_password_reset(
     """Confirm password reset with token."""
     from jose import jwt, JWTError
 
-    # Throttle token-guessing per IP (fails open).
+    # Throttle token-guessing per IP.
     await enforce_rate_limit("pwreset_confirm_ip", client_ip(request), limit=20, window_seconds=3600)
 
     try:
@@ -673,7 +673,7 @@ async def refresh_access_token(
     """Refresh access token using refresh token."""
     from jose import jwt, JWTError
 
-    # Throttle refresh-token guessing/replay per IP (fails open).
+    # Throttle refresh-token guessing/replay per IP.
     await enforce_rate_limit("token_refresh_ip", client_ip(request), limit=60, window_seconds=3600)
 
     try:
@@ -761,7 +761,7 @@ async def verify_mfa_login(
     """Verify MFA code during login."""
     
     # Throttle MFA-code guessing per session token: a 6-digit code is only 1e6
-    # possibilities, so cap attempts hard within the session window (fails open).
+    # possibilities, so cap attempts hard within the session window.
     await enforce_rate_limit(
         "mfa_verify", request.session_token, limit=10, window_seconds=600,
         detail="Too many MFA attempts. Please log in again to get a new code.",

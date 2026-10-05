@@ -149,7 +149,7 @@ class RedisCache:
         """Atomically increment a counter, setting its TTL on first creation.
 
         Returns the post-increment count, or 0 if Redis is unavailable (callers
-        treat 0 as "store down" and fail open). Used for fixed-window rate limits.
+        treat 0 as "store down" and use a per-process window). Used for fixed-window rate limits.
         """
         if not self._redis_client:
             return 0
