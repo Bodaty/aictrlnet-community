@@ -8,7 +8,6 @@ import json
 import secrets
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-from cryptography.fernet import Fernet
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from fastapi import HTTPException
@@ -25,19 +24,9 @@ class MFAService:
     
     def __init__(self, db: AsyncSession):
         self.db = db
-        # Initialize Fernet cipher with the encryption key
-        # If the key is not a valid Fernet key, generate one from the provided key
-        try:
-            self.cipher = Fernet(settings.MFA_ENCRYPTION_KEY.encode())
-        except ValueError:
-            # Generate a proper Fernet key from the settings key
-            import hashlib
-            import base64
-            # Use SHA256 to get 32 bytes from any input
-            key_hash = hashlib.sha256(settings.MFA_ENCRYPTION_KEY.encode()).digest()
-            # Encode to base64 for Fernet
-            fernet_key = base64.urlsafe_b64encode(key_hash)
-            self.cipher = Fernet(fernet_key)
+        # Never encrypts with the committed dev default (see core.crypto.mfa_cipher).
+        from core.crypto import mfa_cipher
+        self.cipher = mfa_cipher(settings.MFA_ENCRYPTION_KEY)
         self.license_enforcer = LicenseEnforcer(db)
         
     async def get_user(self, user_id: str) -> User:

@@ -1,5 +1,6 @@
 """Cryptographic utilities for encrypting and decrypting sensitive data."""
 
+import hashlib
 import json
 import base64
 from typing import Any, Dict, Optional
@@ -194,6 +195,53 @@ def get_cipher() -> MultiFernet:
             else:
                 _logger.info("Encryption key loaded from %s.", _ENCRYPTION_KEY_SOURCE)
     return _cipher
+
+
+def _as_text(key) -> str:
+    return (key.decode() if isinstance(key, bytes) else (key or "")).strip()
+
+
+def _mfa_fernet_key(material: str) -> str:
+    """MFA's historical reading of its key: a Fernet key as-is, anything else
+    SHA-256'd. Kept exactly so explicitly configured keys still read old rows."""
+    try:
+        Fernet(material.encode())
+        return material
+    except Exception:
+        return base64.urlsafe_b64encode(hashlib.sha256(material.encode()).digest()).decode()
+
+
+def _purpose_cipher(purpose: str, configured, dev_default: str, as_fernet_key) -> MultiFernet:
+    """Encrypt with the deployment's key for `purpose`; also decrypt the dev default.
+
+    An explicitly configured key is used as-is. The committed dev default is
+    never used to encrypt: in its place the key is derived per purpose from
+    ENCRYPTION_KEY (Secret Manager on GCP), as NEW-S1 did for adapter data. The
+    dev default stays decrypt-only, so rows written under it keep reading until
+    scripts/rotate_encryption_keys.py moves them.
+    """
+    configured = _as_text(configured)
+    legacy = as_fernet_key(dev_default)
+    if configured and configured != dev_default:
+        primary = as_fernet_key(configured)
+    else:
+        primary = _derive(purpose, ENCRYPTION_KEY)
+    keys = [Fernet(primary.encode())]
+    if primary != legacy:
+        keys.append(Fernet(legacy.encode()))
+    return MultiFernet(keys)
+
+
+def mfa_cipher(configured) -> MultiFernet:
+    """Cipher for MFA secrets and backup codes (MFA_ENCRYPTION_KEY)."""
+    from core.config import _ENCRYPTION_KEY_DEFAULTS
+    return _purpose_cipher("mfa", configured, _ENCRYPTION_KEY_DEFAULTS["MFA_ENCRYPTION_KEY"], _mfa_fernet_key)
+
+
+def oauth2_cipher(configured) -> MultiFernet:
+    """Cipher for OAuth2 provider client secrets and account tokens (OAUTH2_ENCRYPTION_KEY)."""
+    from core.config import _ENCRYPTION_KEY_DEFAULTS
+    return _purpose_cipher("oauth2", configured, _ENCRYPTION_KEY_DEFAULTS["OAUTH2_ENCRYPTION_KEY"], _as_text)
 
 
 def encrypt_data(data: Any) -> str:

@@ -344,10 +344,10 @@ _DENYLISTED_SECRETS = {
     "secret",
 }
 
-# Encryption keys whose committed dev defaults are still in the codebase. These
-# are WARN-ONLY for now (prod has historically run on them; hard-failing would
-# block boot until they are provisioned in Secret Manager and existing data is
-# re-encrypted). Flip to hard-fail in the follow-up once rotation is done.
+# Encryption keys whose committed dev defaults are still in the codebase. A key
+# left on its default never encrypts: core.crypto.mfa_cipher / oauth2_cipher
+# derive a per-purpose key from the deployment's ENCRYPTION_KEY instead and keep
+# the default decrypt-only (rows move with scripts/rotate_encryption_keys.py).
 _ENCRYPTION_KEY_DEFAULTS = {
     "MFA_ENCRYPTION_KEY": "dev-mfa-encryption-key-32-chars!",
     "OAUTH2_ENCRYPTION_KEY": "W3sKDBj0Wqrq-Fu9cVMd0cKCC0iF9SiNjHVKcIjRjko=",
@@ -367,9 +367,9 @@ def validate_secret_for_environment(settings: "Settings") -> None:
 
     - SECRET_KEY: HARD FAIL if it is a committed/denylisted literal or shorter
       than 32 chars in a deploy environment (JWT forgery otherwise).
-    - Encryption keys (MFA/OAuth2): WARN LOUDLY if still on the committed dev
-      default in a deploy environment. (Warn-only until keys are provisioned and
-      data re-encrypted; see security remediation plan NEW-S1/§2A.)
+    - Encryption keys (MFA/OAuth2): on the committed dev default, data is
+      encrypted under a key derived from ENCRYPTION_KEY (core.crypto). CRITICAL
+      only when that key itself is the committed fallback, or unknown.
     """
     if (settings.ENVIRONMENT or "").strip().lower() not in _DEPLOY_ENVIRONMENTS:
         return
@@ -382,15 +382,28 @@ def validate_secret_for_environment(settings: "Settings") -> None:
             f"characters — refusing to start with a predictable JWT signing key."
         )
 
+    try:
+        from core.crypto import _ENCRYPTION_KEY_SOURCE as key_source
+    except Exception:  # crypto unavailable: assume the worst
+        key_source = "unknown"
     for field_name, dev_default in _ENCRYPTION_KEY_DEFAULTS.items():
         value = getattr(settings, field_name, None)
-        if value == dev_default:
+        if isinstance(value, bytes):
+            value = value.decode()
+        if value != dev_default:
+            continue
+        if key_source in ("hardcoded-fallback", "unknown"):
             _config_logger.critical(
                 "SECURITY: %s is the committed development default in a '%s' "
-                "deployment. Data encrypted with it is recoverable from the "
-                "repository. Provision a real key and re-encrypt existing data. "
-                "(This will become a hard startup failure in a follow-up.)",
-                field_name, settings.ENVIRONMENT,
+                "deployment and ENCRYPTION_KEY is not provisioned, so the key "
+                "derived in its place is reproducible from the repository. Set "
+                "ENCRYPTION_KEY (or %s) to a real secret.",
+                field_name, settings.ENVIRONMENT, field_name,
+            )
+        else:
+            _config_logger.info(
+                "%s is unset; encrypting with a key derived from %s (the committed "
+                "default is decrypt-only).", field_name, key_source,
             )
 
 
