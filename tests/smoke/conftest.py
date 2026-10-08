@@ -74,3 +74,9 @@ from smoke_common.egress_guard import install_test_egress_guard  # noqa: E402
 
 install_test_egress_guard()
 # --- END outbound-egress guard ---
+
+# The suite's own auth rate-limit windows from an earlier run today would turn
+# passes into skips; start every session with them cleared.
+from smoke_common.rate_limits import clear_smoke_rate_limits  # noqa: E402
+
+clear_smoke_rate_limits()

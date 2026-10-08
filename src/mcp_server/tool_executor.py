@@ -587,7 +587,7 @@ async def _handle_create_workflow(
     svc = NLPService(db)
     result = await svc.process_natural_language(
         prompt=arguments["description"],
-        context={"mode": "create", "user_id": user_id},
+        context={"mode": "create", "user_id": user_id, "workflow_name": arguments.get("name")},
         user_id=user_id,
     )
     if "error" in result and result["error"]:
@@ -2563,16 +2563,18 @@ async def _handle_list_linked_channels(
 async def _handle_request_channel_link_code(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    from fastapi import HTTPException
+
     try:
         from api.v1.endpoints.channel_link import request_link_code
+        from schemas.channel_link import ChannelLinkRequest
 
         class _U:
             def __init__(self, uid):
                 self.id = uid
 
-        # The endpoint is a FastAPI handler — call its inner logic via request
         result = await request_link_code(
-            channel_type=arguments["channel_type"],
+            body=ChannelLinkRequest(channel_type=arguments["channel_type"]),
             db=db,
             current_user=_U(user_id),
         )
@@ -2581,6 +2583,8 @@ async def _handle_request_channel_link_code(
         if hasattr(result, "model_dump"):
             return result.model_dump()
         return {"code": str(result)}
+    except HTTPException as e:
+        raise ToolExecutionError(str(e.detail)) from e
     except Exception as e:
         raise ToolExecutionError(f"request_channel_link_code failed: {e}") from e
 
@@ -2588,16 +2592,21 @@ async def _handle_request_channel_link_code(
 async def _handle_unlink_channel(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    from fastapi import HTTPException
+
     try:
         from api.v1.endpoints.channel_link import unlink_channel
+        from schemas.channel_link import ChannelUnlinkRequest
 
         class _U:
             def __init__(self, uid):
                 self.id = uid
 
         result = await unlink_channel(
-            channel_type=arguments["channel_type"],
-            channel_user_id=arguments["channel_user_id"],
+            body=ChannelUnlinkRequest(
+                channel_type=arguments["channel_type"],
+                channel_user_id=arguments["channel_user_id"],
+            ),
             db=db,
             current_user=_U(user_id),
         )
@@ -2606,6 +2615,8 @@ async def _handle_unlink_channel(
         if hasattr(result, "model_dump"):
             return result.model_dump()
         return {"unlinked": True}
+    except HTTPException as e:
+        raise ToolExecutionError(str(e.detail)) from e
     except Exception as e:
         raise ToolExecutionError(f"unlink_channel failed: {e}") from e
 
@@ -2659,7 +2670,7 @@ async def _handle_list_notifications(
 
     query = select(Notification).where(Notification.user_id == user_id)
     if arguments.get("unread_only"):
-        query = query.where(Notification.read == False)  # noqa: E712
+        query = query.where(Notification.is_read == False)  # noqa: E712
     query = (
         query.order_by(desc(Notification.created_at))
         .limit(min(int(arguments.get("limit", 50)), 200))
@@ -2672,8 +2683,8 @@ async def _handle_list_notifications(
                 "id": str(getattr(n, "id", "")),
                 "type": getattr(n, "type", None),
                 "title": getattr(n, "title", None),
-                "body": getattr(n, "body", None),
-                "read": getattr(n, "read", False),
+                "body": n.message,
+                "read": n.is_read,
                 "created_at": str(getattr(n, "created_at", "")),
             }
             for n in rows
@@ -2707,7 +2718,7 @@ async def _handle_mark_notification_read(
         raise ToolExecutionError(
             f"Notification {arguments['notification_id']} not found"
         )
-    n.read = True
+    n.is_read = True
     n.read_at = datetime.utcnow()
     await db.commit()
     return {"id": str(n.id), "marked": True}
@@ -2867,68 +2878,28 @@ async def _handle_instantiate_template(
 async def _handle_upload_file(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    """Accept a base64-encoded file, stage it, and return a file_id.
-
-    Mirrors the behavior of POST /file-upload/upload but takes the
-    content inline via args instead of multipart. Size + MIME rules
-    are identical: 10 MB cap, allow-listed MIME, magic-byte check.
-    """
+    """Stage a base64-encoded file and return its file_id — the same staging
+    as POST /file-upload/upload (services/file_staging.py): type allow-list,
+    size cap, magic-byte check, governance and audit, optional workflow run."""
     import base64
-    import os
-    import uuid
-    from datetime import datetime
 
-    try:
-        from models import StagedFile
-    except ImportError:
-        raise ToolExecutionError("StagedFile model unavailable")
+    from services.file_staging import MAX_FILE_SIZE, UploadRejected, stage_upload
 
-    max_size = 50 * 1024 * 1024  # aligned with file_upload endpoint
+    encoded = arguments["content_base64"]
+    if len(encoded) > (MAX_FILE_SIZE // 3 + 1) * 4:  # refuse before decoding an oversized payload
+        raise ToolExecutionError(f"File too large. Max size: {MAX_FILE_SIZE // (1024 * 1024)} MB")
     try:
-        raw = base64.b64decode(arguments["content_base64"], validate=True)
+        raw = base64.b64decode(encoded, validate=True)
     except Exception as e:
         raise ToolExecutionError(f"Invalid base64: {e}") from e
-    if len(raw) > max_size:
-        raise ToolExecutionError(
-            f"File exceeds {max_size // (1024 * 1024)} MB limit"
+    try:
+        staged = await stage_upload(
+            db, user_id, arguments["filename"], arguments.get("content_type"), raw,
+            workflow_id=arguments.get("workflow_id"), source="mcp_upload",
         )
-
-    # Basic filename sanitization — reject traversal
-    filename = os.path.basename(arguments["filename"] or "file.bin").strip()
-    if not filename or ".." in filename or "/" in filename:
-        raise ToolExecutionError("Invalid filename")
-
-    storage_dir = get_settings().STAGED_FILES_DIR
-    file_id = str(uuid.uuid4())
-    storage_path = os.path.join(storage_dir, file_id)
-
-    def _write_upload():
-        os.makedirs(storage_dir, exist_ok=True)
-        with open(storage_path, "wb") as f:
-            f.write(raw)
-
-    await asyncio.to_thread(_write_upload)
-
-    staged = StagedFile(
-        id=file_id,
-        user_id=user_id,
-        filename=filename,
-        content_type=arguments.get("content_type", "application/octet-stream"),
-        file_size=len(raw),
-        storage_path=storage_path,
-        workflow_id=arguments.get("workflow_id"),
-        created_at=datetime.utcnow(),
-    )
-    db.add(staged)
-    await db.commit()
-    await db.refresh(staged)
-    return {
-        "file_id": file_id,
-        "filename": filename,
-        "content_type": staged.content_type,
-        "file_size": len(raw),
-        "workflow_id": staged.workflow_id,
-    }
+    except UploadRejected as e:
+        raise ToolExecutionError(e.detail) from e
+    return {**staged, "file_id": str(staged["file_id"]), "workflow_id": arguments.get("workflow_id")}
 
 
 async def _handle_list_staged_files(
@@ -3500,24 +3471,13 @@ async def _handle_promote_pattern_to_template(
     except Exception:
         raise ToolExecutionError("Learning loop service unavailable in this edition")
 
-    svc = LearningLoopService()
-    decision = await svc.record_learning_decision(
-        db=db,
-        pattern_id=arguments["pattern_id"],
-        evaluator_type="human",
-        evaluator_id=user_id,
-        decision="promote",
-        reasoning=arguments.get("template_name") or arguments.get("category"),
-    )
-    if hasattr(decision, "model_dump"):
-        return decision.model_dump()
-    if hasattr(decision, "dict"):
-        return decision.dict()
-    return {
-        "pattern_id": str(arguments["pattern_id"]),
-        "promoted": True,
-        "decision_id": str(getattr(decision, "id", "")),
-    }
+    try:
+        return await LearningLoopService().promote_to_template(
+            db, arguments["pattern_id"], user_id,
+            template_name=arguments.get("template_name"), category=arguments.get("category"),
+        )
+    except ValueError as e:
+        raise ToolExecutionError(str(e)) from e
 
 
 # ---- Living Platform — Org Discovery ----
@@ -3526,30 +3486,24 @@ async def _handle_promote_pattern_to_template(
 async def _handle_org_discovery_scan(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    """Scan the caller's organization: the same scan as POST /org-discovery/scan."""
     _ensure_business_sys_path()
     try:
+        from aictrlnet_business.schemas.org_discovery import OrgScanRequest  # type: ignore
         from aictrlnet_business.services.org_discovery_service import (  # type: ignore
             OrgDiscoveryService,
         )
     except Exception:
         raise ToolExecutionError("Org discovery service unavailable")
 
-    svc = OrgDiscoveryService(db)
-    scan = (
-        getattr(svc, "scan", None)
-        or getattr(svc, "trigger_scan", None)
-    )
-    if not scan:
-        raise ToolExecutionError("scan method unavailable")
-    result = await scan(
-        user_id=user_id,
-        sources=arguments.get("sources") or [],
-    )
-    if hasattr(result, "model_dump"):
-        return result.model_dump()
-    if hasattr(result, "dict"):
-        return result.dict()
-    return {"scan": result}
+    organization_id = await _resolve_user_org_id(db, user_id)
+    if not organization_id:
+        raise ToolExecutionError(
+            "You have no organization yet — set one up (e.g. automate_company) before scanning it"
+        )
+    request = OrgScanRequest(**{k: arguments[k] for k in ("scan_type", "platforms", "depth") if k in arguments})
+    result = await OrgDiscoveryService(db).start_scan(request, organization_id)
+    return result.model_dump()
 
 
 async def _resolve_user_org_id(db: AsyncSession, user_id: str) -> Optional[str]:
@@ -4603,7 +4557,9 @@ async def _handle_register_mcp_server(
                 "url": url,
                 "api_key": arguments.get("api_key"),
                 "now": now,
-                "transport": transport,
+                # Stored as the REST API's transport enum (stdio | http_sse): MCPServerResponse
+                # validates it, so "http"/"sse" rows broke GET /mcp/servers.
+                "transport": "http_sse",
                 "command": arguments.get("command"),
                 "args": ",".join(arguments.get("args") or []) or None,
                 "owner": principal.user_id,
@@ -5063,10 +5019,17 @@ async def _handle_update_personal_agent_config(
     svc = _personal_agent_service(db)
     if svc is None:
         return {"status": "feature_pending", "available": False}
-    method = getattr(svc, "update_config", None)
-    if not method:
-        return {"status": "feature_pending", "available": False}
-    config = await method(user_id, arguments)
+    from pydantic import ValidationError
+    from schemas.personal_agent import PersonalAgentConfigUpdate
+
+    fields = {k: arguments[k] for k in ("agent_name", "personality", "preferences", "status") if k in arguments}
+    if not fields:
+        raise ToolExecutionError("Nothing to update: pass agent_name, personality, preferences or status")
+    try:
+        updates = PersonalAgentConfigUpdate(**fields)
+    except ValidationError as exc:
+        raise ToolExecutionError(f"Invalid personal agent config: {exc.errors()[0]['msg']}") from exc
+    config = await svc.update_config(user_id, updates)
     return {"config": _pa_dump(config), "updated": True}
 
 
@@ -5086,33 +5049,31 @@ async def _handle_get_personal_agent_activity(
 async def _handle_connect_external_agent(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    """Attach an external agent (BYOA) to the personal-agent config.
+    """Register an external agent runtime (BYOA) owned by the caller through
+    the runtime gateway — the same registration as POST /runtime/register."""
+    from core.tenant_context import get_current_tenant_id
 
-    Uses update_config under the hood — external_agents is a list on
-    the personal agent config.
-    """
-    svc = _personal_agent_service(db)
-    if svc is None:
-        return {"status": "feature_pending", "available": False}
-    # Read current config, append external agent, write back.
-    config = await svc.get_or_create_config(user_id)
-    current = _pa_dump(config) or {}
-    externals = current.get("external_agents") or []
-    externals.append({
-        "agent_id": arguments["agent_id"],
-        "agent_type": arguments["agent_type"],
-        "endpoint": arguments.get("endpoint"),
-        "credentials_ref": arguments.get("credentials_ref"),
-    })
-    update = getattr(svc, "update_config", None)
-    if update:
-        result = await update(user_id, {"external_agents": externals})
-        return {"external_agents": externals, "config": _pa_dump(result)}
-    return {
-        "status": "feature_pending",
-        "available": False,
-        "message": "Personal agent service lacks update_config.",
-    }
+    _ensure_business_sys_path()
+    try:  # Business+: the governed gateway, as POST /runtime/register uses
+        from aictrlnet_business.schemas.runtime_gateway import RuntimeRegistrationRequest  # type: ignore
+        from aictrlnet_business.services.runtime_governance_service import (  # type: ignore
+            RuntimeGovernanceService as Service,
+        )
+    except ImportError:
+        from schemas.runtime_gateway_basic import RuntimeRegistrationRequest
+        from services.runtime_audit_service import RuntimeAuditService as Service
+
+    tenant_id = (getattr(db, "info", None) or {}).get("tenant_id") or get_current_tenant_id()
+    config = {k: arguments[k] for k in ("endpoint", "credentials_ref") if arguments.get(k)}
+    registered = await Service(db).register_runtime(
+        RuntimeRegistrationRequest(
+            runtime_type=arguments["agent_type"],
+            instance_name=arguments["agent_id"],
+            config=config,
+        ),
+        {"id": user_id, "tenant_id": tenant_id},
+    )
+    return _pa_dump(registered)
 
 
 async def _handle_create_personal_workflow(
@@ -5124,14 +5085,12 @@ async def _handle_create_personal_workflow(
     add = getattr(svc, "add_workflow", None)
     if not add:
         return {"status": "feature_pending", "available": False}
-    result = await add(
-        user_id=user_id,
-        workflow_id=arguments["workflow_id"],
-        role=arguments.get("role", "primary"),
-    )
+    try:
+        result = await add(user_id=user_id, workflow_id=arguments["workflow_id"])
+    except ValueError as e:
+        raise ToolExecutionError(str(e)) from e
     return {
         "workflow_id": arguments["workflow_id"],
-        "role": arguments.get("role", "primary"),
         "result": _pa_dump(result),
     }
 
@@ -6158,11 +6117,11 @@ async def _handle_create_role(
         for perm in (arguments.get("permissions") or []):
             await db.execute(
                 text(
-                    "INSERT INTO mcp_role_permissions (id, role_id, resource, action) "
-                    "VALUES (:id, :r, :res, :act)"
+                    "INSERT INTO mcp_role_permissions (id, role_id, resource, action, scope) "
+                    "VALUES (:id, :r, :res, :act, :scope)"
                 ),
                 {"id": str(uuid.uuid4()), "r": role_id,
-                 "res": perm["resource"], "act": perm["action"]},
+                 "res": perm["resource"], "act": perm["action"], "scope": perm.get("scope")},
             )
         await db.commit()
     except Exception as e:
@@ -6359,8 +6318,9 @@ async def _handle_list_file_versions(
 ) -> Dict[str, Any]:
     from sqlalchemy import text
     rows = (await db.execute(
-        text("SELECT version, file_size, checksum_sha256, created_at FROM mcp_file_versions WHERE file_id = :f ORDER BY version DESC"),
-        {"f": arguments["file_id"]},
+        text("SELECT version, file_size, checksum_sha256, created_at FROM mcp_file_versions "
+             "WHERE file_id = :f AND created_by = :u ORDER BY version DESC"),
+        {"f": arguments["file_id"], "u": str(user_id)},
     )).all()
     return {
         "file_id": arguments["file_id"],
@@ -6376,8 +6336,9 @@ async def _handle_get_file_version(
 ) -> Dict[str, Any]:
     from sqlalchemy import text
     row = (await db.execute(
-        text("SELECT version, storage_path, file_size, checksum_sha256, content_type, created_at FROM mcp_file_versions WHERE file_id = :f AND version = :v"),
-        {"f": arguments["file_id"], "v": arguments["version"]},
+        text("SELECT version, storage_path, file_size, checksum_sha256, content_type, created_at "
+             "FROM mcp_file_versions WHERE file_id = :f AND version = :v AND created_by = :u"),
+        {"f": arguments["file_id"], "v": arguments["version"], "u": str(user_id)},
     )).first()
     if not row:
         raise ToolExecutionError(f"Version {arguments['version']} of {arguments['file_id']} not found")
@@ -6403,13 +6364,16 @@ async def _handle_delete_file_version(
 ) -> Dict[str, Any]:
     from sqlalchemy import text
     try:
-        await db.execute(
-            text("DELETE FROM mcp_file_versions WHERE file_id = :f AND version = :v"),
-            {"f": arguments["file_id"], "v": arguments["version"]},
+        # Only the caller's own versions (the table has no tenant isolation).
+        result = await db.execute(
+            text("DELETE FROM mcp_file_versions WHERE file_id = :f AND version = :v AND created_by = :u"),
+            {"f": arguments["file_id"], "v": arguments["version"], "u": str(user_id)},
         )
         await db.commit()
     except Exception as e:
         raise ToolExecutionError(f"delete_file_version failed: {e}") from e
+    if not result.rowcount:
+        raise ToolExecutionError(f"Version {arguments['version']} of {arguments['file_id']} not found")
     return {"file_id": arguments["file_id"], "version": arguments["version"], "deleted": True}
 
 

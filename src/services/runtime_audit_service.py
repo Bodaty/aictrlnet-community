@@ -73,7 +73,8 @@ class RuntimeAuditService:
 
         from core.user_utils import get_safe_user_id, get_safe_attr
         user_id = get_safe_user_id(user)
-        org_id = get_safe_attr(user, 'organization_id')
+        # The key the runtime listing filters on (get_safe_org_id): organization, else tenant.
+        org_id = get_safe_attr(user, 'organization_id') or get_safe_attr(user, 'tenant_id')
 
         instance = RuntimeInstance(
             id=instance_id,

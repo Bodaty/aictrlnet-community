@@ -211,27 +211,28 @@ async def channel_webhook(
     link = await _lookup_channel_link(db, channel_type, message.sender_id)
     if link is None:
         # Unlinked user — tell them how to link
-        await _send_reply_via_channel(
-            channel_type, message,
+        instructions = (
             "You haven't linked your AICtrlNet account to this channel yet.\n\n"
             "To link:\n"
             "1. Log in to AICtrlNet (web UI)\n"
             f'2. Go to Settings > Channels and request a linking code for "{channel_type}"\n'
             "3. Send the code here as: link <6-digit-code>\n\n"
-            "Example: link 482901",
+            "Example: link 482901"
         )
-        return _format_channel_response(channel_type, {"text": "Account not linked"}, message)
+        await _send_reply_via_channel(channel_type, message, instructions)
+        # The body carries the same text: Twilio's reply is the TwiML body alone.
+        return _format_channel_response(channel_type, {"text": instructions}, message)
 
     # --- Run a v5 turn as the linked user, in the linked user's tenant ---
     user_id = str(link.user_id)
-    tenant_id = await _user_tenant(user_id)
-    if tenant_id:
-        # The webhook is unauthenticated, so the request started in the default
-        # tenant; everything the turn does (tools, jobs) must run in the user's.
-        await db.rollback()
-        set_current_tenant_id(tenant_id)
-        bind_session_tenant(db, tenant_id)
     try:
+        tenant_id = await _user_tenant(user_id)
+        if tenant_id:
+            # The webhook is unauthenticated, so the request started in the default
+            # tenant; everything the turn does (tools, jobs) must run in the user's.
+            await db.rollback()
+            set_current_tenant_id(tenant_id)
+            bind_session_tenant(db, tenant_id)
         service = get_conversation_service_class()(db)
         session = await service.find_or_create_channel_session(
             channel_type=message.channel_type,

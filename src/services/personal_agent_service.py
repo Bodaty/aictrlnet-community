@@ -5,7 +5,7 @@ import uuid
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -48,9 +48,15 @@ class PersonalAgentService:
         if not workflow_ids:
             response.workflow_details = []
             return response
+        valid_ids = []
+        for wid in workflow_ids:
+            try:
+                valid_ids.append(uuid.UUID(str(wid)))
+            except ValueError:
+                pass  # a malformed id still lists, by itself, rather than failing the page
         result = await self.db.execute(
             select(WorkflowTemplate.id, WorkflowTemplate.name)
-            .where(WorkflowTemplate.id.in_(workflow_ids))
+            .where(WorkflowTemplate.id.in_(valid_ids))
         )
         wf_map = {str(row.id): row.name for row in result.all()}
         response.workflow_details = [
@@ -263,7 +269,23 @@ class PersonalAgentService:
     async def add_workflow(
         self, user_id: str, workflow_id: str
     ) -> WorkflowAddResponse:
-        """Add a personal workflow (max 5 in Community)."""
+        """Add a personal workflow (max 5 in Community): a workflow template the
+        user can see — public, system or their own."""
+        try:
+            template_id = uuid.UUID(str(workflow_id))
+        except ValueError:
+            raise ValueError(f"Workflow template {workflow_id} not found")
+        visible = (await self.db.execute(
+            select(WorkflowTemplate.id).where(
+                WorkflowTemplate.id == template_id,
+                or_(WorkflowTemplate.is_public == True,  # noqa: E712
+                    WorkflowTemplate.is_system == True,  # noqa: E712
+                    WorkflowTemplate.owner_id == str(user_id)),
+            )
+        )).scalar_one_or_none()
+        if visible is None:
+            raise ValueError(f"Workflow template {workflow_id} not found")
+        workflow_id = str(template_id)
         config_resp = await self.get_or_create_config(user_id)
 
         # Re-fetch the ORM object for mutation

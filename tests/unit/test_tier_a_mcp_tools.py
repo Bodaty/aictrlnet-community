@@ -26,6 +26,16 @@ from mcp_server.metering import QuotaError
 from mcp_server.rate_bucket import RateError
 from tier_a_egress import SmokeEgressBlocked, synthesize_value
 
+for _root in _pathlib.Path(__file__).resolve().parents:  # tests/smoke_common, wherever it is mounted
+    if (_root / "tests" / "smoke_common" / "sweep_residue.py").is_file():
+        _sys.path.append(str(_root / "tests"))
+        break
+else:
+    _sys.path.append("/workspace/tests")
+from smoke_common.sweep_residue import (  # noqa: E402
+    database_now, delete_rows_created_since, restore_user_rows, snapshot_user_rows,
+)
+
 TOOLS = {t["name"]: t for t in get_tools_for_edition()}
 DECLARED_PENDING = {n for n, t in TOOLS.items() if "feature_pending" in (t.get("description") or "")}
 PER_TOOL_TIMEOUT = 20
@@ -95,28 +105,20 @@ def _chain_has(exc, cls):
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_mcp_server_rows(db):
-    """Delete the mcp_servers rows this sweep registers.
+async def _delete_sweep_residue(db, dev_user_id):
+    """Delete every row the sweep created in the dev tenant or as the dev user.
 
-    register_mcp_server COMMITs on the request session, so the module's
-    `finally: await db.rollback()` cannot undo it and every gate run used to
-    leave another row behind.
+    The write tools commit on the request session, so the module's
+    `finally: await db.rollback()` cannot undo them: every gate run used to
+    leave another policy, pod, agent and MCP server behind for the UI gates to
+    render (tests/smoke_common/sweep_residue.py). The dev user's personal agent
+    config, which the sweep updates rather than creates, is put back as it was.
     """
-    before = {r[0] for r in (await db.execute(text("SELECT id FROM mcp_servers"))).all()}
+    since = await database_now(db)
+    before = await snapshot_user_rows(db, dev_user_id)
     yield
-    try:
-        await db.rollback()
-        rows = (await db.execute(text("SELECT id FROM mcp_servers"))).all()
-        added = [r[0] for r in rows if r[0] not in before]
-        if added:
-            await db.execute(
-                text("DELETE FROM mcp_server_capabilities WHERE server_id = ANY(:ids)"),
-                {"ids": added},
-            )
-            await db.execute(text("DELETE FROM mcp_servers WHERE id = ANY(:ids)"), {"ids": added})
-            await db.commit()
-    except Exception:  # noqa: BLE001 - cleanup must not mask a real failure
-        await db.rollback()
+    await delete_rows_created_since(db, since, tenant_id="default-tenant", user_id=dev_user_id)
+    await restore_user_rows(db, before)
 
 @pytest_asyncio.fixture
 async def dev_user_id(db):

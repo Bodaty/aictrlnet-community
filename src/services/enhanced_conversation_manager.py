@@ -1487,16 +1487,20 @@ Response (just the sentence, no quotes):"""
         return answer
 
     @staticmethod
-    def _created_entity(tool_name: str, result) -> bool:
-        """A successful create: calls after it in the same batch were written
-        before its id existed (1 Oct matrix: schedule_workflow after
-        create_workflow failed on 5 of 5 Vertex write turns)."""
-        return bool(result.success and tool_name.startswith(("create_", "instantiate_")))
+    def _dependents_after_create(tool_name: str, result, later) -> List[str]:
+        """After a successful create, the later calls in the same batch that may
+        target it — written before its id existed (1 Oct matrix: schedule_workflow
+        after create_workflow failed on 5 of 5 Vertex write turns). Further creates
+        are independent ("create six tasks") and keep running."""
+        creates = ("create_", "instantiate_")
+        if not (result.success and tool_name.startswith(creates)):
+            return []
+        return [tc.name for tc in later if not tc.name.startswith(creates)]
 
     @staticmethod
     def _held_after_create_note(held: List[str]) -> str:
         steps = ", ".join(name.replace("_", " ") for name in held)
-        return (f"\n\nI held back the next step(s) ({steps}) because they depend on what I just created — "
+        return (f"I held back the next step(s) ({steps}) because they depend on what I just created — "
                 "ask me again and I'll do them with it.")
 
     async def _harvest_finished_jobs(self, session) -> None:
@@ -1575,11 +1579,16 @@ Response (just the sentence, no quotes):"""
 
     @staticmethod
     def _with_degraded_note(text: str, trace) -> str:
-        """R9: an answer that took a lower rung says so."""
-        note = trace.degraded_note() if trace is not None else ""
-        if not note or note in (text or ""):
-            return text
-        return f"{text}\n\n{note}" if text else note
+        """R9: an answer that took a lower rung says so — and one that held back
+        calls after a create, which were never re-planned, says that too."""
+        notes = [trace.degraded_note() if trace is not None else ""]
+        held = getattr(trace, "held_after_create", None)
+        if held:
+            notes.append(EnhancedConversationService._held_after_create_note(held))
+        for note in notes:
+            if note and note not in (text or ""):
+                text = f"{text}\n\n{note}" if text else note
+        return text
 
     async def _model_free_turn(self, session, session_id, text: str, trace, stream: bool,
                                turn_count: int, drop_proposal: bool = True):
@@ -2660,7 +2669,6 @@ Response (just the sentence, no quotes):"""
             tool_results = []
             job_started_result = None
             job_held_back = 0
-            held_after_create: List[str] = []
             ui_blocks: List[Dict[str, Any]] = []  # Typed UI blocks emitted after tool execution
 
             # First check for proper tool calls
@@ -2794,10 +2802,11 @@ Response (just the sentence, no quotes):"""
                         job_started_result = result
                         job_held_back = len(tool_calls_to_execute) - i - 1
                         break
-                    if self._created_entity(tool_call.name, result) and i < len(tool_calls_to_execute) - 1:
+                    dependents = self._dependents_after_create(tool_call.name, result, tool_calls_to_execute[i + 1:])
+                    if dependents:
                         # Later calls were written before this object existed and would
-                        # act on a guessed or previous id: hold them back.
-                        held_after_create = [tc.name for tc in tool_calls_to_execute[i + 1:]]
+                        # act on a guessed or previous id: hold them back (the answer says so).
+                        trace.held_after_create = dependents
                         break
 
                 # =====================================================================
@@ -2877,11 +2886,6 @@ Response (just the sentence, no quotes):"""
                         yield {"event": "text_delta", "data": {"text": summary}}
                 trace.stages["synthesis"] = int((_time.perf_counter() - synthesis_started) * 1000)
 
-                if held_after_create:
-                    note = self._held_after_create_note(held_after_create)
-                    accumulated_text += note
-                    if stream:
-                        yield {"event": "text_delta", "data": {"text": note}}
                 response_content = self._with_degraded_note(accumulated_text, trace)
                 if stream and response_content != accumulated_text:
                     yield {"event": "text_delta", "data": {"text": response_content[len(accumulated_text):]}}

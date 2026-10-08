@@ -981,8 +981,8 @@ Return ONLY a single number (the index). Example: 5
         context: Optional[Dict[str, Any]] = None
     ) -> WorkflowDefinition:
         """Create a workflow from NLP-generated configuration."""
-        # Generate a name from the prompt
-        name = self._generate_workflow_name(prompt)
+        # The caller's name if it gave one, else one generated from the prompt
+        name = (context or {}).get("workflow_name") or self._generate_workflow_name(prompt)
         
         # Use tenant context if not provided
         if tenant_id is None:

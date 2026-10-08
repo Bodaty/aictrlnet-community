@@ -437,7 +437,7 @@ COMMUNITY_TOOLS = [
                 "task_id": {"type": "string"},
                 "name": {"type": "string"},
                 "description": {"type": "string"},
-                "status": {"type": "string"},
+                "status": {"type": "string", "enum": ["pending", "in_progress", "completed", "failed", "cancelled"]},
                 "metadata": {"type": "object"},
             },
             "required": ["task_id"],
@@ -620,6 +620,7 @@ COMMUNITY_TOOLS = [
             "properties": {
                 "template_id": {"type": "string"},
                 "name": {"type": "string", "description": "Optional name for the instantiated workflow"},
+                "description": {"type": "string"},
                 "parameters": {"type": "object"},
                 "idempotency_key": {"type": "string"},
             },
@@ -631,21 +632,35 @@ COMMUNITY_TOOLS = [
         "name": "upload_file",
         "description": (
             "Upload a file (base64-encoded content) as a staged file the "
-            "caller can reference later. Max 10 MB, MIME allow-list "
-            "enforced, magic-byte validated."
+            "caller can reference later. Max 50 MB; content_type must be one "
+            "of PDF, XLSX, XLS, CSV, DOCX, plain text, PNG, JPEG or JSON and "
+            "match the content (magic-byte check). Staged files expire after 24 h."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "filename": {"type": "string"},
                 "content_base64": {"type": "string"},
-                "content_type": {"type": "string"},
+                "content_type": {
+                    "type": "string",
+                    "enum": [
+                        "application/pdf",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "application/vnd.ms-excel",
+                        "text/csv",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "text/plain",
+                        "image/png",
+                        "image/jpeg",
+                        "application/json",
+                    ],
+                },
                 "workflow_id": {
                     "type": "string",
                     "description": "Optional — trigger a workflow with this file as input",
                 },
             },
-            "required": ["filename", "content_base64"],
+            "required": ["filename", "content_base64", "content_type"],
         },
     },
     {
@@ -773,7 +788,6 @@ COMMUNITY_TOOLS = [
             "type": "object",
             "properties": {
                 "workflow_id": {"type": "string"},
-                "role": {"type": "string", "default": "primary"},
                 "idempotency_key": {"type": "string"},
             },
             "required": ["workflow_id"],
@@ -1415,18 +1429,20 @@ BUSINESS_TOOLS = [
     {
         "name": "org_discovery_scan",
         "description": (
-            "Trigger an org discovery scan — profiles the caller's business "
-            "from integrated data sources. Long-running: returns a job id; "
-            "poll get_org_landscape for results."
+            "Scan the caller's organization for the SaaS platforms it uses, "
+            "through its connected integrations, and update its discovery "
+            "profile. Read the result with get_org_landscape."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "sources": {
+                "scan_type": {"type": "string", "enum": ["full", "incremental", "targeted"], "default": "full"},
+                "platforms": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Data sources to scan (email, calendar, slack, etc.)",
+                    "description": "Platforms to scan (empty = the connected ones)",
                 },
+                "depth": {"type": "string", "enum": ["quick", "standard", "deep"], "default": "standard"},
                 "idempotency_key": {"type": "string"},
             },
         },
@@ -1571,13 +1587,16 @@ BUSINESS_TOOLS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
-                "transport": {"type": "string", "enum": ["http", "sse", "stdio"], "default": "http"},
+                "transport": {
+                    "type": "string",
+                    "enum": ["http_sse", "http", "sse"],
+                    "default": "http_sse",
+                    "description": "HTTP/SSE only; stdio servers are registered through the MCP server API",
+                },
                 "url": {"type": "string"},
-                "command": {"type": "string"},
-                "args": {"type": "array", "items": {"type": "string"}},
                 "api_key": {"type": "string"},
             },
-            "required": ["name", "transport"],
+            "required": ["name", "url"],
         },
     },
     {
@@ -1719,16 +1738,23 @@ BUSINESS_TOOLS = [
     {
         "name": "update_personal_agent_config",
         "description": (
-            "Update the caller's personal agent config — autonomy level, "
-            "connected external agents (BYOA/OpenClaw), preferences."
+            "Update the caller's personal agent config — its name, personality, "
+            "preferences or status. External agents connect with "
+            "connect_external_agent; autonomy is set with set_agent_autonomy."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "autonomy_level": {"type": "integer", "minimum": 0, "maximum": 100},
-                "autonomy_locked": {"type": "boolean"},
-                "external_agents": {"type": "array", "items": {"type": "object"}},
-                "preferences": {"type": "object"},
+                "agent_name": {"type": "string", "minLength": 1, "maxLength": 255},
+                "personality": {
+                    "type": "object",
+                    "description": "tone, style, expertise_areas, custom_instructions",
+                },
+                "preferences": {
+                    "type": "object",
+                    "description": "notification_level, response_length, auto_suggest, ...",
+                },
+                "status": {"type": "string", "enum": ["active", "paused", "disabled"]},
             },
         },
     },
@@ -1749,9 +1775,10 @@ BUSINESS_TOOLS = [
     {
         "name": "connect_external_agent",
         "description": (
-            "Register an external agent (BYOA — e.g. OpenClaw, custom "
-            "A2A agent) with the caller's personal agent config. The "
-            "external agent then appears in orchestration."
+            "Register an external agent runtime (BYOA — e.g. OpenClaw, Claude "
+            "Code, custom) with the runtime gateway, owned by the caller. Returns "
+            "the runtime id and a one-time API key the agent uses to have its "
+            "actions evaluated."
         ),
         "inputSchema": {
             "type": "object",
@@ -1972,7 +1999,21 @@ BUSINESS_TOOLS = [
                 "name": {"type": "string"},
                 "agent_ids": {"type": "array", "items": {"type": "string"}},
                 "objective": {"type": "string"},
-                "collaboration_contract": {"type": "object"},
+                "collaboration_contract": {
+                    "type": "object",
+                    "properties": {
+                        "algorithm": {"type": "string", "description": "consensus (default), pso, bee_colony, ..."},
+                        "swarm_behavior": {
+                            "type": "string",
+                            "enum": ["consensus", "hierarchical", "emergent", "voting", "stigmergic"],
+                        },
+                        "description": {"type": "string"},
+                        "pod_type": {"type": "string", "default": "task"},
+                        "formation_type": {"type": "string", "default": "skill_based"},
+                        "min_size": {"type": "integer", "minimum": 1},
+                        "max_size": {"type": "integer", "minimum": 1},
+                    },
+                },
             },
             "required": ["agent_ids", "objective"],
         },
@@ -2142,6 +2183,7 @@ BUSINESS_TOOLS = [
             "type": "object",
             "properties": {
                 "name": {"type": "string"},
+                "description": {"type": "string"},
                 "resource_type": {"type": "string"},
                 "resource_id": {"type": "string"},
                 "metric": {"type": "string", "description": "e.g. latency_p95, success_rate"},
@@ -2749,6 +2791,7 @@ ENTERPRISE_TOOLS = [
                         "properties": {
                             "resource": {"type": "string"},
                             "action": {"type": "string"},
+                            "scope": {"type": "string", "description": "e.g. own, tenant"},
                         },
                         "required": ["resource", "action"],
                     },
