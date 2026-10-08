@@ -80,3 +80,11 @@ install_test_egress_guard()
 from smoke_common.rate_limits import clear_smoke_rate_limits  # noqa: E402
 
 clear_smoke_rate_limits()
+
+# Model calls answer from a canned script (llm/scripted.py) — set before the app
+# is imported: a live model made smoke results vary run to run
+# (llm/structured/generate answered 2xx or 502).
+import smoke_common as _smoke_common  # noqa: E402
+
+os.environ["LLM_SCRIPTED_MODE"] = "1"
+os.environ["LLM_SCRIPT_FILE"] = os.path.join(os.path.dirname(_smoke_common.__file__), "llm-script.smoke.json")

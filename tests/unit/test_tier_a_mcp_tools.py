@@ -75,8 +75,6 @@ KNOWN_DEAD = {
     "get_delegation_chain": "A-30",
     "get_execution_framework_trace": "A-30",
     "get_notification_preferences": "A-30",
-    "get_org_discovery_logs": "A-30",
-    "get_org_discovery_status": "A-30",
     "get_platform_cost_estimate": "A-30",
     "list_credentials": "A-30",
     "list_federated_peers": "A-30",

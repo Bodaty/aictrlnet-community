@@ -2431,23 +2431,18 @@ BUSINESS_TOOLS = [
     # ==== Wave 7 B3.6 — Org discovery polling ====
     {
         "name": "get_org_discovery_status",
-        "description": "Poll the progress of an org_discovery_scan.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"scan_id": {"type": "string"}},
-            "required": ["scan_id"],
-        },
+        "description": "Discovery status of the caller's organization: last scan, progress, tools found.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_org_discovery_logs",
-        "description": "Read logs from an org_discovery_scan for detailed debugging.",
+        "description": "The organization's discovery scan log, newest first; scan_id (from org_discovery_scan) narrows it to one scan.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "scan_id": {"type": "string"},
                 "limit": {"type": "integer", "default": 100, "maximum": 1000},
             },
-            "required": ["scan_id"],
         },
     },
     # ==== Wave 7 B3.7 — Adapter runtime discovery ====

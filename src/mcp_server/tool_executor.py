@@ -3496,33 +3496,17 @@ async def _handle_org_discovery_scan(
     except Exception:
         raise ToolExecutionError("Org discovery service unavailable")
 
-    organization_id = await _resolve_user_org_id(db, user_id)
-    if not organization_id:
-        raise ToolExecutionError(
-            "You have no organization yet — set one up (e.g. automate_company) before scanning it"
-        )
     request = OrgScanRequest(**{k: arguments[k] for k in ("scan_type", "platforms", "depth") if k in arguments})
-    result = await OrgDiscoveryService(db).start_scan(request, organization_id)
+    result = await OrgDiscoveryService(db).start_scan(request, _org_tenant_id(db), user_id=user_id)
     return result.model_dump()
 
 
-async def _resolve_user_org_id(db: AsyncSession, user_id: str) -> Optional[str]:
-    """Resolve a user_id to their organization_id, or None if no org exists.
+def _org_tenant_id(db: AsyncSession) -> str:
+    """Org discovery is one profile per tenant: the caller's tenant (the
+    session's bound tenant, else the request's)."""
+    from core.tenant_context import get_current_tenant_id
 
-    Org-discovery service methods are keyed by organization_id (one org per
-    user in Business edition); the MCP handlers carry user_id, so we bridge
-    here. Returns None if the user has no organization, which the callers
-    map to ``available: False`` rather than crashing.
-    """
-    _ensure_business_sys_path()
-    try:
-        from aictrlnet_business.services.organization_service import (  # type: ignore
-            OrganizationService,
-        )
-    except Exception:
-        return None
-    org = await OrganizationService().get_user_organization(db, user_id)
-    return str(org.id) if org else None
+    return (getattr(db, "info", None) or {}).get("tenant_id") or get_current_tenant_id()
 
 
 async def _handle_get_org_landscape(
@@ -3536,18 +3520,7 @@ async def _handle_get_org_landscape(
     except Exception:
         return {"landscape": None, "available": False}
 
-    organization_id = await _resolve_user_org_id(db, user_id)
-    if not organization_id:
-        return {"landscape": None, "available": False}
-
-    svc = OrgDiscoveryService(db)
-    method = (
-        getattr(svc, "get_landscape", None)
-        or getattr(svc, "get_profile", None)
-    )
-    if not method:
-        return {"landscape": None, "available": False}
-    landscape = await method(organization_id=organization_id)
+    landscape = await OrgDiscoveryService(db).get_landscape(_org_tenant_id(db))
     if hasattr(landscape, "model_dump"):
         return landscape.model_dump()
     if hasattr(landscape, "dict"):
@@ -3566,18 +3539,7 @@ async def _handle_get_org_recommendations(
     except Exception:
         return {"recommendations": [], "available": False}
 
-    organization_id = await _resolve_user_org_id(db, user_id)
-    if not organization_id:
-        return {"recommendations": [], "available": False}
-
-    svc = OrgDiscoveryService(db)
-    method = (
-        getattr(svc, "get_recommendations", None)
-        or getattr(svc, "recommend", None)
-    )
-    if not method:
-        return {"recommendations": [], "available": False}
-    recs = await method(organization_id=organization_id)
+    recs = await OrgDiscoveryService(db).get_recommendations(_org_tenant_id(db))
     if hasattr(recs, "model_dump"):
         recs = recs.model_dump()
     elif hasattr(recs, "dict"):
@@ -6544,16 +6506,13 @@ async def _handle_render_canvas(
 async def _handle_get_org_discovery_status(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    """The caller's tenant's discovery status (one profile per tenant)."""
     _ensure_business_sys_path()
     try:
         from aictrlnet_business.services.org_discovery_service import OrgDiscoveryService  # type: ignore
-        svc = OrgDiscoveryService(db)
-        method = getattr(svc, "get_scan_status", None) or getattr(svc, "get_status", None)
-        if method:
-            return {"status": _pa_dump(await method(scan_id=arguments["scan_id"]))}
-    except Exception:
-        pass
-    return {"status": "feature_pending", "available": False}
+    except ImportError:
+        raise ToolExecutionError("Org discovery requires the Business edition or higher")
+    return {"status": _pa_dump(await OrgDiscoveryService(db).get_scan_status(_org_tenant_id(db)))}
 
 
 async def _handle_get_org_discovery_logs(
@@ -6562,15 +6521,12 @@ async def _handle_get_org_discovery_logs(
     _ensure_business_sys_path()
     try:
         from aictrlnet_business.services.org_discovery_service import OrgDiscoveryService  # type: ignore
-        svc = OrgDiscoveryService(db)
-        method = getattr(svc, "get_scan_logs", None) or getattr(svc, "get_logs", None)
-        if method:
-            return {"logs": _pa_dump(await method(
-                scan_id=arguments["scan_id"], limit=arguments.get("limit", 100),
-            ))}
-    except Exception:
-        pass
-    return {"logs": [], "status": "feature_pending"}
+    except ImportError:
+        raise ToolExecutionError("Org discovery requires the Business edition or higher")
+    logs = await OrgDiscoveryService(db).get_scan_logs(
+        _org_tenant_id(db), limit=int(arguments.get("limit", 100)), scan_id=arguments.get("scan_id"),
+    )
+    return {"logs": logs, "count": len(logs)}
 
 
 # ---- B3.7 Adapter runtime discovery ----

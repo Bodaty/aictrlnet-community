@@ -53,9 +53,11 @@ echo ""
 # gunicorn manages UvicornWorker processes: a worker whose event loop wedges
 # (blocking call) stops heart-beating and is killed+respawned after --timeout,
 # so a single blocking path can't silently freeze the edition (see
-# .claude/plans/worker-wedge-permanent-fix.md).
+# .claude/plans/worker-wedge-permanent-fix.md). --preload imports the app once
+# and forks the workers (as Enterprise and Cloud Run do).
 exec gunicorn main:app \
     -k uvicorn.workers.UvicornWorker \
+    --preload \
     --workers ${WORKERS:-2} \
     --bind 0.0.0.0:8000 \
     --timeout 120 \
