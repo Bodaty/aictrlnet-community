@@ -62,10 +62,14 @@ class KnowledgeIndexer:
 
     async def _index_templates(self):
         """
-        Index all workflow templates with rich metadata.
+        Index the shared workflow templates (public or system) with rich metadata.
+
+        The index is shared by every user and tenant, and workflow_templates has
+        no row-level security: a private template must never be indexed.
         """
-        # Query templates from database
-        query = select(WorkflowTemplate)
+        query = select(WorkflowTemplate).where(
+            or_(WorkflowTemplate.is_public == True, WorkflowTemplate.is_system == True)  # noqa: E712
+        )
         result = await self.db.execute(query)
         templates = result.scalars().all()
 

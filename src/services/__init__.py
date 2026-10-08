@@ -24,7 +24,6 @@ from .api_key_service import APIKeyService
 from .webhook_service import WebhookService
 # v4: Tool Dispatcher for Intelligent Assistant
 from .tool_dispatcher import ToolDispatcher, CORE_TOOLS, Edition
-from .tool_aware_conversation import ToolAwareConversationService
 
 __all__ = [
     "TaskService",
@@ -43,5 +42,4 @@ __all__ = [
     "ToolDispatcher",
     "CORE_TOOLS",
     "Edition",
-    "ToolAwareConversationService",
 ]

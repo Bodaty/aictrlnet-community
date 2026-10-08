@@ -744,7 +744,12 @@ async def _handle_assess_quality(
 async def _handle_send_message(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
+    """One v5 turn on the caller's active session (spec §7 "Turn paths"): the
+    registered edition's turn, under its budgets and confirmation gate. A write
+    that needs confirmation comes back as a proposal; "yes" in the next
+    send_message runs it."""
     from services.conversation_service_registry import get_conversation_service_class
+    from services.conversation_turn_runner import TurnFailed, run_turn
 
     svc = get_conversation_service_class()(db)
     active_sessions = await svc.get_active_sessions(user_id)
@@ -753,16 +758,20 @@ async def _handle_send_message(
     else:
         session = await svc.create_session(user_id)
 
-    response = await svc.process_message(
-        session_id=session.id,
-        content=arguments["message"],
-        user_id=user_id,
-    )
-    if hasattr(response, "dict"):
-        return response.dict()
-    if hasattr(response, "model_dump"):
-        return response.model_dump()
-    return {"session_id": str(session.id), "response": str(response)}
+    try:
+        result = await run_turn(svc, session.id, arguments["message"], user_id, channel_type="mcp")
+    except TurnFailed as e:
+        raise ToolExecutionError(f"The assistant could not complete this turn: {e}") from e
+    return {
+        "session_id": str(session.id),
+        "message_id": result.get("message_id"),
+        "response": result.get("content", ""),
+        "tools_executed": result.get("tools_executed", []),
+        "all_successful": result.get("all_successful", True),
+        "ui_blocks": result.get("ui_blocks", []),
+        "created_workflow": result.get("created_workflow"),
+        "turn": result.get("turn"),
+    }
 
 
 async def _handle_evaluate_policy(
@@ -2223,7 +2232,7 @@ async def _handle_get_usage_report(
     back to the basic_usage_metrics snapshot if not. Scoped to the
     caller's tenant only.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from sqlalchemy import text
 
@@ -2231,7 +2240,7 @@ async def _handle_get_usage_report(
 
     tenant_id = get_current_tenant_id() or "community"
     days = max(1, min(int(arguments.get("days", 30)), 90))
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.utcnow() - timedelta(days=days)  # usage_tracking.timestamp is naive UTC
     resource_filter = arguments.get("resource_type")
 
     # Per-day per-resource breakdown. usage_tracking is Business-edition
@@ -2255,7 +2264,9 @@ async def _handle_get_usage_report(
             params["rt"] = resource_filter
         sql += " GROUP BY day, resource_type ORDER BY day DESC, resource_type"
 
-        rows = (await db.execute(text(sql), params)).all()
+        # A savepoint: a missing table must not abort the transaction the fallback uses.
+        async with db.begin_nested():
+            rows = (await db.execute(text(sql), params)).all()
         for day, resource_type, qty in rows:
             breakdown.append(
                 {
@@ -2602,57 +2613,37 @@ async def _handle_unlink_channel(
 async def _handle_send_channel_message(
     arguments: Dict[str, Any], db: AsyncSession, user_id: str
 ) -> Dict[str, Any]:
-    """Send a message via a linked external channel. Enforces channel
-    ownership by calling list_linked_channels first and checking that
-    the requested channel belongs to the caller.
-    """
-    # 1. Verify caller owns a linked channel of this type
+    """Deliver a message to one of the caller's own linked channel accounts.
+    Ownership is enforced through list_linked_channels: a recipient that is not
+    the caller's linked identity on that channel is rejected."""
+    from services import channel_outbound
+
     linked = await _handle_list_linked_channels({}, db, user_id)
     channels = linked.get("channels") or []
     wanted = arguments["channel_type"].lower()
-    matches = [
-        c for c in channels
-        if (c.get("channel_type") if isinstance(c, dict) else getattr(c, "channel_type", None)) == wanted
-    ]
+
+    def _field(c, name):
+        return c.get(name) if isinstance(c, dict) else getattr(c, name, None)
+
+    matches = [c for c in channels if _field(c, "channel_type") == wanted]
     if not matches:
         raise ToolExecutionError(
             f"No linked channel of type '{wanted}' — link it first via "
             f"request_channel_link_code"
         )
-
-    # 2. Dispatch through conversation service (which wraps the channel
-    # gateway). EnhancedConversationService.process_message already
-    # supports multi-channel delivery.
-    from services.conversation_service_registry import get_conversation_service_class
-
-    svc = get_conversation_service_class()(db)
-    active_sessions = await svc.get_active_sessions(user_id)
-    if isinstance(active_sessions, dict):
-        active_sessions = active_sessions.get("sessions") or []
-    if active_sessions:
-        session = active_sessions[0]
+    recipient = arguments.get("channel_user_id")
+    if recipient:
+        if recipient not in {_field(c, "channel_user_id") for c in matches}:
+            raise ToolExecutionError(
+                f"'{recipient}' is not one of your linked {wanted} accounts"
+            )
     else:
-        session = await svc.create_session(user_id)
+        recipient = _field(matches[0], "channel_user_id")
 
-    session_id = getattr(session, "id", None) or (
-        session.get("id") if isinstance(session, dict) else None
-    )
-    response = await svc.process_message(
-        session_id=session_id,
-        content=arguments["message"],
-        user_id=user_id,
-    )
-    payload: Dict[str, Any]
-    if hasattr(response, "model_dump"):
-        payload = response.model_dump()
-    elif hasattr(response, "dict"):
-        payload = response.dict()
-    elif isinstance(response, dict):
-        payload = response
-    else:
-        payload = {"response": str(response)}
-    payload["channel_type"] = wanted
-    return payload
+    delivery = await channel_outbound.send_text(wanted, recipient, arguments["message"])
+    if not delivery.delivered:
+        raise ToolExecutionError(f"Message not delivered: {delivery.reason}")
+    return {"delivered": True, "channel_type": wanted, "channel_user_id": recipient}
 
 
 async def _handle_list_notifications(

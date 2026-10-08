@@ -456,7 +456,11 @@ class WorkflowTemplateService:
         template = WorkflowTemplate(
             **create_data.model_dump(exclude={"definition_path"}),
             owner_id=user_id,
-            definition_path=str(file_path)
+            definition_path=str(file_path),
+            # Column defaults, set here so the response never depends on a refresh.
+            is_system=False,
+            version=1,
+            usage_count=0,
         )
         
         db.add(template)

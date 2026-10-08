@@ -202,7 +202,13 @@ async def start_feature_trial(
 
     try:
         tenant_id = current_user.get("tenant_id") or get_current_tenant_id()
-        target_edition = Edition(request.target_edition)
+        try:
+            target_edition = Edition(request.target_edition)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown edition '{request.target_edition}'",
+            )
 
         # No trials for community edition
         if target_edition == Edition.COMMUNITY:

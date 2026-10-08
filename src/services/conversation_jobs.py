@@ -11,7 +11,10 @@ Rules that keep it honest:
   token; a row whose lease lapsed reads as `stale`, and the same owner may still
   finish it (a slow job is not a dead one);
 - one running job per tool per session; at most `CONVERSATION_JOB_CONCURRENCY`
-  per worker; the work is bounded by `CONVERSATION_JOB_MAX_S`.
+  per worker; the work is bounded by `CONVERSATION_JOB_MAX_S`;
+- a job's arguments and result can carry PHI: finished rows are deleted after
+  `CONVERSATION_JOB_RETENTION_DAYS` (30), and an unexpected exception is logged,
+  never stored or shown on the card.
 
 Modes (`CONVERSATION_JOBS`): `off` (default: the tool runs inside the turn),
 `on` (an in-process task; needs CPU between requests — local, Beast), and
@@ -24,6 +27,7 @@ with CPU allocated — see `run_dispatched` and the 1 Oct ruling in
 import asyncio
 import logging
 import os
+import time
 import uuid
 import weakref
 from datetime import datetime, timedelta
@@ -43,6 +47,11 @@ _LABELS = {
     "automate_company": "setting up your company automation",
     "generate_adapter": "generating the integration",
 }
+
+
+_UNEXPECTED = "It failed unexpectedly — please try again."
+_PURGE_EVERY_S = 3600
+_last_purge = float("-inf")
 
 
 CLOUD_TASKS = "cloud_tasks"
@@ -79,6 +88,46 @@ def heartbeat_s() -> float:
 
 def max_s() -> float:
     return _env_float("CONVERSATION_JOB_MAX_S", 900)
+
+
+def retention_days() -> float:
+    return _env_float("CONVERSATION_JOB_RETENTION_DAYS", 30)
+
+
+async def purge_expired() -> int:
+    """Delete finished jobs (any tenant) older than the retention window."""
+    from core.database import get_session_maker
+
+    cutoff = datetime.utcnow() - timedelta(days=retention_days())
+    async with get_session_maker()() as db:
+        async with db.begin():
+            # Transaction-local: the bypass ends with this transaction.
+            await db.execute(text("SET LOCAL app.is_admin = 'true'"))
+            result = await db.execute(text(
+                "DELETE FROM conversation_jobs WHERE status IN ('succeeded', 'failed', 'needs_input', 'stale') "
+                "AND COALESCE(finished_at, updated_at) < :cutoff"), {"cutoff": cutoff})
+    if result.rowcount:
+        logger.info("[jobs] purged %d finished jobs older than %.0f days", result.rowcount, retention_days())
+    return result.rowcount or 0
+
+
+def schedule_purge() -> None:
+    """Purge in the background, at most once an hour per worker."""
+    global _last_purge
+    now = time.monotonic()
+    if now - _last_purge < _PURGE_EVERY_S:
+        return
+    _last_purge = now
+
+    async def purge() -> None:
+        try:
+            await purge_expired()
+        except Exception as exc:
+            logger.warning("[jobs] retention purge failed: %s", exc)
+
+    task = asyncio.get_running_loop().create_task(purge(), name="conversation-job-purge")
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
 
 
 def _limit() -> asyncio.Semaphore:
@@ -125,6 +174,7 @@ async def start(dispatcher, tool_name: str, arguments: Dict[str, Any], user_id: 
     from models.conversation import ConversationJob
 
     tenant_id = (getattr(dispatcher.db, "info", None) or {}).get("tenant_id") or get_current_tenant_id()
+    schedule_purge()
     now = datetime.utcnow()
     owner = uuid.uuid4().hex
     # A queued Cloud Task may take a little while to start: its first lease
@@ -172,7 +222,7 @@ async def start(dispatcher, tool_name: str, arguments: Dict[str, Any], user_id: 
             await enqueue_cloud_task(payload)
         except Exception as exc:
             logger.error("[jobs] could not queue %s: %s", tool_name, exc)
-            await _cas(tenant_id, job_id, owner, status="failed", error=str(exc),
+            await _cas(tenant_id, job_id, owner, status="failed", error="It could not be started — please try again.",
                        progress="It could not be started — please try again.", finished_at=datetime.utcnow())
             return ToolResult(success=False, error="It could not be started — please try again.",
                               data={"job_id": job_id, "tool_name": tool_name})
@@ -237,7 +287,9 @@ async def _run(dispatcher_cls, edition, tenant_id: str, job_id: str, owner: str,
                 result = await asyncio.wait_for(
                     dispatcher_cls(db, edition).invoke(tool_name, arguments, user_id, context), timeout=max_s()
                 )
-                data, error = jsonable_encoder(result.data or {}), result.error
+                data = jsonable_encoder(result.data or {})
+                # A service_error carries a raw exception text: logged by the dispatcher, not kept.
+                error = _UNEXPECTED if result.error_type == "service_error" else result.error
                 if result.success:
                     await db.commit()  # a commit that fails is a failed job, never "succeeded"
                     success = True
@@ -252,7 +304,7 @@ async def _run(dispatcher_cls, edition, tenant_id: str, job_id: str, owner: str,
         raise
     except Exception as exc:
         logger.exception("[jobs] %s failed", tool_name)
-        error = str(exc)
+        error = _UNEXPECTED
     finally:
         beat.cancel()
         meaning = outcome(tool_name, success, data, error)

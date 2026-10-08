@@ -17,6 +17,7 @@ import json
 import asyncio
 
 from core.database import get_db, closing_session
+from core.sse import sse_frame
 from core.security import get_current_user
 from schemas.conversation import (
     ConversationSessionCreate,
@@ -51,45 +52,12 @@ router = APIRouter()
 
 async def _collect_v2_response(service, session_id, content, user_id, db, user_preferences=None):
     """Collect response from process_message_v2 and return ConversationResponse-shaped dict."""
-    response_data = {}
-    turn = None
-    async for event in service.process_message_v2(
-        session_id, content, user_id, stream=False, user_preferences=user_preferences
-    ):
-        if event.get("event") == "response":
-            response_data = event.get("data", {})
-        elif event.get("event") == "complete":
-            turn = event.get("data")
-        elif event.get("event") == "error":
-            raise HTTPException(status_code=500, detail=event["data"].get("message", "Error"))
+    from services.conversation_turn_runner import TurnFailed, collect_response
 
-    if not response_data:
-        raise HTTPException(status_code=500, detail="No response from conversation service")
-
-    # Fetch the persisted assistant message and session from DB
-    message_id = UUID(response_data["message_id"])
-    msg_result = await db.execute(
-        select(ConversationMessage).where(ConversationMessage.id == message_id)
-    )
-    assistant_msg = msg_result.scalar_one_or_none()
-
-    session_result = await db.execute(
-        select(ConversationSession).where(ConversationSession.id == session_id)
-    )
-    session = session_result.scalar_one_or_none()
-
-    if not assistant_msg or not session:
-        raise HTTPException(status_code=500, detail="Failed to retrieve persisted message or session")
-
-    return {
-        "session_id": session_id,
-        "message": assistant_msg,
-        "state": session.state,
-        "context": response_data.get("session_context", {}),
-        "quick_actions": [],
-        "automation_result": response_data.get("automation_result") or response_data.get("created_workflow"),
-        "turn": turn,
-    }
+    try:
+        return await collect_response(service, db, session_id, content, user_id, user_preferences)
+    except TurnFailed as e:
+        raise HTTPException(status_code=e.http_status, detail=str(e))
 
 
 def serialize_for_json(obj):
@@ -1003,8 +971,7 @@ async def chat_v5(
                 message_config=message.message_config,
             ):
                 # Format as SSE
-                event_data = serialize_for_json(event.get('data', {}))
-                frame = f"event: {event['event']}\ndata: {json.dumps(event_data)}\n\n"
+                frame = sse_frame(event['event'], event.get('data', {}))
                 guard.saw(event)
                 yield frame
 
@@ -1016,7 +983,7 @@ async def chat_v5(
             logger.error(f"[v5 Chat] Traceback: {traceback.format_exc()}")
             failure = guard.failure_event(e)  # spec §7.3 R1
             if failure:
-                yield f"event: {failure[0]}\ndata: {json.dumps(failure[1])}\n\n"
+                yield sse_frame(failure[0], failure[1])
 
     return StreamingResponse(
         closing_session(v5_event_generator(), db),

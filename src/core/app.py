@@ -229,6 +229,12 @@ class AICtrlNetApp:
                 start_loop_monitor()
             except Exception as e:
                 logger.warning(f"Loop monitor not started: {e}")
+            # Conversation jobs past their retention window (they can carry PHI).
+            try:
+                from services.conversation_jobs import schedule_purge
+                schedule_purge()
+            except Exception as e:
+                logger.warning(f"Conversation job purge not scheduled: {e}")
 
             yield
 

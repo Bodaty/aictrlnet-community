@@ -3677,13 +3677,13 @@ class ToolDispatcher:
         try:
             from sqlalchemy import select
             from models.staged_file import StagedFile
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             limit = args.get("limit", 20)
             stmt = (
                 select(StagedFile)
                 .where(StagedFile.user_id == user_id)
-                .where(StagedFile.expires_at > datetime.now(timezone.utc))
+                .where(StagedFile.expires_at > datetime.utcnow())  # naive UTC column
                 .order_by(StagedFile.created_at.desc())
                 .limit(limit)
             )
@@ -3717,7 +3717,7 @@ class ToolDispatcher:
         try:
             from sqlalchemy import select
             from models.staged_file import StagedFile
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             file_id = args.get("file_id")
             if not file_id:
@@ -3727,7 +3727,7 @@ class ToolDispatcher:
                 select(StagedFile)
                 .where(StagedFile.id == file_id)
                 .where(StagedFile.user_id == user_id)
-                .where(StagedFile.expires_at > datetime.now(timezone.utc))
+                .where(StagedFile.expires_at > datetime.utcnow())  # naive UTC column
             )
             result = await self.db.execute(stmt)
             staged = result.scalar_one_or_none()

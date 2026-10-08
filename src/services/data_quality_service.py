@@ -146,6 +146,7 @@ class DataQualityService:
             edition=edition,
             tenant_id=tenant_id,
             user_id=user_id,
+            assessment_time=datetime.utcnow(),  # set here: the response reads it before any refresh
             metadata={
                 "dimensions_requested": request.dimensions,
                 "profile_id": str(request.profile_id) if request.profile_id else None

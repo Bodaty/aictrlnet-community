@@ -16,18 +16,21 @@ import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, Optional
+from xml.sax.saxutils import escape as xml_escape
 
 from fastapi import APIRouter, Request, Response, HTTPException, Depends
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
-from core.database import get_db
+from core.database import bind_session_tenant, get_db, get_session_maker
+from core.tenant_context import set_current_tenant_id
+from services import channel_outbound
 from services.channel_normalizer import ChannelNormalizer, InboundMessage
-from services.conversation_manager import ConversationManagerService
+from services.conversation_service_registry import get_conversation_service_class
+from services.conversation_turn_runner import TurnFailed, run_turn
 from models.channel_link import ChannelLink, ChannelLinkCode
-from adapters.registry import adapter_registry
-from adapters.models import AdapterRequest
+from models.user import User
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -44,6 +47,8 @@ _NORMALIZERS = {
     "discord": normalizer.normalize_discord,
     "email": normalizer.normalize_email,
 }
+
+_TURN_FAILED_REPLY = "Sorry, I couldn't complete that. Please try again in a moment."
 
 # Regex to detect a linking command: "/link 123456" or "link 123456"
 _LINK_PATTERN = re.compile(r"^/?link\s+(\d{6})$", re.IGNORECASE)
@@ -78,7 +83,7 @@ async def channel_webhook(
     1. Validates/normalizes the payload.
     2. Checks for a linking command — if so, completes the account-linking flow.
     3. Looks up ChannelLink to authenticate the sender.
-    4. If authenticated, routes to the conversation manager.
+    4. If authenticated, runs a v5 turn as the linked user, in their tenant.
     5. If NOT authenticated, replies with "please link your account" instructions.
     """
     if channel_type not in _NORMALIZERS:
@@ -217,32 +222,40 @@ async def channel_webhook(
         )
         return _format_channel_response(channel_type, {"text": "Account not linked"}, message)
 
-    # --- Route to conversation manager with the REAL authenticated user_id ---
+    # --- Run a v5 turn as the linked user, in the linked user's tenant ---
+    user_id = str(link.user_id)
+    tenant_id = await _user_tenant(user_id)
+    if tenant_id:
+        # The webhook is unauthenticated, so the request started in the default
+        # tenant; everything the turn does (tools, jobs) must run in the user's.
+        await db.rollback()
+        set_current_tenant_id(tenant_id)
+        bind_session_tenant(db, tenant_id)
     try:
-        manager = ConversationManagerService(db)
-        session = await manager.find_or_create_channel_session(
+        service = get_conversation_service_class()(db)
+        session = await service.find_or_create_channel_session(
             channel_type=message.channel_type,
             sender_id=message.sender_id,
-            user_id=link.user_id,  # authenticated user
+            user_id=user_id,
             platform_metadata=message.platform_metadata,
         )
-
-        response = await manager.process_message(
-            session_id=session.id,
-            content=message.message_text,
-            user_id=session.user_id,
+        result = await run_turn(
+            service, session.id, message.message_text, user_id,
             channel_type=message.channel_type,
             external_message_id=message.external_message_id,
         )
-
-        reply_text = _extract_reply_text(response)
-        await _send_reply_via_channel(channel_type, message, reply_text)
-
-        return _format_channel_response(channel_type, response, message)
-
+        reply_text = result.get("content") or ""
+    except TurnFailed as e:
+        logger.warning(f"Channel turn failed ({channel_type}): {e}")
+        reply_text = _TURN_FAILED_REPLY
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Channel webhook error ({channel_type}): {e}", exc_info=True)
-        return Response(status_code=200)
+        reply_text = _TURN_FAILED_REPLY
+
+    await _send_reply_via_channel(channel_type, message, reply_text)
+    return _format_channel_response(channel_type, {"text": reply_text}, message)
 
 
 @router.get("/channels/whatsapp/webhook")
@@ -346,14 +359,15 @@ async def _handle_link_command(
     return _format_channel_response(channel_type, {"text": reply}, inbound)
 
 
-def _extract_reply_text(response: Any) -> str:
-    """Extract plain text from conversation response."""
-    if hasattr(response, "message"):
-        return response.message.content if hasattr(response.message, "content") else str(response.message)
-    if isinstance(response, dict):
-        msg = response.get("message", {})
-        return msg.get("content", "") if isinstance(msg, dict) else str(msg)
-    return str(response)
+async def _user_tenant(user_id: str) -> Optional[str]:
+    """The linked user's tenant. `users` is tenant-isolated and the request has
+    no tenant yet, so this one read runs with the admin RLS bypass."""
+    async with get_session_maker()() as admin:
+        async with admin.begin():
+            await admin.execute(text("SET LOCAL app.is_admin = 'true'"))
+            return (await admin.execute(
+                select(User.tenant_id).where(User.id == user_id)
+            )).scalar_one_or_none()
 
 
 async def _send_reply_via_channel(
@@ -361,49 +375,28 @@ async def _send_reply_via_channel(
 ) -> None:
     """Send the assistant reply back through the originating channel adapter.
 
-    Best-effort: if the adapter isn't registered or the send fails we log and
-    continue — the webhook response body still carries the reply for platforms
-    that support synchronous replies.
+    Best-effort: the webhook response body still carries the reply for platforms
+    that support synchronous replies. Twilio gets its reply in the TwiML body
+    only — sending it through the adapter as well would deliver it twice.
     """
-    if not text:
+    if channel_type == "twilio":
         return
-
-    adapter_map = {
-        "telegram": ("telegram", "send_message", lambda: {"chat_id": inbound.platform_metadata.get("chat_id", inbound.sender_id), "text": text}),
-        "whatsapp": ("whatsapp", "send_message", lambda: {"to": inbound.sender_id, "text": text}),
-        "twilio": ("twilio", "send_sms", lambda: {"to": inbound.sender_id, "body": text}),
-        "slack": ("slack", "send_message", lambda: {"channel": inbound.platform_metadata.get("channel", inbound.sender_id), "text": text}),
-        "discord": ("discord", "send_message", lambda: {"channel_id": inbound.platform_metadata.get("channel_id", inbound.sender_id), "content": text}),
-        "email": ("email", "send_email", lambda: {"to": inbound.sender_id, "subject": f"Re: {inbound.platform_metadata.get('subject', 'AICtrlNet')}", "body": text}),
-    }
-
-    entry = adapter_map.get(channel_type)
-    if not entry:
-        return
-
-    adapter_name, capability, params_fn = entry
-    try:
-        adapter_class = adapter_registry.get_adapter_class(adapter_name)
-        if not adapter_class:
-            logger.debug(f"Adapter '{adapter_name}' not registered — skipping outbound reply")
-            return
-
-        adapter = adapter_class({})
-        req = AdapterRequest(capability=capability, parameters=params_fn())
-        await adapter.execute(req)
-    except Exception as e:
-        logger.warning(f"Failed to send reply via {channel_type}: {e}")
+    delivery = await channel_outbound.send_text(
+        channel_type, inbound.sender_id, text, inbound.platform_metadata
+    )
+    if not delivery.delivered:
+        logger.debug(f"Outbound {channel_type} reply not sent: {delivery.reason}")
 
 
 def _format_channel_response(
     channel_type: str, response: Any, inbound: InboundMessage
 ) -> Dict[str, Any]:
     """Format conversation response for the originating channel."""
-    text = response.get("text", "") if isinstance(response, dict) else _extract_reply_text(response)
+    text = response.get("text", "")
 
     if channel_type == "twilio":
         return Response(
-            content=f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{text}</Message></Response>',
+            content=f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{xml_escape(text)}</Message></Response>',
             media_type="application/xml",
         )
 

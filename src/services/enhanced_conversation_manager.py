@@ -1486,6 +1486,19 @@ Response (just the sentence, no quotes):"""
                        "ask me again once the card says it's done.")
         return answer
 
+    @staticmethod
+    def _created_entity(tool_name: str, result) -> bool:
+        """A successful create: calls after it in the same batch were written
+        before its id existed (1 Oct matrix: schedule_workflow after
+        create_workflow failed on 5 of 5 Vertex write turns)."""
+        return bool(result.success and tool_name.startswith(("create_", "instantiate_")))
+
+    @staticmethod
+    def _held_after_create_note(held: List[str]) -> str:
+        steps = ", ".join(name.replace("_", " ") for name in held)
+        return (f"\n\nI held back the next step(s) ({steps}) because they depend on what I just created — "
+                "ask me again and I'll do them with it.")
+
     async def _harvest_finished_jobs(self, session) -> None:
         """Fold background jobs that finished since the last turn into the session (T5).
 
@@ -1496,6 +1509,7 @@ Response (just the sentence, no quotes):"""
         from sqlalchemy.orm.attributes import flag_modified
         from services import conversation_jobs
 
+        self._turn_harvested_workflow = None
         if session is None:
             return
         try:
@@ -1519,6 +1533,11 @@ Response (just the sentence, no quotes):"""
                     v5 = (session.context or {}).setdefault("v5_parameters", {})
                     v5["workflow_id"] = entity["id"]
                     v5["workflow_name"] = entity.get("label")
+                    self._turn_harvested_workflow = {
+                        "id": entity["id"],
+                        "name": entity.get("label") or "Workflow",
+                        "edit_url": f"/workflows/{entity['id']}/edit",
+                    }
             self._register_entity(session, entity_type="job", entity_id=job["job_id"],
                                   label=job["tool_name"], summary=f"{job['status']}: {meaning.get('summary', '')}")
         flag_modified(session, "context")
@@ -2214,6 +2233,8 @@ Response (just the sentence, no quotes):"""
         file_id: str = None,
         user_preferences: dict = None,
         message_config: Optional[Dict[str, Any]] = None,
+        channel_type: str = "web",
+        external_message_id: Optional[str] = None,
     ) -> "AsyncGenerator[Dict[str, Any], None]":
         """One v5 conversation turn, traced end to end (spec §7.3 R1, R8).
 
@@ -2225,6 +2246,8 @@ Response (just the sentence, no quotes):"""
         """
         # A Confirm/Cancel button names the proposal it was shown for (T4b).
         self._turn_proposal_id = (message_config or {}).get("proposal_id")
+        # Where the user message arrived (channel webhook, MCP); stored on it.
+        self._turn_channel = {"channel_type": channel_type, "external_message_id": external_message_id}
         from core.config import get_settings
         from llm.tier_resolver import get_environment_default_provider
         from services.conversation_turn import TurnTrace
@@ -2306,7 +2329,7 @@ Response (just the sentence, no quotes):"""
         # A session is only ever continued by its owner: another user's id
         # gets the same answer as a session that does not exist.
         if not session or str(session.user_id) != str(user_id):
-            yield {"event": "error", "data": trace.error_data(f"Session {session_id} not found")}
+            yield {"event": "error", "data": trace.error_data(f"Session {session_id} not found", code="session_not_found")}
             return
         await self._harvest_finished_jobs(session)
 
@@ -2323,6 +2346,7 @@ Response (just the sentence, no quotes):"""
             role="user",
             content=content,
             message_config=msg_config,
+            **(getattr(self, "_turn_channel", None) or {}),
         )
 
         # Add current message to history for this call.
@@ -2636,6 +2660,7 @@ Response (just the sentence, no quotes):"""
             tool_results = []
             job_started_result = None
             job_held_back = 0
+            held_after_create: List[str] = []
             ui_blocks: List[Dict[str, Any]] = []  # Typed UI blocks emitted after tool execution
 
             # First check for proper tool calls
@@ -2769,6 +2794,11 @@ Response (just the sentence, no quotes):"""
                         job_started_result = result
                         job_held_back = len(tool_calls_to_execute) - i - 1
                         break
+                    if self._created_entity(tool_call.name, result) and i < len(tool_calls_to_execute) - 1:
+                        # Later calls were written before this object existed and would
+                        # act on a guessed or previous id: hold them back.
+                        held_after_create = [tc.name for tc in tool_calls_to_execute[i + 1:]]
+                        break
 
                 # =====================================================================
                 # Emit typed UI blocks (Phase 1). Blocks LINK to canonical pages;
@@ -2791,7 +2821,8 @@ Response (just the sentence, no quotes):"""
                 synthesis_messages = list(messages)
                 synthesis_messages.append({
                     "role": "assistant", "content": "",
-                    "tool_calls": [{"name": tc.name, "arguments": tc.arguments} for tc in tool_calls_to_execute]
+                    "tool_calls": [{"name": tc.name, "arguments": tc.arguments}
+                                   for tc in tool_calls_to_execute[:len(tool_results)]]
                 })
                 for result in tool_results:
                     synthesis_messages.append({
@@ -2846,6 +2877,11 @@ Response (just the sentence, no quotes):"""
                         yield {"event": "text_delta", "data": {"text": summary}}
                 trace.stages["synthesis"] = int((_time.perf_counter() - synthesis_started) * 1000)
 
+                if held_after_create:
+                    note = self._held_after_create_note(held_after_create)
+                    accumulated_text += note
+                    if stream:
+                        yield {"event": "text_delta", "data": {"text": note}}
                 response_content = self._with_degraded_note(accumulated_text, trace)
                 if stream and response_content != accumulated_text:
                     yield {"event": "text_delta", "data": {"text": response_content[len(accumulated_text):]}}
@@ -2928,18 +2964,10 @@ Response (just the sentence, no quotes):"""
                         logger.info(f"[v5 created_workflow] Found workflow from tool_results: {created_workflow_info}")
                         break
 
-            # Method 2: Fall back to session context if tool_results didn't have it
-            # (never on a proposal turn: nothing was created).
+            # Method 2: a background job that created a workflow finished since the
+            # last turn. Only this turn's: an older creation is not news.
             if not created_workflow_info and self._pending_proposal is None:
-                v5_params = session.context.get('v5_parameters', {})
-                logger.info(f"[v5 created_workflow] Checking session context: {v5_params}")
-                if v5_params.get('workflow_id'):
-                    created_workflow_info = {
-                        "id": v5_params.get('workflow_id'),
-                        "name": v5_params.get('workflow_name') or v5_params.get('last_created_workflow', 'Workflow'),
-                        "edit_url": f"/workflows/{v5_params.get('workflow_id')}/edit"
-                    }
-                    logger.info(f"[v5 created_workflow] Found workflow from session context: {created_workflow_info}")
+                created_workflow_info = getattr(self, "_turn_harvested_workflow", None)
 
             response_data = {
                 "content": response_content,
