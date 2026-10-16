@@ -904,8 +904,19 @@ class WorkflowTemplateService:
         workflow_def = self._fix_workflow_positions(workflow_definition)
 
         # Effective values = declared defaults overlaid with the provided values.
+        # Templates declare parameters two ways: a list of {name|id, default}
+        # or a dict keyed by name ({"boardSize": {"default": ...}}). Iterating
+        # the dict form as a list crashed instantiation of every such template.
+        declared = workflow_def.get("parameters") or []
+        if isinstance(declared, dict):
+            declared = [
+                dict(spec, name=key) if isinstance(spec, dict) else {"name": key}
+                for key, spec in declared.items()
+            ]
         effective: Dict[str, Any] = {}
-        for param in (workflow_def.get("parameters") or []):
+        for param in declared:
+            if not isinstance(param, dict):
+                continue
             key = param.get("name") or param.get("id")
             if key and param.get("default") is not None:
                 effective[key] = param["default"]

@@ -414,6 +414,53 @@ async def get_workflow(
     return WorkflowResponse.model_validate(workflow)
 
 
+# Metadata a duplicate starts fresh on: its own lifecycle status, and nothing
+# that would make the copy run on someone else's schedule or trigger.
+_DUPLICATE_RESET_METADATA = {"status", "schedule", "schedules", "trigger", "triggers"}
+
+
+@router.post("/{workflow_id}/duplicate", response_model=WorkflowResponse, status_code=201)
+async def duplicate_workflow(
+    workflow_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_active_user),
+):
+    """Copy a workflow into the caller's workspace as a draft.
+
+    The copy keeps the definition, description and tags; it carries no
+    schedule or trigger, so it runs only when someone runs it.
+    """
+    result = await db.execute(
+        select(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    assert_tenant_access(source, current_user, resource_name="Workflow")
+
+    tenant_id = resolve_caller_tenant(current_user) or source.tenant_id
+    metadata = {
+        k: v for k, v in (source.workflow_metadata or {}).items()
+        if k not in _DUPLICATE_RESET_METADATA
+    }
+    metadata["status"] = "draft"
+    metadata["duplicated_from"] = str(source.id)
+    copy = WorkflowDefinition(
+        name=f"Copy of {source.name}"[:256],
+        description=source.description,
+        definition=source.definition,
+        active=True,
+        tags=list(source.tags or []),
+        tenant_id=tenant_id,
+        workflow_metadata=metadata,
+        autonomy_level=source.autonomy_level,
+    )
+    db.add(copy)
+    await db.commit()
+    await db.refresh(copy)
+    return WorkflowResponse.model_validate(copy)
+
+
 @router.get("/{workflow_id}/status")
 async def get_workflow_status(
     workflow_id: str,

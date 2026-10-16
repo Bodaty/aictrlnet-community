@@ -397,7 +397,7 @@ async def seed_adapters_REMOVED(session):
     return created_count
 
 
-async def seed_workflow_templates(session):
+async def seed_workflow_templates(session, failures=None):
     """Create default workflow templates for Community."""
     # Templates are loaded from JSON files at startup via initialize_system_templates()
     # as per WORKFLOW_TEMPLATE_SYSTEM_SPEC.md architecture
@@ -423,6 +423,8 @@ async def seed_workflow_templates(session):
         # Don't fail the entire seeding if templates can't load
         # They'll be loaded on app startup as fallback
         logger.warning("Templates will be loaded on application startup instead")
+        if failures is not None:
+            failures.record("workflow templates", e)
         return 0
 
 
@@ -732,6 +734,11 @@ async def seed_resource_pool_configs(session):
 async def main():
     """Run all seed functions."""
     logger.info("🌱 Starting Community Edition seed data loading...")
+    from seed_profile import SeedFailures, is_minimal
+    minimal = is_minimal()
+    failures = SeedFailures("community")
+    if minimal:
+        logger.info("Minimal profile: no dev/test users, API keys or test subscriptions")
     
     # Create database engine and session
     engine = create_async_engine(DATABASE_URL)
@@ -741,24 +748,29 @@ async def main():
         # Bypass Row-Level Security for seeding operations
         await session.execute(text("SET app.is_admin = 'true'"))
         try:
-            # Seed users
-            user_count = await seed_users(session)
-            logger.info(f"✅ Created {user_count} users")
+            # Seed users (dev/test logins with published passwords — never under
+            # the minimal profile; an administrator is created at install instead)
+            if not minimal:
+                user_count = await seed_users(session)
+                logger.info(f"✅ Created {user_count} users")
             
             # Seed adapters using the adapter seeding module (matching Business/Enterprise pattern)
             logger.info("🔌 Seeding adapters for Community Edition...")
             from seed_adapters import seed_adapters_for_edition
             adapter_results = await seed_adapters_for_edition("community")
             adapter_count = adapter_results.get("seeded_to_db", 0)
+            if adapter_results.get("errors"):
+                failures.record("adapters", adapter_results["errors"])
             logger.info(f"✅ Created {adapter_count} adapters")
             
             # Seed workflow templates
-            template_count = await seed_workflow_templates(session)
+            template_count = await seed_workflow_templates(session, failures)
             logger.info(f"✅ Created {template_count} workflow templates")
             
-            # Seed API keys
-            key_count = await seed_api_keys(session)
-            logger.info(f"✅ Created {key_count} API keys")
+            # Seed API keys (a fixed development key for admin@ — demo only)
+            if not minimal:
+                key_count = await seed_api_keys(session)
+                logger.info(f"✅ Created {key_count} API keys")
             
             # Seed subscription plans
             plan_count = await seed_subscription_plans(session)
@@ -767,9 +779,10 @@ async def main():
             # Ensure seeded test users have a real Subscription matching their edition
             # (otherwise /subscription/current falls back to community-free and tier
             # filters treat dev/admin as Community even if user.edition says otherwise).
-            from seed_test_user_subscriptions import ensure_test_user_subscriptions
-            sub_changes = await ensure_test_user_subscriptions(session)
-            logger.info(f"✅ Synced {sub_changes} test-user subscription(s)")
+            if not minimal:
+                from seed_test_user_subscriptions import ensure_test_user_subscriptions
+                sub_changes = await ensure_test_user_subscriptions(session)
+                logger.info(f"✅ Synced {sub_changes} test-user subscription(s)")
 
             # Seed usage limits
             limit_count = await seed_usage_limits(session)
@@ -784,6 +797,7 @@ async def main():
             logger.info(f"✅ Created {pool_count} resource pools")
             
             logger.info("🎉 Seed data loading complete!")
+            failures.exit_if_strict()
             
         except Exception as e:
             logger.error(f"❌ Error during seeding: {e}")

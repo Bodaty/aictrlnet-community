@@ -2,7 +2,7 @@
 
 from typing import Optional, Dict, Any
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AliasChoices, Field, PostgresDsn, computed_field
+from pydantic import AliasChoices, Field, PostgresDsn, computed_field, field_validator
 from functools import lru_cache
 from pathlib import Path
 import os
@@ -274,7 +274,24 @@ class Settings(BaseSettings):
     ENCRYPTION_KEY: Optional[str] = Field(default=None, env="ENCRYPTION_KEY")
     VAULT_URL: Optional[str] = Field(default=None, env="VAULT_URL")
     VAULT_TOKEN: Optional[str] = Field(default=None, env="VAULT_TOKEN")
-    
+
+    # What the seed scripts write. 'demo' (the default when unset) is today's
+    # behaviour: dev/test users and demonstration rows. 'minimal' seeds only
+    # what the product needs to run — no test users, no demonstration rows —
+    # and is the only profile PHI mode accepts. Read by scripts/seed_profile.py.
+    AICTRLNET_SEED_PROFILE: Optional[str] = Field(default=None, env="AICTRLNET_SEED_PROFILE")
+
+    @field_validator("AICTRLNET_SEED_PROFILE", mode="before")
+    @classmethod
+    def _normalise_seed_profile(cls, value):
+        # pydantic-settings 2.1.0 (pinned by Business/Enterprise) predates
+        # env_ignore_empty, so a compose `${VAR:-}` arrives here as ''. Treat
+        # that as unset rather than as a value.
+        if value is None:
+            return None
+        value = str(value).strip().lower()
+        return value or None
+
     # Performance
     # PER-WORKER pool size. With uvicorn `--workers 2` x 3 editions = 6 worker
     # processes, each with pool_size=20 + max_overflow=20 = 40 connections max,
@@ -423,6 +440,17 @@ def _resolved(path: str) -> Path:
     return Path(path or "").expanduser().resolve()
 
 
+# Deployment-specific PHI checks contributed by higher editions. Each takes the
+# settings object and returns a list of problems; validate_phi_mode reports them
+# with its own, all at once.
+_EXTRA_PHI_CHECKS = []
+
+
+def register_phi_check(check) -> None:
+    if check not in _EXTRA_PHI_CHECKS:
+        _EXTRA_PHI_CHECKS.append(check)
+
+
 def validate_phi_mode(settings: "Settings") -> None:
     """Refuse to boot a PHI deployment on insecure defaults.
 
@@ -445,6 +473,8 @@ def validate_phi_mode(settings: "Settings") -> None:
       token would authenticate anyone to a system holding PHI.
     - ENVIRONMENT must name a real deployment, which also arms the SECRET_KEY
       guard above on the same box.
+    - AICTRLNET_SEED_PROFILE must be 'minimal', so no test users with
+      published passwords or demonstration rows are seeded.
 
     Every problem is reported at once. Failing on the first would make an
     operator commissioning a practice machine rediscover the next one on the
@@ -578,6 +608,19 @@ def validate_phi_mode(settings: "Settings") -> None:
             f"environment. Required: one of "
             f"{', '.join(sorted(_DEPLOY_ENVIRONMENTS))}."
         )
+
+    # Seeding. The seeds run before the app starts, so a startup script must
+    # call this guard before touching the database; demo data on a PHI system
+    # is test logins with published passwords and fabricated rows.
+    seed_profile = getattr(settings, "AICTRLNET_SEED_PROFILE", None)
+    if seed_profile != "minimal":
+        problems.append(
+            f"AICTRLNET_SEED_PROFILE={seed_profile!r} would seed demonstration "
+            f"users and data. Required: 'minimal'."
+        )
+
+    for check in _EXTRA_PHI_CHECKS:
+        problems.extend(check(settings) or [])
 
     # R-04: model providers that may receive PHI. See core/phi_egress.py.
     from core.phi_egress import phi_boot_problems
