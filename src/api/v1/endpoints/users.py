@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from core.database import get_db
 from core.security import get_current_active_user, get_password_hash
 from core.dependencies import get_current_user_safe, require_superuser
+from core.tenant_context import get_current_tenant_id
 from core.enforcement_dependency import enforce_user_limit
 from models.user import User
 from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus
@@ -653,8 +654,11 @@ async def create_user(
         hashed_password=get_password_hash(user_data.password),
         is_active=user_data.is_active if hasattr(user_data, 'is_active') else True,
         is_superuser=user_data.is_superuser if hasattr(user_data, 'is_superuser') else False,
-        edition=user_data.edition if hasattr(user_data, 'edition') else 'community'
-        # tenant_id is NULL for Community/Business (single-tenant), will be set by Enterprise
+        edition=user_data.edition if hasattr(user_data, 'edition') else 'community',
+        # The creating request's tenant ("default-tenant" when self-hosted).
+        # NULL was refused by row-level security on `users`, so this endpoint
+        # answered 500 on every edition.
+        tenant_id=get_current_tenant_id(),
     )
     
     db.add(user)
