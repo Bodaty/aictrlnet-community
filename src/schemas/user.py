@@ -1,7 +1,7 @@
 """User schemas for request/response validation."""
 
 import re
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 from datetime import datetime
 
@@ -29,8 +29,15 @@ class UserBase(BaseModel):
         return v
 
 
+EditionValue = Literal["community", "business", "enterprise"]
+
+
 class UserCreate(UserBase):
     """Schema for creating a user."""
+    edition: Optional[EditionValue] = Field(
+        default=None,
+        description="Defaults to the creating administrator's edition, and may not exceed it",
+    )
     password: str = Field(..., min_length=8, max_length=128, description="User password")
     is_superuser: bool = False
 
@@ -41,7 +48,7 @@ class UserUpdate(BaseModel):
     username: Optional[str] = Field(None, max_length=50, pattern=r'^[a-zA-Z0-9_\-]+$')
     full_name: Optional[str] = Field(None, max_length=100)
     password: Optional[str] = Field(None, min_length=8, max_length=128)
-    edition: Optional[str] = None
+    edition: Optional[EditionValue] = None
     is_active: Optional[bool] = None
     is_superuser: Optional[bool] = None
 

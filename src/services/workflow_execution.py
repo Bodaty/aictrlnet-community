@@ -202,10 +202,11 @@ class WorkflowExecutionService:
         This runs as an asyncio.create_task background task, so it must use
         its own session — the caller's session may already be mid-operation.
 
-        tenant_id, if provided, is written to the PostgreSQL session variable
-        ``app.current_tenant_id`` so Row-Level Security policies can evaluate
-        correctly against the execution's actual tenant. Omitting it leaves
-        the engine-level DEFAULT_TENANT_ID in effect, which only exposes
+        tenant_id, if provided, is bound to the session so
+        ``app.current_tenant_id`` is set at every transaction begin and
+        Row-Level Security evaluates against the execution's actual tenant,
+        including after the nodes commit or roll back. Omitting it leaves the
+        engine-level DEFAULT_TENANT_ID in effect, which only exposes
         default-tenant rows.
         """
         session_maker = get_session_maker()
@@ -219,12 +220,12 @@ class WorkflowExecutionService:
                 # Scope this session to the execution's tenant for RLS. Must
                 # happen before any table query below — otherwise the
                 # workflow lookup is filtered out by the default-tenant
-                # policy.
+                # policy. A one-shot set_config would be lost at the first
+                # commit or rollback a node makes; a bound session is
+                # re-applied at every transaction begin.
                 if tenant_id:
-                    from sqlalchemy import text as _sql_text
-                    await db.execute(_sql_text(
-                        "SELECT set_config('app.current_tenant_id', :tid, false)"
-                    ), {"tid": tenant_id})
+                    from core.database import bind_session_tenant
+                    bind_session_tenant(db, tenant_id)
                 # Get execution with all node executions
                 result = await db.execute(
                     select(WorkflowExecution)

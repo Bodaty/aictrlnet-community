@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from core.database import get_db
 from core.security import get_current_active_user, get_password_hash
-from core.dependencies import get_current_user_safe, require_superuser
+from core.dependencies import EDITION_RANK, get_current_user_safe, require_superuser
 from core.tenant_context import get_current_tenant_id
 from core.enforcement_dependency import enforce_user_limit
 from models.user import User
@@ -53,6 +53,28 @@ async def _get_edition_from_subscription(db: AsyncSession, user_id: str) -> Opti
         return None
 
 
+async def effective_edition(db: AsyncSession, user_id: str, stored_edition: Optional[str]) -> str:
+    """The edition a user is served as: their active subscription's plan, else
+    their own `edition` (what /users/me reports and HitLai gates features on)."""
+    return await _get_edition_from_subscription(db, user_id) or stored_edition or "community"
+
+
+async def _granted_edition(db: AsyncSession, creator, requested: Optional[str]) -> str:
+    """The edition an administrator may give a login: their own by default, and
+    never above it."""
+    creator_edition = await effective_edition(
+        db, str(get_safe_user_id(creator)), get_safe_attr(creator, "edition")
+    )
+    if requested is None:
+        return creator_edition
+    if EDITION_RANK.get(requested, 0) > EDITION_RANK.get(creator_edition, 0):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Cannot grant the {requested} edition: your own is {creator_edition}",
+        )
+    return requested
+
+
 @router.get("/me")
 async def get_current_user(
     current_user = Depends(get_current_active_user),
@@ -62,9 +84,7 @@ async def get_current_user(
     # Handle both User object and dict
     if hasattr(current_user, 'id'):
         # Derive edition from active subscription (not the static user field)
-        edition = await _get_edition_from_subscription(db, str(current_user.id))
-        if not edition:
-            edition = current_user.edition or "community"
+        edition = await effective_edition(db, str(current_user.id), current_user.edition)
 
         # Get trial status
         trial_active = False
@@ -645,7 +665,9 @@ async def create_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this email already exists"
         )
-    
+
+    edition = await _granted_edition(db, current_user, user_data.edition)
+
     # Create new user
     user = User(
         email=user_data.email,
@@ -654,7 +676,7 @@ async def create_user(
         hashed_password=get_password_hash(user_data.password),
         is_active=user_data.is_active if hasattr(user_data, 'is_active') else True,
         is_superuser=user_data.is_superuser if hasattr(user_data, 'is_superuser') else False,
-        edition=user_data.edition if hasattr(user_data, 'edition') else 'community',
+        edition=edition,
         # The creating request's tenant ("default-tenant" when self-hosted).
         # NULL was refused by row-level security on `users`, so this endpoint
         # answered 500 on every edition.
@@ -705,6 +727,11 @@ async def update_user(
     
     # Update fields
     update_data = user_data.dict(exclude_unset=True)
+
+    # Only a change of edition is capped: an admin may still save other
+    # fields of a user whose edition is above their own.
+    if update_data.get("edition") is not None and update_data["edition"] != user.edition:
+        update_data["edition"] = await _granted_edition(db, current_user, update_data["edition"])
     
     if "password" in update_data:
         update_data["hashed_password"] = get_password_hash(update_data.pop("password"))

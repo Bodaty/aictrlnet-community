@@ -9,6 +9,14 @@ from .tenant_context import get_current_tenant_id
 from .user_utils import get_safe_attr, get_safe_user_id
 
 
+# Edition order for "at least this edition" checks.
+EDITION_RANK = {
+    "community": 0,
+    "business": 1,
+    "enterprise": 2,
+}
+
+
 async def get_current_user_safe(
     current_user = Depends(get_current_user)
 ) -> Dict[str, Any]:
@@ -62,11 +70,7 @@ class EditionChecker:
             self.required_editions = [required_editions.lower()]
         else:
             self.required_editions = [ed.lower() for ed in required_editions]
-        self.edition_hierarchy = {
-            "community": 0,
-            "business": 1,
-            "enterprise": 2,
-        }
+        self.edition_hierarchy = EDITION_RANK
     
     async def __call__(
         self,

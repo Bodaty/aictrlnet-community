@@ -192,18 +192,13 @@ class NodeExecutor:
         if not execution_id:
             return
         try:
-            from core.database import get_session_maker
+            from core.database import bind_session_tenant, get_session_maker
             from models.workflow_execution import NodeExecution
-            from sqlalchemy import select, text as _sql_text
+            from sqlalchemy import select
             session_maker = get_session_maker()
             async with session_maker() as db:
                 if tenant_id:
-                    await db.execute(
-                        _sql_text(
-                            "SELECT set_config('app.current_tenant_id', :tid, false)"
-                        ),
-                        {"tid": tenant_id},
-                    )
+                    bind_session_tenant(db, tenant_id)
                 row = (await db.execute(
                     select(NodeExecution).where(
                         NodeExecution.execution_id == execution_id,
