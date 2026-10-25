@@ -715,6 +715,25 @@ class DataQualityService:
                 return current_depth
             return max(self._get_max_depth(item, current_depth + 1) for item in obj)
     
+    async def assess_dimensions(
+        self, data: Any, dimensions: List[str], edition: str
+    ) -> tuple[Dict[str, float], List[Dict], List[Dict]]:
+        """Score one piece of data on the given dimensions with the checks
+        /assess runs, without recording an assessment: (scores, issues,
+        suggestions)."""
+        prepared = self._prepare_data(data)
+        scores: Dict[str, float] = {}
+        issues: List[Dict] = []
+        suggestions: List[Dict] = []
+        for dimension in dimensions:
+            score, dimension_issues, dimension_suggestions = await self._assess_dimension(
+                prepared, dimension, edition
+            )
+            scores[dimension] = 0.0 if np.isnan(score) else float(score)
+            issues.extend(dimension_issues)
+            suggestions.extend(dimension_suggestions)
+        return scores, issues, suggestions
+
     def _prepare_data(self, data: Any) -> Any:
         """Prepare data for assessment"""
         if isinstance(data, str):
