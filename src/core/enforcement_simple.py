@@ -437,7 +437,7 @@ class LicenseEnforcer:
         
         # In STRICT mode, raise exception if limit exceeded
         if self.mode == EnforcementMode.STRICT and would_exceed:
-            raise LimitExceededException(limit_type, current, limit)
+            raise LimitExceededException(limit_type, current, limit, edition=edition.value)
         
         return result
     
