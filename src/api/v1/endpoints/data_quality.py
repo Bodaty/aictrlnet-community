@@ -9,7 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db
+from core.database import get_db, session_tenant
 
 logger = logging.getLogger(__name__)
 from core.security import get_current_active_user
@@ -91,13 +91,7 @@ async def assess_data_quality(
     except (ValueError, TypeError):
         # Use default UUID if user_id is invalid
         user_id = UUID('00000000-0000-0000-0000-000000000000')
-    # Handle non-UUID tenant_id
-    tenant_id_str = user_dict.get('tenant_id', '00000000-0000-0000-0000-000000000000')
-    try:
-        tenant_id = UUID(tenant_id_str)
-    except ValueError:
-        # Use default UUID if tenant_id is invalid
-        tenant_id = UUID('00000000-0000-0000-0000-000000000000')
+    tenant_id = session_tenant(db)
     edition = user_dict.get('edition', 'community')
     
     try:
@@ -119,7 +113,6 @@ async def get_assessment(
     db: AsyncSession = Depends(get_db)
 ):
     """Get a specific quality assessment by ID"""
-    user_dict = user_to_dict(current_user)
     from models.data_quality import DataQualityAssessment
     from sqlalchemy import select
     
@@ -132,7 +125,7 @@ async def get_assessment(
         raise HTTPException(status_code=404, detail="Assessment not found")
     
     # Check access
-    if str(assessment.tenant_id) != user_dict.get('tenant_id'):
+    if assessment.tenant_id != session_tenant(db):
         raise HTTPException(status_code=403, detail="Access denied")
     
     return AssessmentResponse(
@@ -155,16 +148,9 @@ async def get_quality_dashboard(
     db: AsyncSession = Depends(get_db)
 ):
     """Get quality metrics for dashboard"""
-    user_dict = user_to_dict(current_user)
     service = DataQualityService(db)
     
-    # Handle non-UUID tenant_id
-    tenant_id_str = user_dict.get('tenant_id', '00000000-0000-0000-0000-000000000000')
-    try:
-        tenant_id = UUID(tenant_id_str)
-    except ValueError:
-        # Use default UUID if tenant_id is invalid
-        tenant_id = UUID('00000000-0000-0000-0000-000000000000')
+    tenant_id = session_tenant(db)
     
     metrics = await service.get_quality_metrics(
         tenant_id=tenant_id,
@@ -182,16 +168,9 @@ async def get_quality_rules(
     db: AsyncSession = Depends(get_db)
 ):
     """Get quality rules (system and custom)"""
-    user_dict = user_to_dict(current_user)
     service = DataQualityService(db)
     
-    # Handle non-UUID tenant_id
-    tenant_id_str = user_dict.get('tenant_id', '00000000-0000-0000-0000-000000000000')
-    try:
-        tenant_id = UUID(tenant_id_str)
-    except ValueError:
-        # Use default UUID if tenant_id is invalid
-        tenant_id = UUID('00000000-0000-0000-0000-000000000000')
+    tenant_id = session_tenant(db)
     
     rules = await service.get_rules(
         tenant_id=tenant_id,
@@ -218,13 +197,7 @@ async def create_quality_rule(
     except (ValueError, TypeError):
         # Use default UUID if user_id is invalid
         user_id = UUID('00000000-0000-0000-0000-000000000000')
-    # Handle non-UUID tenant_id
-    tenant_id_str = user_dict.get('tenant_id', '00000000-0000-0000-0000-000000000000')
-    try:
-        tenant_id = UUID(tenant_id_str)
-    except ValueError:
-        # Use default UUID if tenant_id is invalid
-        tenant_id = UUID('00000000-0000-0000-0000-000000000000')
+    tenant_id = session_tenant(db)
     edition = user_dict.get('edition', 'community')
     
     # Check if dimension is available in edition
@@ -256,13 +229,7 @@ async def get_quality_usage(
     user_dict = user_to_dict(current_user)
     service = DataQualityService(db)
 
-    # Handle non-UUID tenant_id
-    tenant_id_str = user_dict.get('tenant_id', '00000000-0000-0000-0000-000000000000')
-    try:
-        tenant_id = UUID(tenant_id_str)
-    except (ValueError, TypeError):
-        # Use default UUID if tenant_id is invalid
-        tenant_id = UUID('00000000-0000-0000-0000-000000000000')
+    tenant_id = session_tenant(db)
     edition = user_dict.get('edition', 'community')
 
     # Get usage statistics

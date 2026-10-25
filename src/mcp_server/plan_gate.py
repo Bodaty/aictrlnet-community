@@ -373,81 +373,68 @@ class PlanService:
             self._cache.pop("__default__", None)
 
     async def _resolve(self, tenant_id: Optional[str]) -> str:
-        # Import locally to avoid import-order issues with the models
-        # layer (and to keep this module importable in contexts where
-        # the DB schema isn't loaded yet — e.g. unit tests).
-        try:
-            from models.subscription import (  # type: ignore
-                Subscription,
-                SubscriptionPlan,
-                SubscriptionStatus,
-            )
-        except ImportError:
-            logger.debug("subscription models unavailable; defaulting to community")
-            return "community"
-
         if not tenant_id:
             return "community"
-
         try:
-            # Find an active/trialing/past_due subscription for the tenant.
-            # PAST_DUE is a grace period — Wave 7 A4 bounds it to
-            # MCP_PAST_DUE_GRACE_DAYS (default 3) past current_period_end.
-            import os
-            from datetime import datetime, timedelta, timezone
-
-            # A tenant may have multiple active subscriptions when several users share
-            # the tenant_id (common in self-hosted "default-tenant" deployments where
-            # each seeded user ends up with their own row). Pull all active rows and
-            # pick the highest tier — any user paying for a higher tier should give
-            # the tenant access to that tier's tools.
-            stmt = (
-                select(
-                    SubscriptionPlan.edition,
-                    Subscription.status,
-                    Subscription.current_period_end,
-                )
-                .join(Subscription, Subscription.plan_id == SubscriptionPlan.id)
-                .where(
-                    Subscription.tenant_id == tenant_id,
-                    Subscription.status.in_([
-                        SubscriptionStatus.ACTIVE,
-                        SubscriptionStatus.TRIALING,
-                        SubscriptionStatus.PAST_DUE,
-                    ]),
-                )
-            )
-            rows = (await self.db.execute(stmt)).all()
-            best_tier: Optional[str] = None
-            best_rank = -1
-            grace_days = int(os.environ.get("MCP_PAST_DUE_GRACE_DAYS", "3"))
-            now = datetime.now(timezone.utc)
-            for edition, status, period_end in rows:
-                if not edition:
-                    continue
-                # A4: PAST_DUE beyond grace doesn't count toward tier
-                if status == SubscriptionStatus.PAST_DUE and period_end is not None:
-                    cutoff = period_end + timedelta(days=grace_days)
-                    if cutoff.tzinfo is None:
-                        cutoff = cutoff.replace(tzinfo=timezone.utc)
-                    if now > cutoff:
-                        logger.info(
-                            "Tenant %s PAST_DUE beyond %d-day grace (period_end=%s) — "
-                            "ignoring this subscription for tier resolution",
-                            tenant_id, grace_days, period_end,
-                        )
-                        continue
-                tier = normalize_edition(edition)
-                rank = _TIER_RANK.get(tier, 0)
-                if rank > best_rank:
-                    best_rank = rank
-                    best_tier = tier
-            if best_tier:
-                return best_tier
+            plans = await active_tenant_plans(self.db, tenant_id)
         except Exception as e:  # defensive — never block MCP on plan-lookup failure
             logger.warning("plan lookup failed for tenant=%s: %s", tenant_id, e)
+            return "community"
+        # A tenant may have multiple active subscriptions when several users share
+        # the tenant_id (common in self-hosted "default-tenant" deployments where
+        # each seeded user ends up with their own row). Pick the highest tier —
+        # any user paying for a higher tier should give the tenant access to that
+        # tier's tools.
+        tiers = [normalize_edition(edition) for _, edition in plans if edition]
+        return max(tiers, key=_rank) if tiers else "community"
 
-        return "community"
+
+async def active_tenant_plans(db: AsyncSession, tenant_id: str) -> list[tuple[str, Optional[str]]]:
+    """``(plan name, plan edition)`` for each subscription that currently
+    counts for the tenant: active, trialing, or past due within the grace
+    period (Wave 7 A4 bounds it to MCP_PAST_DUE_GRACE_DAYS, default 3, past
+    current_period_end).
+    """
+    import os
+    from datetime import datetime, timedelta, timezone
+
+    from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus
+
+    stmt = (
+        select(
+            SubscriptionPlan.name,
+            SubscriptionPlan.edition,
+            Subscription.status,
+            Subscription.current_period_end,
+        )
+        .join(Subscription, Subscription.plan_id == SubscriptionPlan.id)
+        .where(
+            Subscription.tenant_id == tenant_id,
+            Subscription.status.in_([
+                SubscriptionStatus.ACTIVE,
+                SubscriptionStatus.TRIALING,
+                SubscriptionStatus.PAST_DUE,
+            ]),
+        )
+    )
+    rows = (await db.execute(stmt)).all()
+    grace_days = int(os.environ.get("MCP_PAST_DUE_GRACE_DAYS", "3"))
+    now = datetime.now(timezone.utc)
+    plans = []
+    for name, edition, status, period_end in rows:
+        if status == SubscriptionStatus.PAST_DUE and period_end is not None:
+            cutoff = period_end + timedelta(days=grace_days)
+            if cutoff.tzinfo is None:
+                cutoff = cutoff.replace(tzinfo=timezone.utc)
+            if now > cutoff:
+                logger.info(
+                    "Tenant %s PAST_DUE beyond %d-day grace (period_end=%s) — "
+                    "ignoring this subscription for tier resolution",
+                    tenant_id, grace_days, period_end,
+                )
+                continue
+        plans.append((name, edition))
+    return plans
 
 
 # ---------------------------------------------------------------------------

@@ -63,7 +63,7 @@ class DataQualityService:
         self,
         request: AssessmentRequest,
         user_id: UUID,
-        tenant_id: UUID,
+        tenant_id: str,
         edition: str
     ) -> AssessmentResponse:
         """Assess data quality across available dimensions"""
@@ -761,7 +761,7 @@ class DataQualityService:
         }
         return limits.get(edition)
     
-    async def _get_current_usage(self, tenant_id: UUID) -> int:
+    async def _get_current_usage(self, tenant_id: str) -> int:
         """Get current month's usage count"""
         start_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
@@ -782,7 +782,7 @@ class DataQualityService:
         self,
         rule_data: RuleCreate,
         user_id: UUID,
-        tenant_id: UUID,
+        tenant_id: str,
         edition: str
     ) -> RuleResponse:
         """Create a new quality rule"""
@@ -815,7 +815,7 @@ class DataQualityService:
     
     async def get_rules(
         self,
-        tenant_id: UUID,
+        tenant_id: str,
         dimension: Optional[str] = None,
         is_active: bool = True
     ) -> List[RuleResponse]:
@@ -840,7 +840,7 @@ class DataQualityService:
     @cache_result(prefix="quality_trends", expire=300)  # Cache for 5 minutes
     async def get_quality_metrics(
         self,
-        tenant_id: UUID,
+        tenant_id: str,
         time_range: int = 30  # days
     ) -> Dict[str, Any]:
         """Get quality metrics for dashboard"""

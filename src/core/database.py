@@ -22,6 +22,19 @@ logger = logging.getLogger(__name__)
 _engine = None
 _async_session_maker = None
 
+# Every connection starts with these RLS settings.
+# - app.current_tenant_id: a valid tenant context. On Cloud SQL the postgres
+#   user is NOT a true SUPERUSER, so FORCE ROW LEVEL SECURITY is enforced;
+#   get_db() overrides it per request.
+# - app.is_admin: a session-level 'false', so a transaction-local
+#   `SET LOCAL app.is_admin = 'true'` reverts to 'false' when its transaction
+#   ends. Without a session value it reverts to '', which the policies' ::boolean
+#   cast rejects, and every later RLS query on that pooled connection fails.
+_SESSION_DEFAULTS = {
+    "app.current_tenant_id": DEFAULT_TENANT_ID,
+    "app.is_admin": "false",
+}
+
 
 def get_engine():
     """Get or create the async engine."""
@@ -40,11 +53,7 @@ def get_engine():
                 echo=False,
                 future=True,
                 poolclass=NullPool,
-                connect_args={
-                    "server_settings": {
-                        "app.current_tenant_id": DEFAULT_TENANT_ID,
-                    }
-                },
+                connect_args={"server_settings": _SESSION_DEFAULTS},
             )
             return _engine
         _engine = create_async_engine(
@@ -66,16 +75,7 @@ def get_engine():
             pool_pre_ping=True,
             pool_recycle=300,
             pool_timeout=30,
-            connect_args={
-                "server_settings": {
-                    # Set default tenant for RLS on every new connection.
-                    # On Cloud SQL the postgres user is NOT a true SUPERUSER,
-                    # so FORCE ROW LEVEL SECURITY is enforced. This ensures
-                    # every connection starts with a valid tenant context.
-                    # get_db() overrides per-request when needed.
-                    "app.current_tenant_id": DEFAULT_TENANT_ID,
-                }
-            },
+            connect_args={"server_settings": _SESSION_DEFAULTS},
         )
     return _engine
 
@@ -91,6 +91,11 @@ def bind_session_tenant(session: AsyncSession, tenant_id: str) -> None:
     the default tenant. The binding is re-applied at every transaction begin.
     """
     session.info["tenant_id"] = tenant_id
+
+
+def session_tenant(session: AsyncSession) -> str:
+    """The tenant a session's rows belong to: the one RLS checks them against."""
+    return session.info.get("tenant_id") or get_current_tenant_id()
 
 
 @event.listens_for(Session, "after_begin")

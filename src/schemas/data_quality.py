@@ -203,7 +203,7 @@ class ProfileLearnRequest(BaseModel):
     """Request to learn quality profile from data"""
     training_data: List[Dict[str, Any]]
     quality_labels: Optional[List[float]] = None  # Known quality scores
-    profile_type: str = "ml_learned"
+    profile_type: str = "learned"
     target_dimensions: Optional[List[QualityDimension]] = None
 
 

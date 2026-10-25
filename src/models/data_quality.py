@@ -91,7 +91,7 @@ class DataQualityAssessment(Base):
     suggestions = Column(JSON)  # ML-generated suggestions
     data_profile = Column(JSON)  # Statistical profile
     edition = Column(String(20), nullable=False)
-    tenant_id = Column(PGUUID, index=True)
+    tenant_id = Column(String(100), index=True)
     user_id = Column(PGUUID)
     quality_metadata = Column('metadata', JSON)
     
@@ -117,7 +117,7 @@ class QualityRule(Base):
     is_active = Column(Boolean, default=True)
     is_system = Column(Boolean, default=False)
     created_by = Column(PGUUID)
-    tenant_id = Column(PGUUID, index=True)
+    tenant_id = Column(String(100), index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     quality_metadata = Column('metadata', JSON)
@@ -143,7 +143,7 @@ class DataLineage(Base):
     data_snapshot_after = Column(JSON)
     quality_impact = Column(JSON)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    tenant_id = Column(PGUUID)
+    tenant_id = Column(String(100))
     quality_metadata = Column('metadata', JSON)
     
     __table_args__ = (
@@ -168,7 +168,7 @@ class QualityProfile(Base):
     is_active = Column(Boolean, default=True)
     edition_required = Column(String(20), nullable=False, default="business")
     created_by = Column(PGUUID)
-    tenant_id = Column(PGUUID, index=True)
+    tenant_id = Column(String(100), index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     usage_count = Column(Integer, default=0)
@@ -193,7 +193,7 @@ class QualitySLA(Base):
     alert_threshold = Column(Float)
     escalation_rules = Column(JSON)
     is_active = Column(Boolean, default=True)
-    tenant_id = Column(PGUUID, index=True)
+    tenant_id = Column(String(100), index=True)
     created_by = Column(PGUUID)
     created_at = Column(DateTime, default=datetime.utcnow)
     quality_metadata = Column('metadata', JSON)
@@ -216,7 +216,7 @@ class QualityImprovement(Base):
     improvement_details = Column(JSON)
     implemented_by = Column(PGUUID)
     implemented_at = Column(DateTime, default=datetime.utcnow, index=True)
-    tenant_id = Column(PGUUID)
+    tenant_id = Column(String(100))
     quality_metadata = Column('metadata', JSON)
     
     # Relationships
@@ -233,7 +233,7 @@ class QualityUsageTracking(Base):
     __tablename__ = "quality_usage_tracking"
     
     id = Column(PGUUID, primary_key=True)
-    tenant_id = Column(PGUUID, nullable=False)
+    tenant_id = Column(String(100), nullable=False)
     user_id = Column(PGUUID)
     feature = Column(String(100), nullable=False)
     edition = Column(String(20), nullable=False)

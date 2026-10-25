@@ -43,6 +43,38 @@ class Edition(str, Enum):
     ENTERPRISE = "enterprise"
 
 
+# Deployment edition (settings.EDITION) -> the tier whose limits apply.
+_EDITION_TIERS = {
+    "community": Edition.COMMUNITY,
+    "team": Edition.TEAM,
+    "business": Edition.BUSINESS_STARTER,  # Default business tier
+    "enterprise": Edition.ENTERPRISE,
+}
+
+# Tiers from fewest seats to most, to pick a tenant's best subscription.
+_TIER_ORDER = [
+    Edition.COMMUNITY,
+    Edition.TEAM,
+    Edition.BUSINESS_STARTER,
+    Edition.BUSINESS_GROWTH,
+    Edition.BUSINESS_SCALE,
+    Edition.ENTERPRISE,
+]
+
+
+def plan_tier(plan_name: Optional[str], plan_edition: Optional[str]) -> Edition:
+    """The tier a subscription plan's limits come from.
+
+    Plans named for a tier (team, business_growth, ...) are that tier; any
+    other plan (community_cloud, enterprise-cloud, business_onprem, ...) gets
+    its edition's tier, as a deployment of that edition would.
+    """
+    try:
+        return Edition(plan_name)
+    except ValueError:
+        return _EDITION_TIERS.get((plan_edition or "").lower(), Edition.COMMUNITY)
+
+
 class LimitExceededException(Exception):
     """Raised when a limit is exceeded in strict mode."""
 
@@ -411,6 +443,8 @@ class LicenseEnforcer:
         # Get tenant info and limits
         tenant_info = await self._get_tenant_info(tenant_id)
         edition = Edition(tenant_info["edition"])
+        if limit_type == LimitType.USERS:
+            edition = await self._user_cap_tier(tenant_id) or edition
         limit = self.EDITION_LIMITS[edition].get(limit_type, 999999)
         
         # Get current usage (mock data for community edition)
@@ -458,7 +492,10 @@ class LicenseEnforcer:
         
         tenant_info = await self._get_tenant_info(tenant_id)
         edition = Edition(tenant_info["edition"])
-        limits = self.EDITION_LIMITS[edition]
+        limits = dict(self.EDITION_LIMITS[edition])
+        user_cap_tier = await self._user_cap_tier(tenant_id)
+        if user_cap_tier:
+            limits[LimitType.USERS] = self.EDITION_LIMITS[user_cap_tier][LimitType.USERS]
         
         summary = {}
         for limit_type in LimitType:
@@ -482,17 +519,7 @@ class LicenseEnforcer:
         """Get tenant information - uses actual edition from settings."""
         
         # Get the actual edition from settings
-        edition_str = self.settings.EDITION.lower()
-        
-        # Map to proper enum value
-        edition_map = {
-            "community": Edition.COMMUNITY,
-            "team": Edition.TEAM,
-            "business": Edition.BUSINESS_STARTER,  # Default business tier
-            "enterprise": Edition.ENTERPRISE
-        }
-        
-        edition = edition_map.get(edition_str, Edition.COMMUNITY)
+        edition = _EDITION_TIERS.get(self.settings.EDITION.lower(), Edition.COMMUNITY)
         
         return {
             "id": tenant_id,
@@ -500,6 +527,19 @@ class LicenseEnforcer:
             "created_at": datetime.utcnow().isoformat()
         }
     
+    async def _user_cap_tier(self, tenant_id: Optional[str]) -> Optional[Edition]:
+        """The tier the tenant's seats come from: its best current subscription.
+
+        None when the tenant has no subscription (a self-hosted deployment, for
+        one), and the deployment's edition applies.
+        """
+        if not tenant_id:
+            return None
+        from mcp_server.plan_gate import active_tenant_plans
+
+        tiers = [plan_tier(name, edition) for name, edition in await active_tenant_plans(self.db, tenant_id)]
+        return max(tiers, key=_TIER_ORDER.index) if tiers else None
+
     async def _get_current_usage(self, tenant_id: str, limit_type: LimitType) -> int:
         """Get current usage from real database counts."""
         try:
