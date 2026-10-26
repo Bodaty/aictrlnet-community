@@ -236,8 +236,14 @@ class SLACreate(BaseModel):
     target_score: float = Field(..., ge=0, le=1)
     dimension_targets: Optional[Dict[str, float]] = None
     measurement_frequency: str = "daily"  # realtime, hourly, daily
-    alert_threshold: Optional[float] = None
+    alert_threshold: Optional[float] = Field(None, ge=0, le=1)
     escalation_rules: Optional[Dict[str, Any]] = None
+
+    @validator('dimension_targets')
+    def validate_dimension_targets(cls, v):
+        if v and any(not 0 <= target <= 1 for target in v.values()):
+            raise ValueError("Dimension targets must be between 0 and 1")
+        return v
 
 
 class SLAResponse(BaseModel):
@@ -252,6 +258,12 @@ class SLAResponse(BaseModel):
     is_active: bool
     current_score: Optional[float] = None
     is_violated: bool = False
+    # Measured over the last window_hours of the tenant's assessments.
+    status: Optional[str] = None  # no_data | met | at_risk | breached
+    window_hours: int = 24
+    assessments_in_window: int = 0
+    dimension_scores: Dict[str, float] = {}
+    dimension_breaches: List[str] = []
     
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
