@@ -86,6 +86,7 @@ class LLMRequest(BaseModel):
     system_prompt: Optional[str] = None
     response_format: str = "text"                     # "text", "json", "structured"
     output_schema: Optional[Dict[str, Any]] = None   # For structured output (renamed from schema)
+    think: Optional[bool] = None                      # None = provider default; False = no reasoning pass
     cache_key: Optional[str] = None                   # For caching
     context: Optional[Dict[str, Any]] = None         # MCP or other context
     org_settings: Optional[Any] = None               # OrgLLMSettings (duck-typed; avoids import cycle)

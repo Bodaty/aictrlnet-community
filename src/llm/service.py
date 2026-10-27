@@ -37,6 +37,10 @@ _NATIVE_TOOL_PROVIDER_NAMES = {
 }
 
 
+class _StreamError(Exception):
+    """An adapter reported an error event mid-stream."""
+
+
 class _AdapterProvider:
     """Lazy factory for tool-calling adapter instances.
 
@@ -269,7 +273,8 @@ class LLMService:
         schema: Optional[Dict[str, Any]] = None,
         cache_key: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
-        org_settings: Optional[Any] = None
+        org_settings: Optional[Any] = None,
+        think: Optional[bool] = None,
     ) -> LLMResponse:
         """
         Generate text using the best available LLM.
@@ -318,7 +323,9 @@ class LLMService:
             stream=stream,
             system_prompt=system_prompt,
             response_format=response_format,
-            schema=schema,
+            # The field is output_schema; passed as `schema` it was silently dropped.
+            output_schema=schema,
+            think=think,
             cache_key=cache_key,
             context=context,
             org_settings=org_settings
@@ -363,7 +370,8 @@ class LLMService:
         tool_choice: str = "auto",  # "auto", "required", or specific tool name
         context: Optional[Dict[str, Any]] = None,
         messages: Optional[List[Dict[str, Any]]] = None,  # Multi-turn conversation
-        org_settings: Optional[Any] = None
+        org_settings: Optional[Any] = None,
+        think: Optional[bool] = None,
     ) -> LLMToolResponse:
         """
         Generate text with tool calling support.
@@ -430,7 +438,8 @@ class LLMService:
                 tool_choice=tool_choice,
                 start_time=start_time,
                 user_settings=user_settings,
-                messages=messages
+                messages=messages,
+                think=think,
             )
         else:
             # Fallback to text-based tool calling. Pin the model already selected
@@ -467,6 +476,7 @@ class LLMService:
         context: Optional[Dict[str, Any]] = None,
         messages: Optional[List[Dict[str, Any]]] = None,
         org_settings: Optional[Any] = None,
+        think: Optional[bool] = None,
     ):
         """Stream text deltas from tool-augmented generation.
 
@@ -538,7 +548,7 @@ class LLMService:
                 prompt=prompt, tools=tools, model=model,
                 temperature=temperature, max_tokens=max_tokens,
                 system_prompt=system_prompt,
-                tool_choice=tool_choice, messages=messages,
+                tool_choice=tool_choice, messages=messages, think=think,
             )
 
             accumulated_text = ""
@@ -559,6 +569,9 @@ class LLMService:
                     stream_input_tokens = event.input_tokens
                     stream_output_tokens = event.output_tokens
                     stream_stop_reason = event.stop_reason
+                elif event.type == "error":
+                    # Used to be dropped: callers saw an empty, successful completion.
+                    raise _StreamError(event.text or f"{provider.value} stream error")
 
             # Build final response
             from adapters.tool_calling import ToolCallingResponse
@@ -579,8 +592,17 @@ class LLMService:
 
         except Exception as e:
             logger.error(f"{provider.value} streaming tool calling failed: {e}")
-            # Fallback to non-streaming. Pin the already-selected model (mirrors
-            # _generate_with_native_tools's own exception-fallback pattern).
+            yield {"type": "error", "message": str(e)}
+            if accumulated_text:
+                # The caller already has this text (a voice call has already spoken it);
+                # running the request again would send it twice. End with what streamed.
+                yield {"type": "complete", "response": _with_resolution_source(
+                    LLMToolResponse(text=accumulated_text, model_used=model, provider=provider, tier=tier),
+                    temp_request,
+                )}
+                return
+            # Nothing streamed yet: fall back to non-streaming. Pin the already-selected model
+            # (mirrors _generate_with_native_tools's own exception-fallback pattern).
             result = await self._generate_with_text_tools(
                 prompt=prompt, tools=tools, user_settings=user_settings,
                 model_override=model, task_type=task_type,
@@ -609,7 +631,8 @@ class LLMService:
         tool_choice: str,
         start_time: datetime,
         user_settings: Optional[UserLLMSettings],
-        messages: Optional[List[Dict[str, Any]]] = None
+        messages: Optional[List[Dict[str, Any]]] = None,
+        think: Optional[bool] = None,
     ) -> LLMToolResponse:
         """Generate using native tool calling APIs via adapter framework."""
         try:
@@ -628,7 +651,7 @@ class LLMService:
                 prompt=prompt, tools=tools, model=model,
                 temperature=temperature, max_tokens=max_tokens,
                 system_prompt=system_prompt, tool_choice=tool_choice,
-                messages=messages
+                messages=messages, think=think,
             )
             response = await adapter.chat_with_tools(tc_request)
             return await self._to_llm_tool_response(
@@ -659,6 +682,7 @@ class LLMService:
         system_prompt: str,
         tool_choice: str,
         messages: Optional[List[Dict[str, Any]]] = None,
+        think: Optional[bool] = None,
     ) -> 'ToolCallingRequest':
         """Build a ToolCallingRequest from LLMService parameters."""
         from adapters.tool_calling import ToolCallingRequest
@@ -693,6 +717,7 @@ class LLMService:
             system_prompt=system_prompt,
             tool_choice=tool_choice,
             cache_system_prefix=True,
+            think=think,
         )
 
     async def _to_llm_tool_response(

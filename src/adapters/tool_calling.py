@@ -5,6 +5,7 @@ to support native tool calling. Not all adapters need this — only AI/LLM adapt
 that support structured tool invocation.
 """
 
+import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +22,30 @@ class ToolCallingRequest(BaseModel):
     system_prompt: Optional[str] = None
     tool_choice: str = "auto"  # "auto", "required", or specific tool name
     cache_system_prefix: bool = True  # Enable prompt/context caching for system prompt
+    # None keeps the provider's default. False asks a reasoning model (qwen3 and the like) to
+    # answer without thinking first; on Ollama's native API qwen3 otherwise thinks by default,
+    # which turns a short reply into tens of seconds.
+    think: Optional[bool] = None
+
+
+def normalize_tool_call(tc: Dict[str, Any]) -> Dict[str, Any]:
+    """One assistant tool call as ``{id, name, arguments: dict}``.
+
+    Accepts the platform's own shape (``{id, name, arguments}``) and the OpenAI shape that
+    OpenAI-compatible clients send back in the conversation history
+    (``{id, type: "function", function: {name, arguments}}``, arguments a JSON string).
+    """
+    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+    name = tc.get("name") or fn.get("name") or ""
+    args = tc.get("arguments", fn.get("arguments", {}))
+    if isinstance(args, str):
+        try:
+            args = json.loads(args) if args.strip() else {}
+        except json.JSONDecodeError:
+            args = {}
+    if not isinstance(args, dict):
+        args = {}
+    return {"id": tc.get("id") or "", "name": name, "arguments": args}
 
 
 class ToolCallingResponse(BaseModel):

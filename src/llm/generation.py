@@ -537,19 +537,28 @@ class LLMGenerationEngine:
                 )
             else:
                 # General text generation
+                payload = {
+                    "model": model,
+                    "prompt": request.prompt,
+                    "system": request.system_prompt,
+                    "stream": False,
+                    # Ollama reads sampling settings only from options; a top-level
+                    # temperature was ignored.
+                    "options": {
+                        "num_predict": request.max_tokens or 1000,
+                        "temperature": 0.7 if request.temperature is None else request.temperature,
+                    },
+                }
+                if request.output_schema:
+                    payload["format"] = request.output_schema
+                elif request.response_format == "json":
+                    payload["format"] = "json"
+                if request.think is not None:
+                    payload["think"] = request.think
                 async with httpx.AsyncClient(timeout=300.0) as client:
                     response = await client.post(
                         f"{self.ollama_url}/api/generate",
-                        json=await with_request_options(self.ollama_url, {
-                            "model": model,
-                            "prompt": request.prompt,
-                            "system": request.system_prompt,
-                            "stream": False,
-                            "temperature": request.temperature or 0.7,
-                            "options": {
-                                "num_predict": request.max_tokens or 1000
-                            }
-                        })
+                        json=await with_request_options(self.ollama_url, payload),
                     )
                     
                     if response.status_code == 200:

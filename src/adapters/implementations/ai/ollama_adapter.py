@@ -12,11 +12,41 @@ from adapters.models import (
     AdapterCapability, AdapterRequest, AdapterResponse,
     AdapterConfig, AdapterCategory
 )
-from adapters.tool_calling import ToolCallingMixin, ToolCallingRequest, ToolCallingResponse, ToolCallingStreamEvent
+from adapters.tool_calling import (
+    ToolCallingMixin,
+    ToolCallingRequest,
+    ToolCallingResponse,
+    ToolCallingStreamEvent,
+    normalize_tool_call,
+)
 from events.event_bus import event_bus
 
 
 logger = logging.getLogger(__name__)
+
+
+def _ollama_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Conversation history in Ollama's /api/chat shape.
+
+    Tool calls may arrive in the platform's shape or the OpenAI shape, and a message may
+    carry no ``content`` (an assistant turn that only called tools).
+    """
+    out = []
+    for msg in messages:
+        if msg["role"] == "tool":
+            out.append({"role": "tool", "content": msg.get("content") or ""})
+        elif msg["role"] == "assistant" and msg.get("tool_calls"):
+            calls = [normalize_tool_call(tc) for tc in msg["tool_calls"]]
+            out.append({
+                "role": "assistant",
+                "content": msg.get("content") or "",
+                "tool_calls": [
+                    {"function": {"name": tc["name"], "arguments": tc["arguments"]}} for tc in calls
+                ],
+            })
+        else:
+            out.append({"role": msg["role"], "content": msg.get("content") or ""})
+    return out
 
 
 class OllamaAdapter(BaseAdapter, ToolCallingMixin):
@@ -730,24 +760,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             })
 
         # Build messages array
-        api_messages = []
-        for msg in request.messages:
-            if msg["role"] == "tool":
-                api_messages.append({
-                    "role": "tool",
-                    "content": msg["content"]
-                })
-            elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                api_messages.append({
-                    "role": "assistant",
-                    "content": msg.get("content") or "",
-                    "tool_calls": [
-                        {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                        for tc in msg["tool_calls"]
-                    ]
-                })
-            else:
-                api_messages.append({"role": msg["role"], "content": msg["content"]})
+        api_messages = _ollama_messages(request.messages)
 
         # If no system message in messages and system_prompt provided, prepend it
         has_system = any(m["role"] == "system" for m in api_messages)
@@ -767,6 +780,8 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
         if request.tool_choice == "none" or not ollama_tools:
             # Ollama has no tool_choice: "none" means the tools are not sent.
             del payload["tools"]
+        if request.think is not None:
+            payload["think"] = request.think
         await self._apply_request_options(payload, keep_warm=True)
 
         logger.info(f"Ollama chat_with_tools: {[t['function']['name'] for t in ollama_tools]}")
@@ -855,21 +870,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
                 }
             })
 
-        api_messages = []
-        for msg in request.messages:
-            if msg["role"] == "tool":
-                api_messages.append({"role": "tool", "content": msg["content"]})
-            elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                api_messages.append({
-                    "role": "assistant",
-                    "content": msg.get("content") or "",
-                    "tool_calls": [
-                        {"function": {"name": tc["name"], "arguments": tc["arguments"]}}
-                        for tc in msg["tool_calls"]
-                    ]
-                })
-            else:
-                api_messages.append({"role": msg["role"], "content": msg["content"]})
+        api_messages = _ollama_messages(request.messages)
 
         has_system = any(m["role"] == "system" for m in api_messages)
         if not has_system and request.system_prompt:
@@ -889,6 +890,8 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
         # tool_choice, so "none" means the tools are not sent.
         if payload["tools"] is None or request.tool_choice == "none":
             del payload["tools"]
+        if request.think is not None:
+            payload["think"] = request.think
         await self._apply_request_options(payload, keep_warm=True)
 
         client = self.client

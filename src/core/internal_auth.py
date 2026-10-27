@@ -20,8 +20,11 @@ build if a call site forgets — without it a missed site 401s only in productio
 once the token is switched on.
 """
 
+import hmac
 import os
 from typing import Dict, Optional
+
+from fastapi import Header, HTTPException
 
 INTERNAL_TOKEN_HEADER = "X-Internal-Token"
 
@@ -42,3 +45,18 @@ def internal_service_headers(extra: Optional[Dict[str, str]] = None) -> Dict[str
     if token:
         headers[INTERNAL_TOKEN_HEADER] = token
     return headers
+
+
+async def require_internal_token(
+    x_internal_token: Optional[str] = Header(default=None, alias=INTERNAL_TOKEN_HEADER),
+) -> None:
+    """FastAPI dependency for platform routes only another local service may call.
+
+    Unlike the opt-in pair above, this fails closed: with no token configured the route is
+    unavailable (503) rather than open, and a missing or wrong token is refused (401).
+    """
+    expected = internal_service_token()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Internal service token is not configured")
+    if not x_internal_token or not hmac.compare_digest(x_internal_token, expected):
+        raise HTTPException(status_code=401, detail="Invalid internal service token")

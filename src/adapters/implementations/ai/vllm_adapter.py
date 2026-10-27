@@ -27,11 +27,49 @@ from adapters.models import (
     AdapterCapability, AdapterRequest, AdapterResponse,
     AdapterConfig, AdapterCategory
 )
-from adapters.tool_calling import ToolCallingMixin, ToolCallingRequest, ToolCallingResponse
+from adapters.tool_calling import (
+    ToolCallingMixin,
+    ToolCallingRequest,
+    ToolCallingResponse,
+    normalize_tool_call,
+)
 from events.event_bus import event_bus
 
 
 logger = logging.getLogger(__name__)
+
+
+def _openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Conversation history in the OpenAI chat shape, from the platform's or OpenAI's own.
+
+    Arguments are encoded once (a JSON string already in OpenAI shape is not encoded again),
+    the tool_call_id survives, and a message may carry no ``content``.
+    """
+    out: List[Dict[str, Any]] = []
+    for msg in messages:
+        if msg["role"] == "tool":
+            out.append({
+                "role": "tool",
+                "tool_call_id": msg.get("tool_call_id", msg.get("tool_use_id", "")),
+                "content": msg.get("content") or "",
+            })
+        elif msg["role"] == "assistant" and msg.get("tool_calls"):
+            calls = [normalize_tool_call(tc) for tc in msg["tool_calls"]]
+            out.append({
+                "role": "assistant",
+                "content": msg.get("content"),
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])},
+                    }
+                    for tc in calls
+                ],
+            })
+        else:
+            out.append({"role": msg["role"], "content": msg.get("content") or ""})
+    return out
 
 
 def _strip_vllm_prefix(model: Optional[str]) -> Optional[str]:
@@ -396,32 +434,7 @@ class VLLMAdapter(BaseAdapter, ToolCallingMixin):
                 },
             })
 
-        api_messages: List[Dict[str, Any]] = []
-        for msg in request.messages:
-            if msg["role"] == "tool":
-                api_messages.append({
-                    "role": "tool",
-                    "tool_call_id": msg.get("tool_call_id", msg.get("tool_use_id", "")),
-                    "content": msg["content"],
-                })
-            elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                tc_list = []
-                for tc in msg["tool_calls"]:
-                    tc_list.append({
-                        "id": tc.get("id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": json.dumps(tc.get("arguments", {})),
-                        },
-                    })
-                api_messages.append({
-                    "role": "assistant",
-                    "content": msg.get("content"),
-                    "tool_calls": tc_list,
-                })
-            else:
-                api_messages.append({"role": msg["role"], "content": msg["content"]})
+        api_messages = _openai_messages(request.messages)
 
         payload: Dict[str, Any] = {
             "model": model,
@@ -431,6 +444,8 @@ class VLLMAdapter(BaseAdapter, ToolCallingMixin):
         }
         if request.max_tokens:
             payload["max_tokens"] = request.max_tokens
+        if request.think is not None:
+            payload["chat_template_kwargs"] = {"enable_thinking": request.think}
 
         if request.tool_choice == "required":
             payload["tool_choice"] = "required"
