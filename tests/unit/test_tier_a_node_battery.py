@@ -52,8 +52,6 @@ BUSINESS_ROWS = [
     Row("code", {"code": "result = 1 + 1", "language": "python"}, note="sandboxed python"),
     Row("parallel", {"branches": [{"node": {"type": "task", "name": "t"}}]}, note="one task branch"),
     Row("loop", {"loop_type": "count", "count": 1, "body": {"type": "task", "name": "t"}}, note="count=1"),
-    Row("careGapEngine", {"operation": "refresh_worklist"}, raises=ValueError, match="CARE_GAPS_ENABLED",
-        note="dark by default; the flag-on row is in Tier A-4"),
 ]
 
 ENTERPRISE_ROWS = [
@@ -76,9 +74,6 @@ KNOWN_FAILING_ROWS = {
 
 
 async def _run(row: Row, db, monkeypatch):
-    if row.alias == "careGapEngine":
-        from core.config import settings
-        monkeypatch.setattr(settings, "CARE_GAPS_ENABLED", False, raising=False)
     node = get_node_registry().create_node(make_config(row.alias, **row.params))
     instance = make_instance(node.config, row.input, _ctx(db))
     if row.raises:

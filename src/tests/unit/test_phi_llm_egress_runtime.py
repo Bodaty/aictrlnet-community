@@ -321,7 +321,7 @@ async def test_model_listing_hides_providers_that_would_refuse(monkeypatch):
     assert providers == {ModelProvider.OPENAI}
 
 
-async def test_care_gap_shaped_node_fails_with_the_refusal_not_a_silent_skip(monkeypatch):
+async def test_phi_node_fails_with_the_refusal_not_a_silent_skip(monkeypatch):
     """The R-04 exposure end to end: an aiProcess node with no adapter set,
     PHI mode on, nothing allowlisted. Through BaseNode.run(), the way the
     loop node drives it, the result must be FAILED carrying the marker, and
@@ -341,18 +341,18 @@ async def test_care_gap_shaped_node_fails_with_the_refusal_not_a_silent_skip(mon
 
     config = NodeConfig(
         id="classify-one-note",
-        name="Classify One Note Against One Gap",
+        name="Classify One Note",
         type=NodeType.TASK,
         parameters={
             "ai_task": "generate",
-            "prompt": "GAP: {{item.measure_key}}\nNOTE: {{item.note}}",
+            "prompt": "CATEGORY: {{item.category}}\nNOTE: {{item.note}}",
         },
     )
     node = AIProcessNode(config)
     instance = NodeInstance(
         node_config=config,
-        workflow_instance_id="wf-care-gap",
-        input_data={"item": {"measure_key": "a1c", "note": "HbA1c 7.9 on 2026-09-01"}},
+        workflow_instance_id="wf-phi-node",
+        input_data={"item": {"category": "follow-up", "note": "Follow-up recorded on 2026-09-01"}},
     )
     result = await node.run(instance, workflow_variables={})
 

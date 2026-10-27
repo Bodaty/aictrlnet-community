@@ -206,34 +206,12 @@ class Settings(BaseSettings):
     # volume and credentials are held by an encrypted backend. Default false, so
     # deployments that handle no PHI are unaffected.
     AICTRLNET_PHI_MODE: bool = Field(default=False, env="AICTRLNET_PHI_MODE")
-    # Deployment-level gate for the clinical care-gaps vertical (Business).
-    # Default false: the tables ship everywhere but the nav, API, sweeper and
-    # registry seeder stay dark unless a deployment opts in. The multi-tenant
-    # hosted service must never surface a patient-facing UI - its published
-    # terms prohibit PHI there - so this follows the same "eligibility follows
-    # deployment configuration" principle as PHI mode, and is normally enabled
-    # only alongside it on self-hosted practice deployments.
-    CARE_GAPS_ENABLED: bool = Field(default=False, env="CARE_GAPS_ENABLED")
-    # A viewer's repeated reads of the same care-gap item in the same context
-    # within this window are one access event, so an open browser tab polling
-    # every 15 seconds does not grow the HIPAA access log by ten rows per item
-    # per hour. 0 = log every read.
-    CARE_GAPS_VIEW_AUDIT_WINDOW_MINUTES: int = Field(
-        default=60, env="CARE_GAPS_VIEW_AUDIT_WINDOW_MINUTES"
-    )
     # R-04: which model providers may receive PHI, and which cloud providers
     # have a BAA on file. Read only under AICTRLNET_PHI_MODE (core/phi_egress.py).
     # Empty allowlist = this deployment sends PHI to no model at all: it boots,
     # and every model call refuses at runtime naming the setting.
     AICTRLNET_PHI_LLM_PROVIDERS: str = Field(default="", env="AICTRLNET_PHI_LLM_PROVIDERS")
     AICTRLNET_PHI_BAA_PROVIDERS: str = Field(default="", env="AICTRLNET_PHI_BAA_PROVIDERS")
-    # Comma-separated exact hostnames of the EHR FHIR / identity servers the
-    # care-gap sync may call under PHI mode, e.g. "api.practicefusion.com".
-    # Read only under AICTRLNET_PHI_MODE (core/phi_egress.py). Empty = no FHIR
-    # egress is allowed: the deployment boots and every sync call refuses
-    # naming this setting, which is the right shape for a practice that keeps
-    # its roster by hand.
-    AICTRLNET_PHI_FHIR_HOSTS: str = Field(default="", env="AICTRLNET_PHI_FHIR_HOSTS")
     # Local model endpoints, promoted from bare os.environ reads so the PHI
     # guard can see them (a guard cannot enforce what it cannot see). Ollama
     # has one: OLLAMA_URL (above), read by every Ollama call site since T4d.

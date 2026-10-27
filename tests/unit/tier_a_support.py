@@ -33,12 +33,12 @@ COMMUNITY_ALIASES = {
     "platformIntegration", "ai_process", "data_source", "api_call",
     "openaiAdapter", "conditionNode", "postgresqlAdapter", "emailAdapter",
 }
-# Exactly the tuples in editions/business/src/nodes/edition_nodes.py (14 entries).
+# The general-purpose tuples in editions/business/src/nodes/edition_nodes.py.
 BUSINESS_ALIASES = COMMUNITY_ALIASES | {
     "code", "parallel", "loop", "webhook", "schedule",
-    "iamAdvanced", "remoteTool", "careGapEngine",
+    "iamAdvanced", "remoteTool",
 }
-# Enterprise hand-copies the Business list (13 entries, missing careGapEngine - A-15) and adds 5.
+# Enterprise carries its own copy of the Business list and adds 5.
 ENTERPRISE_ALIASES = BUSINESS_ALIASES | {
     "enhancedAdapter", "orchestration", "orchestrationPattern", "compliance", "federation",
 }
@@ -131,8 +131,8 @@ def ensure_edition_nodes_registered():
       this is a pure no-op and pollutes nothing).
     - Loads the CURRENT edition's edition_nodes.py only. In the enterprise
       container that is enterprise/edition_nodes.py, which registers the business
-      node list it carries - NOT business/edition_nodes.py - so careGapEngine
-      stays unregistered in Enterprise exactly as the shipped app leaves it (A-15).
+      node list it carries - NOT business/edition_nodes.py - so Enterprise's
+      registry matches what the shipped app registers (A-15).
     """
     global _TIER_A_REGISTERED
     if _TIER_A_REGISTERED:

@@ -52,8 +52,6 @@ BUSINESS_ROWS = [
         required_keys=("schedule_id",), note="cron schedule"),
     Row("iamAdvanced", {"operation": "check_permission", "resource": "workflows", "action": "read"},
         note="check_permission for the dev user"),
-    Row("careGapEngine", {"operation": "refresh_worklist"}, required_keys=("care_gap_refresh",),
-        note="flag on: empty roster -> zero counts is a REAL result"),
     Row("remoteTool", {"instance_id": "tier-a-missing", "tool_name": "noop", "timeout_s": 2},
         raises=(ValueError, RuntimeError, TimeoutError, asyncio.TimeoutError),
         note="no connector: must fail loudly (node is unverified-live)"),
@@ -125,9 +123,6 @@ async def _run(row: Row, db, dev_user_id, staged_dir, monkeypatch):
         ctx["control_plane_url"] = "http://community:8000"
     if row.alias == "iamAdvanced":
         ctx["user_id"] = dev_user_id
-    if row.alias == "careGapEngine":
-        from core.config import settings
-        monkeypatch.setattr(settings, "CARE_GAPS_ENABLED", True, raising=False)
     node = get_node_registry().create_node(make_config(row.alias, **params))
     instance = make_instance(node.config, row.input, ctx)
     if row.raises:
