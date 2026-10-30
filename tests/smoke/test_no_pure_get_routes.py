@@ -16,8 +16,6 @@ APP_IMPORT = 'from core.app import create_app\n_app = create_app()'
 KNOWN_FABRICATED_ROUTES = {
     'GET /api/v1/a2a/agents': 'MR-086 demo-agent-1 registry',
     'GET /api/v1/a2a/health': 'MR-086 unconditional healthy',
-    'GET /api/v1/ai-agent/capabilities': 'MR-080/081 advertises the fake nlp/suggest endpoints',
-    'GET /api/v1/ai-agent/status': 'MR-005 literal healthy/active/connected',
     'GET /api/v1/cache/basic-stats': 'MR-087 reports only /cache/simulate injections',
     'GET /api/v1/cache/health': 'MR-087 unconditional healthy',
     'GET /api/v1/cache/info': 'MR-087 usage from the injectable stats',

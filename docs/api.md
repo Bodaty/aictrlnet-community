@@ -1294,23 +1294,6 @@ curl -H "Authorization: Bearer <token>" \
 
 ---
 
-## AI Agent (Basic)
-
-Basic AI agent endpoints are under `/api/v1/ai-agent`. Community edition provides limited agent functionality with rate limits.
-
-### Get AI agent status
-
-```
-GET /api/v1/ai-agent/status
-```
-
-```bash
-curl -H "Authorization: Bearer <token>" \
-  http://localhost:8000/api/v1/ai-agent/status
-```
-
----
-
 ## Agent Execution
 
 Agent execution endpoints are under `/api/v1/agent-execution` for running and monitoring agent tasks.

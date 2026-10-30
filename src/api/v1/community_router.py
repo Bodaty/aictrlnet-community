@@ -33,7 +33,6 @@ from .endpoints import (
     license,
     billing,  # Stripe billing integration (portal, invoices)
     iam,
-    ai_agent_basic,
     agent_execution,  # New agent execution endpoints
     memory_basic,
     cache_basic,
@@ -142,8 +141,7 @@ api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
 # Internal Agent Messaging endpoints
 api_router.include_router(iam.router, prefix="/iam", tags=["iam"])
 
-# Basic AI, Memory, and Cache endpoints (Community features with limits)
-api_router.include_router(ai_agent_basic.router, prefix="/ai-agent", tags=["ai-agent-basic"])
+# Basic Memory and Cache endpoints (Community features with limits)
 api_router.include_router(agent_execution.router, prefix="/agent-execution", tags=["agent-execution"])
 api_router.include_router(memory_basic.router, prefix="/memory", tags=["memory-basic"])
 api_router.include_router(cache_basic.router, prefix="/cache", tags=["cache-basic"])
