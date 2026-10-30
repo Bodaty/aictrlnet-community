@@ -2,6 +2,8 @@
 schema-derived minimal arguments. DEAD = success=True with no substantive data:
 None/empty, or a bare {"message": "<string>"} - the shape the four Enterprise
 stubs return today (business tool_dispatcher.py:2893-2902).
+PURE (make-it-real) = REAL-shaped success with no DB/socket/subprocess I/O during
+invoke() (io_probe.py): built from literals unless in DECLARED_PURE.
 
 Ledger semantics as in the other Tier A gates.
 """
@@ -13,6 +15,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from services.tool_dispatcher import ToolDispatcher, Edition
 from tier_a_egress import synthesize_value, SmokeEgressBlocked
+from smoke_common.io_probe import probe
 
 # A-32: DocumentationKnowledgeService.__init__ calls os.environ.get(..., headers=...) which
 # raises TypeError unconditionally; the business dispatcher builds it in _ensure_services() at the
@@ -24,6 +27,18 @@ KNOWN_DEAD = {
     # A-33: browser-backed conversation tools report success=False with no error string.
     "browser_extract": "A-33",
     "browser_screenshot": "A-33",
+}
+# Make-it-real: tools answering success from literals (ledger MR-*). Must shrink.
+KNOWN_PURE = {
+    'get_help': "MR-032 canned counts ('50+ templates')",
+    'get_platform_metrics': 'MR-030 healthy on query failure',
+    'get_system_status': 'MR-029 unconditional healthy',
+}
+# Tools whose answer is legitimately computed in-process from arguments or static
+# configuration (D-1). Exact set, one-line reason each.
+DECLARED_PURE = {
+    'list_api_endpoints': 'OpenAPI index unreachable in the sweep; honest empty list',
+    'search_api_capabilities': 'OpenAPI index unreachable in the sweep; honest empty results',
 }
 
 
@@ -58,7 +73,8 @@ def _is_bare_message(data):
 async def _classify(tool, dispatcher, db, dev_user_id):
     args = synthesize_value(tool.parameters or {}, components={})
     try:
-        result = await dispatcher.invoke(tool.name, args, dev_user_id, context={"db": db})
+        with probe() as io:
+            result = await dispatcher.invoke(tool.name, args, dev_user_id, context={"db": db})
     except Exception as e:  # noqa: BLE001
         if _chain_has(e, SmokeEgressBlocked):
             return "NEEDS_LIVE", type(e).__name__
@@ -77,6 +93,8 @@ async def _classify(tool, dispatcher, db, dev_user_id):
         return "DEAD", "success with empty data"
     if _is_bare_message(data):
         return "DEAD", f"canned: {data['message'][:80]}"
+    if not io.touched:
+        return "PURE", type(data).__name__
     return "REAL", type(data).__name__
 
 
@@ -84,6 +102,9 @@ async def _classify(tool, dispatcher, db, dev_user_id):
 async def test_every_conversation_tool_is_not_dead_or_is_in_the_ledger(db, dev_user_id):
     dispatcher = _dispatcher(db)
     tools = _tools(dispatcher)
+    ensure = getattr(dispatcher, "_ensure_services", None)
+    if ensure is not None:  # first-call service construction is not any one tool's I/O
+        await ensure()
     from collections import Counter
     classes, detail = {}, {}
     for name in sorted(tools):
@@ -104,3 +125,11 @@ async def test_every_conversation_tool_is_not_dead_or_is_in_the_ledger(db, dev_u
     fixed = {n: KNOWN_DEAD[n] for n in KNOWN_DEAD if n in tools and n not in dead}
     assert not new, f"NEW dead conversation tools (file them): {new}"
     assert not fixed, f"FIXED - remove from KNOWN_DEAD and close: {fixed}"
+    pure = {n: detail[n] for n, k in classes.items() if k == "PURE"}
+    print(f"tier-a conv PURE: {pure}")
+    new_pure = {n: d for n, d in pure.items() if n not in KNOWN_PURE and n not in DECLARED_PURE}
+    fixed_pure = sorted(n for n in KNOWN_PURE if n in tools and n not in pure)
+    stale = sorted(n for n in DECLARED_PURE if n in tools and n not in pure)
+    assert not new_pure, f"NEW conversation tools answering from literals - fabricated, or declare (D-1): {new_pure}"
+    assert not fixed_pure, f"FIXED - remove from KNOWN_PURE and tick the ledger: {fixed_pure}"
+    assert not stale, f"DECLARED_PURE tool no longer pure - remove it: {stale}"

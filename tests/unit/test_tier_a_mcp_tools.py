@@ -9,6 +9,8 @@ shaped output while doing nothing.
   NEEDS_LIVE       SmokeEgressBlocked - the tool needs a third party; recorded unverified-live
   GATED            plan/scope/quota/rate gate refused the dev user - fixture problem, not a tool problem
   DEAD             feature_pending undeclared; or `error` under success; or None/empty; or Unknown tool
+  PURE             REAL-shaped, but the handler touched no DB/socket/subprocess (make-it-real,
+                   io_probe.py) - built from literals unless in DECLARED_PURE
 
 Ledger semantics as in the other Tier A gates (exact-set on DEAD tool names).
 """
@@ -20,11 +22,13 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from mcp_server.tools import get_tools_for_edition
+from mcp_server import tool_executor
 from mcp_server.tool_executor import execute_tool, ToolExecutionError, ScopeError
 from mcp_server.plan_gate import PlanError, PlanService
 from mcp_server.metering import QuotaError
 from mcp_server.rate_bucket import RateError
 from tier_a_egress import SmokeEgressBlocked, synthesize_value
+from smoke_common.io_probe import probe
 
 for _root in _pathlib.Path(__file__).resolve().parents:  # tests/smoke_common, wherever it is mounted
     if (_root / "tests" / "smoke_common" / "sweep_residue.py").is_file():
@@ -92,6 +96,23 @@ KNOWN_DEAD = {
     "update_template": "A-30",
 }
 
+# Make-it-real: tools whose handler answers success from literals (ledger MR-*). Must shrink.
+KNOWN_PURE = {
+    'analyze_intent': 'MR-082: keyword match is real; confidence = min(matches*0.3, 0.9) is invented',
+    'assess_quality': 'MR-085: relevance/clarity are a constant 0.5',
+}
+# Handlers whose answer is legitimately computed in-process from the arguments or static
+# configuration (D-1). Exact set, one-line reason each.
+DECLARED_PURE = {
+    'delete_memory': 'process-local key/value store - real delete',
+    'get_memory': 'process-local key/value store (labelled non-durable in tool_executor) - real reads',
+    'get_subscription': 'Community: honest available=False with message, no plan claimed',
+    'get_upgrade_options': 'Community: Business service absent, honest plans=[] available=False',
+    'list_block_types': 'static catalog of canvas block types',
+    'list_quality_dimensions': "static catalog of the scorer's dimensions",
+    'set_memory': 'process-local key/value store - real write, non-durable',
+}
+
 
 def _chain_has(exc, cls):
     while exc is not None:
@@ -128,6 +149,14 @@ async def dev_user_id(db):
 
 async def _classify(name, db, dev_user_id, plan_service):
     args = synthesize_value(TOOLS[name]["inputSchema"], components={})
+    handler = tool_executor.TOOL_HANDLERS.get(name)
+    seen = {}
+    if handler is not None:
+        async def _probed(*a, **k):
+            with probe() as io:
+                seen["io"] = io
+                return await handler(*a, **k)
+        tool_executor.TOOL_HANDLERS[name] = _probed
     try:
         result = await asyncio.wait_for(
             execute_tool(
@@ -148,6 +177,8 @@ async def _classify(name, db, dev_user_id, plan_service):
             return "NEEDS_LIVE", type(e).__name__
         return "RAISED", f"{type(e).__name__}: {str(e)[:120]}"
     finally:
+        if handler is not None:
+            tool_executor.TOOL_HANDLERS[name] = handler
         try:
             await db.rollback()
         except Exception:  # noqa: BLE001
@@ -158,6 +189,8 @@ async def _classify(name, db, dev_user_id, plan_service):
         return ("DECLARED_PENDING" if name in DECLARED_PENDING else "DEAD"), "feature_pending"
     if result.get("error"):
         return "DEAD", f"error under success: {str(result.get('error'))[:100]}"
+    if "io" in seen and not seen["io"].touched:
+        return "PURE", ",".join(sorted(result)[:5])
     return "REAL", ",".join(sorted(result)[:5])
 
 
@@ -180,6 +213,14 @@ async def test_every_mcp_tool_is_not_dead_or_is_in_the_ledger(db, dev_user_id):
     fixed = {n: KNOWN_DEAD[n] for n in KNOWN_DEAD if n in TOOLS and n not in dead}
     assert not new, f"NEW dead MCP tools (file them): {new}"
     assert not fixed, f"FIXED - remove from KNOWN_DEAD and close: {fixed}"
+    pure = {n: detail[n] for n, k in classes.items() if k == "PURE"}
+    print(f"tier-a mcp PURE: {pure}")
+    new_pure = {n: d for n, d in pure.items() if n not in KNOWN_PURE and n not in DECLARED_PURE}
+    fixed_pure = sorted(n for n in KNOWN_PURE if n in TOOLS and n not in pure)
+    stale = sorted(n for n in DECLARED_PURE if n in TOOLS and n not in pure)
+    assert not new_pure, f"NEW MCP tools answering from literals - fabricated, or declare (D-1): {new_pure}"
+    assert not fixed_pure, f"FIXED - remove from KNOWN_PURE and tick the ledger: {fixed_pure}"
+    assert not stale, f"DECLARED_PURE tool no longer pure - remove it: {stale}"
 
 
 def test_tool_count_matches_source():
