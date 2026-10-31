@@ -220,6 +220,12 @@ class DecisionNode(BaseNode):
                 return next_nodes
             else:
                 return []
+        elif branch_mapping and "default_branch" not in self.config.parameters:
+            raise ValueError(
+                f"Decision node {self.config.name!r} selected branch "
+                f"{selected_branch!r}, which is not in its branch_mapping "
+                f"({sorted(branch_mapping)}) and no default_branch is set."
+            )
         else:
             # Return default next nodes
             return instance.next_nodes

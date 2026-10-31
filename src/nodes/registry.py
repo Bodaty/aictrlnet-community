@@ -121,6 +121,13 @@ class NodeRegistry:
         self._custom_nodes[name] = node_class
         logger.info(f"Registered custom node: {name}")
     
+    def resolve_node_class(self, config: NodeConfig):
+        """Return the registered class for a config, or None if there is none."""
+        custom_type = config.parameters.get("custom_node_type")
+        if custom_type and custom_type in self._custom_nodes:
+            return self._custom_nodes[custom_type]
+        return self._node_classes.get(config.type)
+
     def create_node(self, config: NodeConfig) -> BaseNode:
         """Create a node instance from configuration."""
         # Check for custom node first

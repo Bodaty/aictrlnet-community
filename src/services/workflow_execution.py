@@ -2,7 +2,7 @@
 
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, update, and_, or_, func
 from sqlalchemy.orm import selectinload
 from datetime import datetime
 import uuid
@@ -400,7 +400,12 @@ class WorkflowExecutionService:
                 )
 
                 # Execute workflow
-                await self.node_executor.execute_workflow(workflow_instance)
+                async def is_cancelled() -> bool:
+                    return await self._is_execution_cancelled(execution_id, tenant_id)
+
+                await self.node_executor.execute_workflow(
+                    workflow_instance, is_cancelled=is_cancelled
+                )
 
                 # Check for node failures. The node executor's error_handler
                 # routes per-node exceptions into NodeExecution rows with
@@ -423,15 +428,19 @@ class WorkflowExecutionService:
                     )
                 ).scalars().all()
 
-                execution.completed_at = datetime.utcnow()
-                execution.duration_ms = int(
-                    (execution.completed_at - execution.started_at).total_seconds() * 1000
+                completed_at = datetime.utcnow()
+                duration_ms = int(
+                    (completed_at - execution.started_at).total_seconds() * 1000
                 )
-                execution.output_data = workflow_instance.output_data
+                final_values = {
+                    "completed_at": completed_at,
+                    "duration_ms": duration_ms,
+                    "output_data": workflow_instance.output_data,
+                }
 
                 if failed_rows:
-                    execution.status = WorkflowExecutionStatus.FAILED
-                    execution.error_details = {
+                    final_values["status"] = WorkflowExecutionStatus.FAILED
+                    final_values["error_details"] = {
                         "failed_nodes": [
                             {
                                 "node_id": row.node_id,
@@ -442,7 +451,7 @@ class WorkflowExecutionService:
                         ]
                     }
                 else:
-                    execution.status = WorkflowExecutionStatus.COMPLETED
+                    final_values["status"] = WorkflowExecutionStatus.COMPLETED
 
                 # Count intercepted nodes for dry-run summary (regardless of
                 # final status — a failed dry-run still reports what would
@@ -458,12 +467,17 @@ class WorkflowExecutionService:
                         if isinstance(getattr(ni, "output_data", None), dict)
                         and ni.output_data.get("_dry_run")
                     )
-                    execution.execution_metadata = {
+                    final_values["execution_metadata"] = {
                         **(execution.execution_metadata or {}),
                         "nodes_intercepted": intercepted
                     }
 
-                await db.commit()
+                # A run cancelled while it was executing stays cancelled: the
+                # final write only lands on a row that is not CANCELLED, and a
+                # cancelled run publishes neither completion nor failure.
+                if not await self._write_final_status(db, execution_id, final_values):
+                    logger.info(f"Workflow execution {execution_id} was cancelled; final status left as cancelled")
+                    return
 
                 # Publish completion or failure event, matching the resolved status
                 if failed_rows:
@@ -472,7 +486,7 @@ class WorkflowExecutionService:
                         {
                             "execution_id": str(execution_id),
                             "workflow_id": str(execution.workflow_id),
-                            "duration_ms": execution.duration_ms,
+                            "duration_ms": duration_ms,
                             "triggered_by": execution.triggered_by,
                             "trigger_metadata": execution.trigger_metadata or {},
                             "is_dry_run": is_dry_run,
@@ -485,7 +499,7 @@ class WorkflowExecutionService:
                         {
                             "execution_id": str(execution_id),
                             "workflow_id": str(execution.workflow_id),
-                            "duration_ms": execution.duration_ms,
+                            "duration_ms": duration_ms,
                             "triggered_by": execution.triggered_by,
                             "trigger_metadata": execution.trigger_metadata or {},
                             "is_dry_run": is_dry_run,
@@ -493,12 +507,17 @@ class WorkflowExecutionService:
                     )
 
             except Exception as e:
-                logger.error(f"Workflow execution failed: {e}")
                 if execution:
-                    execution.status = WorkflowExecutionStatus.FAILED
-                    execution.completed_at = datetime.utcnow()
-                    execution.error_details = {"error": str(e)}
-                    await db.commit()
+                    await db.rollback()
+                    written = await self._write_final_status(db, execution_id, {
+                        "status": WorkflowExecutionStatus.FAILED,
+                        "completed_at": datetime.utcnow(),
+                        "error_details": {"error": str(e)},
+                    })
+                    if not written:
+                        logger.info(f"Workflow execution {execution_id} was cancelled; ignoring {type(e).__name__}: {e}")
+                        return
+                logger.error(f"Workflow execution failed: {e}")
 
                 # Publish failure event
                 await event_bus.publish(
@@ -510,6 +529,41 @@ class WorkflowExecutionService:
                     }
                 )
     
+    async def _is_execution_cancelled(
+        self, execution_id: uuid.UUID, tenant_id: Optional[str]
+    ) -> bool:
+        """Read the run's committed status on a fresh session.
+
+        A separate session because the run's own session is shared with the
+        nodes in flight, and its identity map would hide a cancel committed by
+        another request.
+        """
+        async with get_session_maker()() as db:
+            if tenant_id:
+                from core.database import bind_session_tenant
+                bind_session_tenant(db, tenant_id)
+            status = (await db.execute(
+                select(WorkflowExecution.status).where(WorkflowExecution.id == execution_id)
+            )).scalar_one_or_none()
+        return status == WorkflowExecutionStatus.CANCELLED
+
+    async def _write_final_status(
+        self, db: AsyncSession, execution_id: uuid.UUID, values: Dict[str, Any]
+    ) -> bool:
+        """Write a run's final state unless it was cancelled meanwhile.
+
+        Returns False when the row is CANCELLED and nothing was written.
+        """
+        result = await db.execute(
+            update(WorkflowExecution)
+            .where(WorkflowExecution.id == execution_id)
+            .where(WorkflowExecution.status.notin_([WorkflowExecutionStatus.CANCELLED]))
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+        return result.rowcount > 0
+
     async def _resolve_autonomy_for_execution(
         self,
         *,
@@ -784,7 +838,12 @@ class WorkflowExecutionService:
         return WorkflowExecutionResponse.model_validate(execution)
     
     async def cancel_execution(self, execution_id: uuid.UUID) -> WorkflowExecutionResponse:
-        """Cancel a workflow execution."""
+        """Cancel a workflow execution.
+
+        Idempotent: a run that already finished or was already cancelled is
+        returned unchanged. A running run's executor sees the CANCELLED row
+        before its next batch and stops.
+        """
         result = await self.db.execute(
             select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
         )
@@ -793,20 +852,33 @@ class WorkflowExecutionService:
         if not execution:
             raise ValueError(f"Execution {execution_id} not found")
         
-        if execution.status in [WorkflowExecutionStatus.COMPLETED, WorkflowExecutionStatus.FAILED]:
-            raise ValueError(f"Execution {execution_id} is already finished")
-        
-        # Update status
-        execution.status = WorkflowExecutionStatus.CANCELLED
-        execution.completed_at = datetime.utcnow()
-        
-        # Cancel all pending node executions
+        # Flip the status only if the run has not finished: a final write that
+        # commits between the read above and this update must not be
+        # overwritten, so the check lives in the WHERE clause.
+        flipped = await self.db.execute(
+            update(WorkflowExecution)
+            .where(WorkflowExecution.id == execution_id)
+            .where(WorkflowExecution.status.notin_([
+                WorkflowExecutionStatus.COMPLETED,
+                WorkflowExecutionStatus.FAILED,
+                WorkflowExecutionStatus.CANCELLED,
+            ]))
+            .values(status=WorkflowExecutionStatus.CANCELLED, completed_at=datetime.utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        if flipped.rowcount == 0:
+            await self.db.commit()
+            await self.db.refresh(execution)
+            return WorkflowExecutionResponse.model_validate(execution)
+
+        # Cancel all pending and running node executions
         await self.db.execute(
-            select(NodeExecution)
+            update(NodeExecution)
             .where(and_(
                 NodeExecution.execution_id == execution_id,
                 NodeExecution.status.in_([NodeExecutionStatus.PENDING, NodeExecutionStatus.RUNNING])
             ))
+            .values(status=NodeExecutionStatus.CANCELLED, completed_at=datetime.utcnow())
             .execution_options(synchronize_session="fetch")
         )
         

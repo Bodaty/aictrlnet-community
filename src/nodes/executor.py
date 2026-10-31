@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Set
+from typing import Awaitable, Callable, Dict, List, Any, Optional, Set
 from datetime import datetime
 import time
 
@@ -11,6 +11,7 @@ from .models import (
     NodeExecutionResult, WorkflowInstance
 )
 from .registry import node_registry
+from .implementations.decision_node import DecisionNode
 from .state_manager import NodeStateManager, state_manager as default_state_manager
 from .error_handler import NodeErrorHandler, node_error_handler as default_error_handler
 from events.event_bus import event_bus
@@ -58,11 +59,20 @@ class NodeExecutor:
     
     async def execute_workflow(
         self,
-        workflow_instance: WorkflowInstance
+        workflow_instance: WorkflowInstance,
+        is_cancelled: Optional[Callable[[], Awaitable[bool]]] = None,
     ) -> WorkflowInstance:
-        """Execute an entire workflow."""
+        """Execute an entire workflow.
+
+        ``is_cancelled`` reports whether the run was cancelled. It is checked
+        between batches, and nodes find it in their context so long-running
+        ones (loops) can stop between items.
+        """
         start_time = time.time()
-        
+        if is_cancelled is not None:
+            for node_instance in workflow_instance.node_instances.values():
+                node_instance.context["is_cancelled"] = is_cancelled
+
         try:
             # Load previous state if resuming
             previous_state = await self.state_manager.load_workflow_state(workflow_instance)
@@ -105,9 +115,14 @@ class NodeExecutor:
             await self._execute_from_nodes(
                 workflow_instance,
                 start_nodes,
-                workflow_instance.input_data
+                workflow_instance.input_data,
+                is_cancelled=is_cancelled,
             )
-            
+
+            if is_cancelled is not None and await is_cancelled():
+                await self.cancel_workflow(workflow_instance)
+                return workflow_instance
+
             # Collect output from end nodes
             output_data = self._collect_workflow_output(workflow_instance)
             workflow_instance.output_data = output_data
@@ -143,6 +158,10 @@ class NodeExecutor:
             return workflow_instance
             
         except Exception as e:
+            if is_cancelled is not None and await is_cancelled():
+                await self.cancel_workflow(workflow_instance)
+                raise
+
             # Handle workflow failure with error handler
             await self.error_handler.handle_workflow_error(
                 e, workflow_instance
@@ -368,6 +387,8 @@ class NodeExecutor:
                     if hasattr(final_status_obj, "value")
                     else str(final_status_obj or "")
                 ).lower()
+                if final_status_str == "failed" and await self._run_cancelled(node_instance):
+                    final_status_str = "cancelled"
                 if final_status_str and final_status_str != "pending":
                     persist_kwargs = {
                         "status": final_status_str,
@@ -409,11 +430,16 @@ class NodeExecutor:
                 async with self._lock:
                     self._running_nodes.discard(node_instance.id)
     
+    async def _run_cancelled(self, node_instance: NodeInstance) -> bool:
+        is_cancelled = node_instance.context.get("is_cancelled")
+        return is_cancelled is not None and await is_cancelled()
+
     async def _execute_from_nodes(
         self,
         workflow_instance: WorkflowInstance,
         node_ids: List[str],
-        initial_data: Dict[str, Any]
+        initial_data: Dict[str, Any],
+        is_cancelled: Optional[Callable[[], Awaitable[bool]]] = None,
     ):
         """Execute workflow starting from given nodes."""
         # Queue of nodes to execute
@@ -428,6 +454,10 @@ class NodeExecutor:
         
         # Process nodes
         while not execution_queue.empty():
+            if is_cancelled is not None and await is_cancelled():
+                logger.info(f"Workflow {workflow_instance.id} was cancelled; not starting further nodes")
+                return
+
             # Get batch of nodes to execute in parallel
             batch = []
             batch_size = min(self.max_parallel_nodes, execution_queue.qsize())
@@ -457,7 +487,20 @@ class NodeExecutor:
                             **node_instance.input_data,
                             **node_instance.output_data,
                         }
-                        for next_node_id in node_instance.next_nodes:
+                        node_class = node_registry.resolve_node_class(
+                            node_instance.node_config
+                        )
+                        if node_class is not None and issubclass(
+                            node_class, DecisionNode
+                        ):
+                            rehydrated_next_nodes = await node_class(
+                                node_instance.node_config
+                            )._determine_next_nodes(
+                                node_instance, workflow_instance.variables
+                            )
+                        else:
+                            rehydrated_next_nodes = node_instance.next_nodes
+                        for next_node_id in rehydrated_next_nodes:
                             if next_node_id not in completed_nodes:
                                 await execution_queue.put(
                                     (next_node_id, accumulated)

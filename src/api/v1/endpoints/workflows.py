@@ -2,7 +2,6 @@
 
 import logging
 import time
-from datetime import datetime
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -962,10 +961,9 @@ async def cancel_workflow(
     execution = exec_result.scalar_one_or_none()
 
     if execution:
-        execution.status = WorkflowExecutionStatus.CANCELLED
-        execution.completed_at = datetime.utcnow()
-        await db.commit()
-        return {"message": f"Workflow {workflow_id} cancelled successfully"}
+        cancelled = await WorkflowExecutionService(db).cancel_execution(execution.id)
+        if cancelled.status == WorkflowExecutionStatus.CANCELLED:
+            return {"message": f"Workflow {workflow_id} cancelled successfully"}
 
     raise HTTPException(status_code=404, detail="No active workflow instance found")
 
