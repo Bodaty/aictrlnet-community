@@ -65,3 +65,24 @@ def test_no_flush_task_in_test_env():
         tracker = UsageTracker(_mock_session())
 
     assert tracker._flush_task is None
+
+
+@pytest.mark.asyncio
+async def test_singleton_does_not_pin_the_first_loops_cache(isolated_singleton):
+    """`get_cache()` rebuilds its client per event loop; the tracker must ask
+    each time rather than keep the first one, or a later loop's increment runs
+    on a closed loop ("Event loop is closed" — seen under pytest-xdist, 31 Oct).
+    """
+    first_cache, second_cache = MagicMock(), MagicMock()
+    for cache in (first_cache, second_cache):
+        cache.increment = AsyncMock(return_value=1)
+        cache.get = AsyncMock(return_value=None)
+    tracker = UsageTracker()
+    with patch("core.usage_tracker.get_cache", AsyncMock(side_effect=[first_cache, second_cache, second_cache])):
+        await tracker.track_usage("tenant-1", "workflow_manual_creation")
+        await tracker.track_usage("tenant-1", "workflow_manual_creation")
+        await tracker.get_ai_agent_daily_usage("tenant-1")
+
+    assert first_cache.increment.await_count == 1
+    assert second_cache.increment.await_count == 1
+    second_cache.get.assert_awaited_once()

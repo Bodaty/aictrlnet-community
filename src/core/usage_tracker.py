@@ -23,7 +23,7 @@ class UsageTracker:
     
     def __init__(self, db: Optional[AsyncSession] = None):
         self.db = db
-        self.cache = None  # Will be initialized on first use
+        self.cache = None  # Refreshed from get_cache() on every use: its client is per event loop
         self.settings = get_settings()
         
         # In-memory buffer for batching metrics
@@ -81,8 +81,7 @@ class UsageTracker:
         """Track a usage metric."""
         
         # Quick increment in cache for rate limiting
-        if not self.cache:
-            self.cache = await get_cache()
+        self.cache = await get_cache()
         cache_key = f"usage:{tenant_id}:{metric_type}:{datetime.utcnow().strftime('%Y%m%d')}"
         await self.cache.increment(cache_key, delta=int(value))
         
@@ -524,8 +523,7 @@ class UsageTracker:
         if adapter_type in ["langchain", "langchain-community"]:
             # Track daily usage specifically for rate limiting
             daily_key = f"ai_agent_daily:{tenant_id}:{datetime.utcnow().strftime('%Y%m%d')}"
-            if not self.cache:
-                self.cache = await get_cache()
+            self.cache = await get_cache()
             
             # Increment daily counter
             daily_count = await self.cache.increment(daily_key)
@@ -560,8 +558,7 @@ class UsageTracker:
         if not date:
             date = datetime.utcnow()
         
-        if not self.cache:
-            self.cache = await get_cache()
+        self.cache = await get_cache()
         
         daily_key = f"ai_agent_daily:{tenant_id}:{date.strftime('%Y%m%d')}"
         count = await self.cache.get(daily_key)
