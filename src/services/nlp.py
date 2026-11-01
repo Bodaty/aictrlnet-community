@@ -1147,7 +1147,7 @@ Return ONLY a single number (the index). Example: 5
         # and the new connection won't have app.current_tenant_id set.
         effective_tenant = tenant_id or get_current_tenant_id()
         await self.db.execute(
-            text("SELECT set_config('app.current_tenant_id', :tid, false)"),
+            text("SELECT set_config('app.current_tenant_id', :tid, true)"),
             {"tid": effective_tenant}
         )
 
@@ -1245,7 +1245,7 @@ Return ONLY a single number (the index). Example: 5
                     flag_modified(workflow, "definition")
                     
                     await self.db.execute(
-                        text("SELECT set_config('app.current_tenant_id', :tid, false)"),
+                        text("SELECT set_config('app.current_tenant_id', :tid, true)"),
                         {"tid": effective_tenant}
                     )
                     self.db.add(workflow)

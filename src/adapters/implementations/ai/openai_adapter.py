@@ -247,6 +247,7 @@ class OpenAIAdapter(BaseAdapter, ToolCallingMixin):
     
     async def execute(self, request: AdapterRequest) -> AdapterResponse:
         """Execute a request to OpenAI."""
+        self._assert_phi_egress_allowed(request)
         # Validate request
         self.validate_request(request)
         

@@ -14,6 +14,7 @@ from .models import (
     WorkflowInstance, NodeType
 )
 from .state_manager import NodeStateManager, state_manager as default_state_manager
+from .content_refs import scrub_error
 from events.event_bus import event_bus
 
 
@@ -57,6 +58,10 @@ class NodeError(Exception):
         self.timestamp = time.time()
 
 
+class RedactedNodeError(Exception):
+    """Stands in for an error whose text was scrubbed (phi workflows)."""
+
+
 class NodeErrorHandler:
     """Handles errors and recovery for node execution."""
     
@@ -88,20 +93,23 @@ class NodeErrorHandler:
         context: Optional[Dict[str, Any]] = None
     ) -> NodeExecutionResult:
         """Handle an error during node execution."""
+        # In a phi workflow the message and traceback may quote document content.
+        workflow_phi = bool((node_instance.context or {}).get("workflow_phi"))
+        error_message = scrub_error(str(error), workflow_phi, type(error).__name__)
         # Log the error
         error_details = {
             "node_id": node_instance.id,
             "node_type": node_instance.node_config.type,
             "workflow_id": workflow_instance.id,
             "error_type": type(error).__name__,
-            "error_message": str(error),
-            "traceback": traceback.format_exc(),
+            "error_message": error_message,
+            "traceback": error_message if workflow_phi else traceback.format_exc(),
             "timestamp": time.time(),
             "attempt": node_instance.attempt_number,
             "context": context or {}
         }
         
-        logger.error(f"Node error in {node_instance.id}: {error}", extra=error_details)
+        logger.error(f"Node error in {node_instance.id}: {error_message}", extra=error_details)
         
         # Record error in history
         await self._record_error(error_details)
@@ -116,6 +124,9 @@ class NodeErrorHandler:
             recovery_strategy = self._determine_recovery_strategy(
                 error, node_instance, workflow_instance
             )
+        if workflow_phi:
+            # Recovery strategies store str(error); hand them the scrubbed text.
+            error = RedactedNodeError(error_message)
         
         # Save error state
         await self._save_error_state(

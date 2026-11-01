@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import time
 
 from .models import NodeConfig, NodeStatus, NodeInstance, NodeExecutionResult
+from .content_refs import scrub_error
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterRequest
@@ -164,7 +165,11 @@ class BaseNode(ABC):
                 return await self._handle_error(instance, error, start_time)
                 
             except Exception as e:
-                return await self._handle_error(instance, str(e), start_time)
+                # In a phi workflow the message may quote document content.
+                workflow_phi = bool((instance.context or {}).get("workflow_phi"))
+                return await self._handle_error(
+                    instance, scrub_error(str(e), workflow_phi, type(e).__name__), start_time
+                )
     
     async def _handle_error(
         self,

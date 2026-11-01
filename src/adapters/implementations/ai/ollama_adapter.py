@@ -49,6 +49,17 @@ def _ollama_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _with_images(messages: List[Dict[str, Any]], images: List[str]) -> List[Dict[str, Any]]:
+    """`messages` with `images` attached to the last user message (Ollama's /api/chat
+    takes images per message). The caller's list is not modified."""
+    out = [dict(m) for m in messages]
+    for msg in reversed(out):
+        if msg.get("role") == "user":
+            msg["images"] = list(msg.get("images") or []) + list(images)
+            return out
+    raise ValueError("images need a user message to attach to")
+
+
 class OllamaAdapter(BaseAdapter, ToolCallingMixin):
     """Adapter for Ollama local LLM API."""
 
@@ -83,6 +94,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             # Still create client for potential connection attempts
             self.client = httpx.AsyncClient(
                 base_url=self.base_url,
+                follow_redirects=False,
                 timeout=5.0,  # Short timeout for discovery
                 limits=httpx.Limits(max_keepalive_connections=1, max_connections=2)
             )
@@ -91,6 +103,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
         # Create HTTP client
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
+            follow_redirects=False,
             timeout=self.timeout,
             limits=httpx.Limits(
                 max_keepalive_connections=5,
@@ -271,6 +284,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
     
     async def execute(self, request: AdapterRequest) -> AdapterResponse:
         """Execute an Ollama operation."""
+        self._assert_phi_egress_allowed(request)
         # Validate request
         self.validate_request(request)
         
@@ -315,6 +329,9 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             
             if "options" in request.parameters:
                 payload["options"] = request.parameters["options"]
+            self._apply_explicit_request_fields(payload, request)
+            if request.images:
+                payload["images"] = list(request.images)
             await self._apply_request_options(payload)
             
             stream = request.parameters.get("stream", False)
@@ -404,6 +421,9 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             
             if "options" in request.parameters:
                 payload["options"] = request.parameters["options"]
+            self._apply_explicit_request_fields(payload, request)
+            if request.images:
+                payload["messages"] = _with_images(payload["messages"], request.images)
             await self._apply_request_options(payload)
             
             stream = request.parameters.get("stream", False)
@@ -732,6 +752,14 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
 
     # ── ToolCallingMixin implementation ──────────────────────────────────
 
+    @staticmethod
+    def _apply_explicit_request_fields(payload: Dict[str, Any], request: AdapterRequest) -> None:
+        """The request's explicit sampling and output format win over `parameters`."""
+        if request.temperature is not None:
+            payload["options"] = {**(payload.get("options") or {}), "temperature": request.temperature}
+        if request.response_format is not None:
+            payload["format"] = request.response_format
+
     async def _apply_request_options(self, payload: Dict[str, Any], keep_warm: bool = False) -> None:
         """`num_ctx` on every request (spec §7.5; see llm/ollama_options.py); `keep_alive`
         for the conversation's tool-calling rounds, whose model must stay loaded."""
@@ -791,6 +819,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
         if client is None:
             client = httpx.AsyncClient(
                 base_url=self.base_url,
+                follow_redirects=False,
                 timeout=self.timeout,
             )
 
@@ -896,7 +925,7 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
 
         client = self.client
         if client is None:
-            client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout)
+            client = httpx.AsyncClient(base_url=self.base_url, follow_redirects=False, timeout=self.timeout)
 
         try:
             accumulated_text = ""

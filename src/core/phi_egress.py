@@ -35,7 +35,7 @@ BAA_SETTING = "AICTRLNET_PHI_BAA_PROVIDERS"
 
 # Providers served from the deployment's own machine. They need no BAA but
 # their endpoint must resolve locally.
-LOCAL_PROVIDERS = frozenset({"ollama", "vllm"})
+LOCAL_PROVIDERS = frozenset({"ollama", "vllm", "llamacpp"})
 
 # Not a model provider: the agent-framework-service container, which forwards
 # prompts to whatever providers IT is configured with. Allowlisting it is the
@@ -50,6 +50,7 @@ KNOWN_PROVIDERS = frozenset(
     {
         "ollama",
         "vllm",
+        "llamacpp",
         "anthropic",
         "openai",
         "gemini",
@@ -294,8 +295,20 @@ def phi_boot_problems(settings) -> list[str]:
     endpoint_settings = {
         "ollama": ("OLLAMA_URL",),
         "vllm": ("VLLM_URL", "VLLM_BASE_URL"),
+        "llamacpp": ("LLAMACPP_URL",),
     }
+    # Ollama and vLLM fall back to a localhost default; llama.cpp has none, so
+    # allowlisting it without an endpoint is a deployment that cannot read.
+    no_default_endpoint = {"llamacpp"}
     for provider in sorted(allowed & LOCAL_PROVIDERS):
+        if provider in no_default_endpoint and not any(
+            getattr(settings, name, None) for name in endpoint_settings[provider]
+        ):
+            problems.append(
+                f"{ALLOWLIST_SETTING} allows '{provider}', but "
+                f"{' / '.join(endpoint_settings[provider])} is not set. Required: "
+                f"the llama-server address on this machine or the clinic network."
+            )
         for setting_name in endpoint_settings[provider]:
             url = getattr(settings, setting_name, None)
             if url and not is_local_endpoint(url):

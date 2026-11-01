@@ -216,6 +216,7 @@ class WorkflowExecutionService:
             # the failure happens before the context is loaded (which would
             # swallow the failure event and leave the row 'running' forever).
             is_dry_run = False
+            workflow_phi = False
             try:
                 # Scope this session to the execution's tenant for RLS. Must
                 # happen before any table query below — otherwise the
@@ -328,6 +329,9 @@ class WorkflowExecutionService:
                 workflow_name = execution.workflow.name if execution.workflow else ""
                 user_id = str(execution.user_id) if execution.user_id else "system"
                 tenant_id = str(execution.tenant_id) if getattr(execution, "tenant_id", None) else "default-tenant"
+                # A workflow whose definition carries `phi: true` is a PHI pipeline:
+                # its AI steps must state their sampling explicitly (see AdapterRequest).
+                workflow_phi = bool((workflow_def or {}).get("phi"))
 
                 # AI Control Spectrum — resolve autonomy once per execution and
                 # inject into every node's context so the runtime gate can
@@ -349,6 +353,7 @@ class WorkflowExecutionService:
                     ni.context["tenant_id"] = tenant_id
                     ni.context["workflow_instance_id"] = str(execution_id)
                     ni.context["is_dry_run"] = is_dry_run
+                    ni.context["workflow_phi"] = workflow_phi
                     if resolved_autonomy is not None:
                         ni.context["autonomy"] = resolved_autonomy
 
@@ -507,24 +512,27 @@ class WorkflowExecutionService:
                     )
 
             except Exception as e:
+                from nodes.content_refs import scrub_error
+
+                error_text = scrub_error(str(e), workflow_phi, type(e).__name__)
                 if execution:
                     await db.rollback()
                     written = await self._write_final_status(db, execution_id, {
                         "status": WorkflowExecutionStatus.FAILED,
                         "completed_at": datetime.utcnow(),
-                        "error_details": {"error": str(e)},
+                        "error_details": {"error": error_text},
                     })
                     if not written:
-                        logger.info(f"Workflow execution {execution_id} was cancelled; ignoring {type(e).__name__}: {e}")
+                        logger.info(f"Workflow execution {execution_id} was cancelled; ignoring {type(e).__name__}: {error_text}")
                         return
-                logger.error(f"Workflow execution failed: {e}")
+                logger.error(f"Workflow execution failed: {error_text}")
 
                 # Publish failure event
                 await event_bus.publish(
                     "workflow.execution.failed",
                     {
                         "execution_id": str(execution_id),
-                        "error": str(e),
+                        "error": error_text,
                         "is_dry_run": is_dry_run,
                     }
                 )

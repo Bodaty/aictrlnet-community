@@ -219,6 +219,8 @@ class Settings(BaseSettings):
     # VLLM_URL; llm/generation.py reads VLLM_URL.
     VLLM_URL: Optional[str] = Field(default=None, env="VLLM_URL")
     VLLM_BASE_URL: Optional[str] = Field(default=None, env="VLLM_BASE_URL")
+    # llama.cpp (llama-server) for local OCR and vision; no default endpoint.
+    LLAMACPP_URL: Optional[str] = Field(default=None, env="LLAMACPP_URL")
     # Where uploaded and generated documents are staged. Promoted from a bare
     # os.environ read so the PHI guard can see it — a guard cannot enforce what
     # it cannot see. The default must stay this literal rather than deriving from

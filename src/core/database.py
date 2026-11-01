@@ -83,12 +83,12 @@ def get_engine():
 def bind_session_tenant(session: AsyncSession, tenant_id: str) -> None:
     """Bind a session to a tenant for RLS, for the session's whole life.
 
-    Applying the tenant once with set_config on whatever connection the session
-    happens to hold is not enough: the pool resets a released connection to the
-    default tenant, and a rolled-back transaction reverts the setting. A
-    session that releases its connection mid-request (the conversation turn
-    does, before every LLM round) or rolls back would run every later query as
-    the default tenant. The binding is re-applied at every transaction begin.
+    The binding is applied transaction-locally at every transaction begin, so
+    it survives commit, rollback and a session that releases its connection
+    mid-request (the conversation turn does, before every LLM round). When a
+    transaction ends the setting reverts to the connect-time default tenant, so
+    a pooled connection never carries this tenant to the next session that
+    checks it out: nothing resets a connection when it returns to the pool.
     """
     session.info["tenant_id"] = tenant_id
 
@@ -103,9 +103,11 @@ def _apply_bound_tenant(session, transaction, connection):
     tenant_id = session.info.get("tenant_id")
     if tenant_id:
         connection.execute(
-            text("SELECT set_config('app.current_tenant_id', :tenant_id, false)"),
+            text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
             {"tenant_id": tenant_id},
         )
+    if session.info.get("is_admin"):
+        connection.execute(text("SELECT set_config('app.is_admin', 'true', true)"))
 
 
 def get_session_maker():
@@ -170,8 +172,9 @@ async def get_admin_db() -> AsyncGenerator[AsyncSession, None]:
     """
     async with get_session_maker()() as session:
         try:
-            # Set admin flag to bypass RLS policies
-            await session.execute(text("SET app.is_admin = 'true'"))
+            # Admin flag to bypass RLS policies, applied transaction-locally at
+            # every transaction begin so it never reaches the next pooled session.
+            session.info["is_admin"] = True
             yield session
         except Exception:
             await session.rollback()

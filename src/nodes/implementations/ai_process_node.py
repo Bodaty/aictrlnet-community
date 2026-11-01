@@ -1,5 +1,6 @@
 """AI Process node implementation for AI/ML processing tasks."""
 
+import copy
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ from datetime import datetime
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
+from .. import content_refs
 from ..template_utils import (
     resolve_templates,
     get_adapter_credentials_for_tenant,
@@ -207,16 +209,48 @@ class AIProcessNode(BaseNode):
             or self.config.parameters.get("adapter_type")
         )
 
+        # The run's tenant: set by the workflow runtime on every node's context.
+        # The request contextvar is unset in scheduler- and trigger-started runs.
+        tenant_id: Optional[str] = context.get("tenant_id")
+        if not tenant_id:
+            from core.tenant_context import get_current_tenant_id
+            tenant_id = get_current_tenant_id()
+        self._org_llm_settings_cache = None
+
+        # Content by reference: the step's text and images come from a resolver and
+        # its output goes to a sink, so neither enters run history. A step of a
+        # `phi: true` workflow under PHI mode must use it.
+        if self.config.parameters.get("input_ref") is not None:
+            if ai_task != "custom":
+                raise content_refs.ContentRefError(
+                    f"input_ref is supported only for ai_task 'custom'; this step's ai_task is '{ai_task}'"
+                )
+            if self.config.parameters.get("output_sink") is None:
+                raise content_refs.ContentRefError(
+                    "A step with input_ref needs an output_sink: its output must not be kept in run history"
+                )
+            content_refs.check_registered(
+                self.config.parameters["input_ref"], self.config.parameters["output_sink"]
+            )
+            if not tenant_id:
+                raise content_refs.ContentRefError("Content by reference needs the run's tenant; none is set")
+        elif context.get("workflow_phi") and phi_mode_on():
+            raise PHIEgressRefused(
+                f"{PHI_REFUSAL_MARKER} Refusing inline content in a step of a PHI workflow: it "
+                f"would be kept in run history. Required: pass the content by reference with "
+                f"'input_ref' and 'output_sink'."
+            )
+
         if not adapter_id:
             # Try org-level LLM settings before falling back to system default
-            adapter_id = await self._resolve_org_adapter()
+            adapter_id = await self._resolve_org_adapter(tenant_id)
 
         if not adapter_id:
             # No org setting — use system default LLM
             adapter_id = await self._auto_select_adapter(ai_task)
 
         # Trial restriction: override node-specific adapter to system default
-        adapter_id = await self._enforce_trial_restriction(adapter_id)
+        adapter_id = await self._enforce_trial_restriction(adapter_id, tenant_id)
 
         # Local test gates: every AI node answers from the script (llm/scripted.py).
         from llm.scripted import scripted_mode
@@ -226,13 +260,8 @@ class AIProcessNode(BaseNode):
                 adapter_registry.register_adapter_class("scripted", ScriptedAdapter, AdapterCategory.AI)
             adapter_id = "scripted"
 
-        # Stash so _process_* methods can decide whether narrative routing
-        # (model upgrade) applies. Only Ollama-family adapters get upgraded —
-        # see _maybe_upgrade_model_for_narrative.
-        self._current_adapter_id = adapter_id
-
         # Check LLM usage limits before calling (Business+ only)
-        await self._check_llm_limits()
+        await self._check_llm_limits(tenant_id)
 
         # Get AI adapter class from registry
         adapter_class = adapter_registry.get_adapter_class(adapter_id)
@@ -246,7 +275,7 @@ class AIProcessNode(BaseNode):
         # one org's LLM key can't leak to another. context["tenant_id"] is
         # threaded into every node by the workflow runtime.
         credentials = await get_adapter_credentials_for_tenant(
-            adapter_id, context.get("tenant_id")
+            adapter_id, tenant_id
         ) or {}
 
         # Create adapter instance with proper config + credentials.
@@ -289,9 +318,24 @@ class AIProcessNode(BaseNode):
         tmpl_ctx = {"input_data": input_data, **input_data}
 
         # Resolve templates in parameters that may contain {{...}} placeholders
-        resolved_params = resolve_templates(dict(self.config.parameters), tmpl_ctx)
-        # Patch self.config.parameters so downstream helpers see resolved values
-        self.config.parameters.update(resolved_params)
+        # into a per-execution copy: the node config is never written, so a node
+        # reused across executions re-resolves its placeholders each time.
+        params: Dict[str, Any] = resolve_templates(copy.deepcopy(dict(self.config.parameters)), tmpl_ctx)
+        # Lets _maybe_upgrade_model_for_narrative decide whether narrative routing
+        # (model upgrade) applies. Only Ollama-family adapters get upgraded.
+        params["_resolved_adapter_id"] = adapter_id
+        # A step of a workflow marked `phi: true` sends a PHI-pipeline request: its
+        # temperature is the step's own (no default stands in, so the adapter refuses
+        # a step that sets none) and a JSON-schema response_format is passed through.
+        # Other steps send exactly what they did before.
+        if context.get("workflow_phi"):
+            response_format = params.get("response_format")
+            params["_adapter_request_flags"] = {
+                "phi_pipeline": True,
+                "temperature": params.get("temperature"),
+                "response_format": response_format if isinstance(response_format, dict) else None,
+            }
+        await self._load_org_llm_settings(tenant_id)
 
         # Track wall time across the LLM call so the audit row + metering
         # can record response_time. Started just before the adapter dispatch
@@ -302,30 +346,32 @@ class AIProcessNode(BaseNode):
 
         # Process based on task type
         if ai_task == "generate":
-            output_data = await self._process_generation(adapter, input_data)
+            output_data = await self._process_generation(adapter, input_data, params)
         elif ai_task == "sentiment":
-            output_data = await self._process_sentiment(adapter, input_data)
+            output_data = await self._process_sentiment(adapter, input_data, params)
         elif ai_task == "classify":
-            output_data = await self._process_classification(adapter, input_data)
+            output_data = await self._process_classification(adapter, input_data, params)
         elif ai_task == "summarize":
-            output_data = await self._process_summarization(adapter, input_data)
+            output_data = await self._process_summarization(adapter, input_data, params)
         elif ai_task == "extract_entities":
-            output_data = await self._process_entity_extraction(adapter, input_data)
+            output_data = await self._process_entity_extraction(adapter, input_data, params)
         elif ai_task == "embeddings":
-            output_data = await self._process_embeddings(adapter, input_data)
+            output_data = await self._process_embeddings(adapter, input_data, params)
         elif ai_task == "translate":
-            output_data = await self._process_translation(adapter, input_data)
+            output_data = await self._process_translation(adapter, input_data, params)
         elif ai_task == "qa":
-            output_data = await self._process_qa(adapter, input_data)
+            output_data = await self._process_qa(adapter, input_data, params)
         elif ai_task == "custom":
-            output_data = await self._process_custom(adapter, input_data)
+            output_data = await self._process_custom(
+                adapter, input_data, params, tenant_id=tenant_id, context=context
+            )
         else:
             raise ValueError(f"Unsupported AI task: {ai_task}")
 
         logger.debug(f"AI node {self.config.id} output keys: {list(output_data.keys())}, task={ai_task}")
 
         # Track LLM usage for metering (Business+ only)
-        await self._track_llm_call(adapter_id, ai_task, output_data)
+        await self._track_llm_call(adapter_id, ai_task, output_data, tenant_id)
 
         # AI Governance audit log entry — every LLM invocation gets a row in
         # ai_audit_logs so /ai-governance?tab=audit-logs reflects what
@@ -336,6 +382,7 @@ class AIProcessNode(BaseNode):
             ai_task=ai_task,
             output_data=output_data,
             context=context,
+            tenant_id=tenant_id,
             response_time_s=time.monotonic() - _llm_started_at,
             status=_llm_status,
             error_message=_llm_error,
@@ -354,19 +401,19 @@ class AIProcessNode(BaseNode):
 
         return output_data
     
-    async def _resolve_org_adapter(self) -> Optional[str]:
+    async def _resolve_org_adapter(self, tenant_id: Optional[str]) -> Optional[str]:
         """Check org-level LLM settings for a preferred adapter.
 
         Returns adapter registry key if the org has configured a preferred
         provider and it's available, otherwise None.
         """
         try:
-            from core.tenant_context import get_current_tenant_id
-            from core.database import get_session_maker
+            from core.database import get_session_maker, bind_session_tenant
             from llm.org_llm_settings import get_org_llm_settings
 
-            tenant_id = get_current_tenant_id()
             async with get_session_maker()() as db:
+                if tenant_id:
+                    bind_session_tenant(db, tenant_id)
                 settings = await get_org_llm_settings(tenant_id, db)
 
             if not settings or not settings.preferred_provider:
@@ -395,17 +442,17 @@ class AIProcessNode(BaseNode):
             logger.debug(f"Org adapter resolution failed (using system default): {e}")
             return None
 
-    async def _load_org_llm_settings(self):
+    async def _load_org_llm_settings(self, tenant_id: Optional[str]):
         """Load org LLM settings once per node execution (same source as _resolve_org_adapter)."""
         if getattr(self, "_org_llm_settings_cache", None) is not None:
             return self._org_llm_settings_cache
         try:
-            from core.tenant_context import get_current_tenant_id
-            from core.database import get_session_maker
+            from core.database import get_session_maker, bind_session_tenant
             from llm.org_llm_settings import get_org_llm_settings
 
-            tenant_id = get_current_tenant_id()
             async with get_session_maker()() as db:
+                if tenant_id:
+                    bind_session_tenant(db, tenant_id)
                 self._org_llm_settings_cache = await get_org_llm_settings(tenant_id, db)
         except Exception as e:
             logger.debug(f"Org LLM settings unavailable for default-model resolution: {e}")
@@ -416,11 +463,11 @@ class AIProcessNode(BaseNode):
         """Default model when the node sets none: org preferred (trial-gated) → env default."""
         from llm.tier_resolver import resolve_model
 
-        resolution = resolve_model(org_settings=await self._load_org_llm_settings())
+        resolution = resolve_model(org_settings=getattr(self, "_org_llm_settings_cache", None))
         logger.info(f"aiProcess default model: {resolution.model} (source={resolution.source})")
         return resolution.model
 
-    async def _enforce_trial_restriction(self, adapter_id: str) -> str:
+    async def _enforce_trial_restriction(self, adapter_id: str, tenant_id: Optional[str]) -> str:
         """In trial mode, override node-specific adapters to system default.
 
         Trial tenants use the system default LLM (Bodaty pays). Node-level
@@ -428,12 +475,12 @@ class AIProcessNode(BaseNode):
         cost leakage. After BYOK, node-level selection is honored.
         """
         try:
-            from core.tenant_context import get_current_tenant_id
-            from core.database import get_session_maker
+            from core.database import get_session_maker, bind_session_tenant
             from llm.org_llm_settings import get_org_llm_settings
 
-            tenant_id = get_current_tenant_id()
             async with get_session_maker()() as db:
+                if tenant_id:
+                    bind_session_tenant(db, tenant_id)
                 settings = await get_org_llm_settings(tenant_id, db)
 
             if not settings or not settings.trial_mode:
@@ -455,21 +502,21 @@ class AIProcessNode(BaseNode):
             logger.debug(f"Trial restriction check skipped: {e}")
             return adapter_id
 
-    async def _check_llm_limits(self) -> None:
+    async def _check_llm_limits(self, tenant_id: Optional[str]) -> None:
         """Check LLM usage limits before making a call.
 
         Only enforced when Business edition metering is available.
         Community edition skips this check silently.
         """
         try:
-            from core.tenant_context import get_current_tenant_id
-            from core.database import get_session_maker
+            from core.database import get_session_maker, bind_session_tenant
             from aictrlnet_business.services.usage_metering import (
                 UsageMeteringService, UsageLimitEnforcer
             )
 
-            tenant_id = get_current_tenant_id()
             async with get_session_maker()() as db:
+                if tenant_id:
+                    bind_session_tenant(db, tenant_id)
                 metering = UsageMeteringService(db)
                 enforcer = UsageLimitEnforcer(metering)
 
@@ -507,7 +554,8 @@ class AIProcessNode(BaseNode):
             logger.debug(f"LLM limit check skipped: {e}")
 
     async def _track_llm_call(
-        self, adapter_id: str, ai_task: str, output_data: Dict[str, Any]
+        self, adapter_id: str, ai_task: str, output_data: Dict[str, Any],
+        tenant_id: Optional[str],
     ) -> None:
         """Track an LLM call for usage metering.
 
@@ -515,16 +563,16 @@ class AIProcessNode(BaseNode):
         (e.g. llm_ollama, llm_openai). Only when Business edition is available.
         """
         try:
-            from core.tenant_context import get_current_tenant_id
-            from core.database import get_session_maker
+            from core.database import get_session_maker, bind_session_tenant
             from aictrlnet_business.services.usage_metering import UsageMeteringService
 
-            tenant_id = get_current_tenant_id()
             usage = output_data.get("usage", {})
             total_tokens = usage.get("total_tokens", 0)
             model_name = output_data.get("model", "")
 
             async with get_session_maker()() as db:
+                if tenant_id:
+                    bind_session_tenant(db, tenant_id)
                 metering = UsageMeteringService(db)
 
                 # 1. Aggregate LLM call count
@@ -565,6 +613,7 @@ class AIProcessNode(BaseNode):
         ai_task: str,
         output_data: Dict[str, Any],
         context: Dict[str, Any],
+        tenant_id: Optional[str],
         response_time_s: float,
         status: str,
         error_message: Optional[str],
@@ -577,7 +626,7 @@ class AIProcessNode(BaseNode):
         the write fails. Never raises into the workflow.
         """
         try:
-            from core.database import get_session_maker
+            from core.database import get_session_maker, bind_session_tenant
             from aictrlnet_business.models.ai_governance_complete import AIAuditLog
 
             usage = output_data.get("usage") or {}
@@ -585,6 +634,7 @@ class AIProcessNode(BaseNode):
             model_name = output_data.get("model") or adapter_id
 
             row = AIAuditLog(
+                **({"tenant_id": tenant_id} if tenant_id else {}),
                 action="model_invoked",
                 model_id=str(model_name) if model_name else None,
                 user_id=context.get("user_id"),
@@ -604,6 +654,8 @@ class AIProcessNode(BaseNode):
             )
 
             async with get_session_maker()() as db:
+                if tenant_id:
+                    bind_session_tenant(db, tenant_id)
                 db.add(row)
                 await db.commit()
         except ImportError:
@@ -677,19 +729,35 @@ class AIProcessNode(BaseNode):
 
         return available[0]
     
-    async def _call_adapter(self, adapter: Any, capability: str, parameters: dict) -> "AdapterResponse":
+    @staticmethod
+    def _request_flags(params: Dict[str, Any]) -> Dict[str, Any]:
+        return params.get("_adapter_request_flags") or {}
+
+    async def _call_adapter(
+        self, adapter: Any, capability: str, parameters: dict, request_flags: Optional[Dict[str, Any]] = None
+    ) -> "AdapterResponse":
         """Call adapter with fallback from generic capabilities to chat."""
         from adapters.models import AdapterRequest
 
+        request_flags = request_flags or {}
         # Ensure a model is always set — adapters like Ollama require it
         if not parameters.get("model"):
             parameters["model"] = await self._resolve_default_model()
 
-        request = AdapterRequest(capability=capability, parameters=parameters)
+        # R-09: an image or PHI-pipeline call that fails must fail; a text-only
+        # chat retry would drop the image and come back with model-invented text.
+        no_text_retry = bool(request_flags.get("phi_pipeline") or request_flags.get("images"))
+        request = AdapterRequest(capability=capability, parameters=parameters, **request_flags)
         try:
             response = await adapter.execute(request)
             if response.status != "error":
                 _normalize_response_text(response)
+                return response
+            if no_text_retry:
+                logger.warning(
+                    f"Adapter capability '{capability}' returned error status "
+                    f"({getattr(response, 'error_code', None)}); not retried"
+                )
                 return response
             logger.warning(
                 f"Adapter capability '{capability}' returned error status "
@@ -698,6 +766,11 @@ class AIProcessNode(BaseNode):
         except PHIEgressRefused:
             raise  # R-04: the chat retry would be a second egress attempt
         except Exception as primary_error:
+            if no_text_retry:
+                logger.warning(
+                    f"Adapter capability '{capability}' failed ({type(primary_error).__name__}); not retried"
+                )
+                raise
             logger.warning(
                 f"Adapter capability '{capability}' failed "
                 f"({type(primary_error).__name__}: {primary_error}); retrying as chat"
@@ -716,14 +789,15 @@ class AIProcessNode(BaseNode):
                 "model": parameters.get("model"),
                 "max_tokens": parameters.get("max_tokens", 1000),
                 "temperature": parameters.get("temperature", 0.7),
-            }
+            },
+            **request_flags,
         )
         response = await adapter.execute(chat_request)
         if response.status != "error":
             _normalize_response_text(response)
         return response
 
-    async def _build_agent_persona_block(self) -> Optional[str]:
+    async def _build_agent_persona_block(self, params: Dict[str, Any]) -> Optional[str]:
         """Return a persona-context block when this node references an agent.
 
         Looks at NodeConfig.parameters for agent_id (UUID) or agent (name string).
@@ -731,7 +805,6 @@ class AIProcessNode(BaseNode):
         behavioral_rules, or None if no agent is referenced or Business models
         aren't available.
         """
-        params = self.config.parameters or {}
         agent_id = params.get("agent_id")
         agent_name = params.get("agent")
         if not agent_id and not agent_name:
@@ -825,7 +898,7 @@ class AIProcessNode(BaseNode):
         return f"{guardrail}\n\n{prompt}"
 
     def _maybe_upgrade_model_for_narrative(
-        self, prompt: str, parameters: Dict[str, Any]
+        self, prompt: str, parameters: Dict[str, Any], params: Dict[str, Any]
     ) -> None:
         """In-place: route narrative nodes to QUALITY tier when no model is set.
 
@@ -838,7 +911,7 @@ class AIProcessNode(BaseNode):
             guess production deployments that pin a small model for cost or
             speed reasons.
         """
-        adapter_id = getattr(self, "_current_adapter_id", None)
+        adapter_id = params.get("_resolved_adapter_id")
         if adapter_id not in _OLLAMA_ADAPTER_IDS:
             return
         if not self._is_narrative_node(prompt):
@@ -861,12 +934,12 @@ class AIProcessNode(BaseNode):
         )
         parameters["model"] = upgraded
 
-    async def _process_generation(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_generation(self, adapter: Any, input_data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """Process text generation task."""
         prompt = (
             input_data.get("prompt")
-            or self.config.parameters.get("prompt")
-            or self.config.parameters.get("description")
+            or params.get("prompt")
+            or params.get("description")
         )
         if not prompt:
             # Synthesize a prompt from the node name and any analysis/agent fields
@@ -874,13 +947,13 @@ class AIProcessNode(BaseNode):
             parts = []
             if self.config.name and self.config.name != self.config.id:
                 parts.append(f"Perform the following task: {self.config.name}.")
-            agent = self.config.parameters.get("agent")
+            agent = params.get("agent")
             if agent:
                 parts.append(f"You are the {agent}.")
-            analysis = self.config.parameters.get("analysis")
+            analysis = params.get("analysis")
             if analysis and isinstance(analysis, list):
                 parts.append(f"Analyze: {', '.join(analysis)}.")
-            fields = self.config.parameters.get("required_fields")
+            fields = params.get("required_fields")
             if fields and isinstance(fields, list):
                 parts.append(f"Return results for: {', '.join(fields)}.")
             if input_data:
@@ -890,7 +963,7 @@ class AIProcessNode(BaseNode):
         # If this node references a named agent, prepend its persona block so the
         # LLM call carries the agent's identity. Best-effort: silently skips when
         # Business edition is not present or no matching agent is registered.
-        persona_block = await self._build_agent_persona_block()
+        persona_block = await self._build_agent_persona_block(params)
         if persona_block:
             prompt = f"{persona_block}\n\n{prompt}"
 
@@ -903,17 +976,17 @@ class AIProcessNode(BaseNode):
 
         call_params = {
             "prompt": prompt,
-            "max_tokens": self.config.parameters.get("max_tokens", 1000),
-            "temperature": self.config.parameters.get("temperature", 0.7),
-            "top_p": self.config.parameters.get("top_p", 1.0),
-            "model": self.config.parameters.get("model"),
+            "max_tokens": params.get("max_tokens", 1000),
+            "temperature": params.get("temperature", 0.7),
+            "top_p": params.get("top_p", 1.0),
+            "model": params.get("model"),
         }
         # For Ollama-family adapters, narrative prompts run on QUALITY tier
         # (llama3.1:8b-instruct-q4_K_M) instead of the small balanced
         # defaults that drift on dollar amounts.
-        self._maybe_upgrade_model_for_narrative(prompt, call_params)
+        self._maybe_upgrade_model_for_narrative(prompt, call_params, params)
 
-        response = await self._call_adapter(adapter, "generate", call_params)
+        response = await self._call_adapter(adapter, "generate", call_params, self._request_flags(params))
 
         if response.status == "error":
             raise Exception(f"Generation failed: {response.error}")
@@ -941,10 +1014,10 @@ class AIProcessNode(BaseNode):
                 for key, value in parsed.items():
                     if key not in result:
                         result[key] = value
-        self._apply_escalation_rules(result, parsed if isinstance(parsed, dict) else None)
+        self._apply_escalation_rules(result, parsed if isinstance(parsed, dict) else None, params)
         return result
 
-    def _apply_escalation_rules(self, result: Dict[str, Any], parsed: Optional[Dict[str, Any]]) -> None:
+    def _apply_escalation_rules(self, result: Dict[str, Any], parsed: Optional[Dict[str, Any]], params: Dict[str, Any]) -> None:
         """Deterministically enforce ``needs_human_attention`` from declarative rules.
 
         Starter prompts instruct the model to set needs_human_attention for
@@ -961,7 +1034,7 @@ class AIProcessNode(BaseNode):
         Operators: ``in`` (case-insensitive membership), ``lt`` / ``gt`` (numeric;
         bounds may arrive as strings via {{params.*}} substitution).
         """
-        rules = self.config.parameters.get("escalation_rules")
+        rules = params.get("escalation_rules")
         if not rules or not isinstance(rules, list):
             return
 
@@ -1010,9 +1083,9 @@ class AIProcessNode(BaseNode):
             result["parsed_output"]["escalation_reason"] = forced
         logger.info(f"Escalation rules forced needs_human_attention=true: {forced}")
 
-    async def _process_sentiment(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_sentiment(self, adapter: Any, input_data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """Process sentiment analysis task."""
-        text = input_data.get("text") or self.config.parameters.get("text")
+        text = input_data.get("text") or params.get("text")
         if not text:
             raise ValueError("Text is required for sentiment analysis")
 
@@ -1020,8 +1093,8 @@ class AIProcessNode(BaseNode):
             "prompt": f"Analyze the sentiment of the following text and respond with only 'positive', 'negative', or 'neutral':\n\n{text}",
             "max_tokens": 10,
             "temperature": 0,
-            "model": self.config.parameters.get("model"),
-        })
+            "model": params.get("model"),
+        }, self._request_flags(params))
 
         if response.status == "error":
             raise Exception(f"Sentiment analysis failed: {response.error}")
@@ -1044,15 +1117,15 @@ class AIProcessNode(BaseNode):
         
         return {"sentiment": "neutral", "confidence": 0.5}
     
-    async def _process_classification(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_classification(self, adapter: Any, input_data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """Process text classification task."""
         # Get text and categories
-        text = input_data.get("text") or self.config.parameters.get("text")
-        categories = input_data.get("categories") or self.config.parameters.get("categories")
+        text = input_data.get("text") or params.get("text")
+        categories = input_data.get("categories") or params.get("categories")
 
         if not text:
             # Fall back to the resolved prompt as the text to classify
-            prompt = self.config.parameters.get("prompt")
+            prompt = params.get("prompt")
             if prompt:
                 text = prompt
                 logger.info("Classification: using resolved prompt as text input")
@@ -1067,8 +1140,8 @@ class AIProcessNode(BaseNode):
             parameters={
                 "text": text,
                 "categories": categories,
-                "multi_label": self.config.parameters.get("multi_label", False),
-                "model": self.config.parameters.get("model")
+                "multi_label": params.get("multi_label", False),
+                "model": params.get("model")
             }
         )
         
@@ -1080,8 +1153,8 @@ class AIProcessNode(BaseNode):
             "prompt": f"Classify the following text into one of these categories [{categories_str}]. Respond with only the category name:\n\n{text}",
             "max_tokens": 50,
             "temperature": 0,
-            "model": self.config.parameters.get("model"),
-        })
+            "model": params.get("model"),
+        }, self._request_flags(params))
 
         if response.status == "error":
             raise Exception(f"Classification failed: {response.error}")
@@ -1096,9 +1169,9 @@ class AIProcessNode(BaseNode):
         
         # Extract classification results
         classifications = response.data.get("classifications", [])
-        if self.config.parameters.get("multi_label", False):
+        if params.get("multi_label", False):
             # Return all classifications above threshold
-            threshold = self.config.parameters.get("threshold", 0.5)
+            threshold = params.get("threshold", 0.5)
             selected = [c for c in classifications if c.get("confidence", 0) >= threshold]
             return {
                 "categories": [c["label"] for c in selected],
@@ -1118,16 +1191,16 @@ class AIProcessNode(BaseNode):
         
         return {"category": None, "confidence": 0, "multi_label": False}
     
-    async def _process_summarization(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_summarization(self, adapter: Any, input_data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """Process text summarization task."""
         # Get text to summarize
-        text = input_data.get("text") or self.config.parameters.get("text")
+        text = input_data.get("text") or params.get("text")
         if not text:
             raise ValueError("Text is required for summarization")
         
         # Get summarization parameters
-        max_length = self.config.parameters.get("max_length", 200)
-        style = self.config.parameters.get("style", "concise")  # concise, detailed, bullet_points
+        max_length = params.get("max_length", 200)
+        style = params.get("style", "concise")  # concise, detailed, bullet_points
         
         # Build prompt based on style
         if style == "bullet_points":
@@ -1143,7 +1216,7 @@ class AIProcessNode(BaseNode):
             parameters={
                 "text": text,
                 "max_length": max_length,
-                "model": self.config.parameters.get("model")
+                "model": params.get("model")
             }
         )
         
@@ -1151,8 +1224,8 @@ class AIProcessNode(BaseNode):
             "prompt": prompt,
             "max_tokens": max_length * 2,
             "temperature": 0.3,
-            "model": self.config.parameters.get("model"),
-        })
+            "model": params.get("model"),
+        }, self._request_flags(params))
 
         if response.status == "error":
             raise Exception(f"Summarization failed: {response.error}")
@@ -1162,15 +1235,15 @@ class AIProcessNode(BaseNode):
             "method": "generation"
         }
     
-    async def _process_entity_extraction(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_entity_extraction(self, adapter: Any, input_data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """Process entity extraction task."""
         # Get text to analyze
-        text = input_data.get("text") or self.config.parameters.get("text")
+        text = input_data.get("text") or params.get("text")
         if not text:
             raise ValueError("Text is required for entity extraction")
         
         # Get entity types to extract
-        entity_types = self.config.parameters.get("entity_types", 
+        entity_types = params.get("entity_types", 
             ["person", "organization", "location", "date", "email", "phone", "url"])
         
         # Build prompt for extraction
@@ -1187,8 +1260,9 @@ Text: {text}"""
                 "prompt": prompt,
                 "max_tokens": 500,
                 "temperature": 0,
-                "model": self.config.parameters.get("model")
-            }
+                "model": params.get("model")
+            },
+            **self._request_flags(params),
         )
         
         # Execute request
@@ -1217,11 +1291,11 @@ Text: {text}"""
             "entity_count": sum(len(v) for v in entities.values())
         }
     
-    async def _process_embeddings(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_embeddings(self, adapter: Any, input_data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """Process embeddings generation task."""
         # Get text(s) to embed
-        text = input_data.get("text") or self.config.parameters.get("text")
-        texts = input_data.get("texts") or self.config.parameters.get("texts")
+        text = input_data.get("text") or params.get("text")
+        texts = input_data.get("texts") or params.get("texts")
         
         if not text and not texts:
             raise ValueError("Text or texts are required for embeddings generation")
@@ -1237,7 +1311,7 @@ Text: {text}"""
             capability="embeddings",
             parameters={
                 "texts": input_texts,
-                "model": self.config.parameters.get("model")
+                "model": params.get("model")
             }
         )
         
@@ -1255,16 +1329,16 @@ Text: {text}"""
             "count": len(embeddings)
         }
     
-    async def _process_translation(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_translation(self, adapter: Any, input_data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """Process text translation task."""
         # Get text to translate
-        text = input_data.get("text") or self.config.parameters.get("text")
+        text = input_data.get("text") or params.get("text")
         if not text:
             raise ValueError("Text is required for translation")
         
         # Get languages
-        source_lang = self.config.parameters.get("source_language", "auto")
-        target_lang = self.config.parameters.get("target_language", "en")
+        source_lang = params.get("source_language", "auto")
+        target_lang = params.get("target_language", "en")
         
         # Build prompt for translation
         if source_lang == "auto":
@@ -1279,8 +1353,9 @@ Text: {text}"""
                 "prompt": prompt,
                 "max_tokens": len(text) * 2,  # Rough estimate
                 "temperature": 0.3,
-                "model": self.config.parameters.get("model")
-            }
+                "model": params.get("model")
+            },
+            **self._request_flags(params),
         )
         
         # Execute request
@@ -1295,11 +1370,11 @@ Text: {text}"""
             "target_language": target_lang
         }
     
-    async def _process_qa(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_qa(self, adapter: Any, input_data: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """Process question answering task."""
         # Get question and context
-        question = input_data.get("question") or self.config.parameters.get("question")
-        context = input_data.get("context") or self.config.parameters.get("context")
+        question = input_data.get("question") or params.get("question")
+        context = input_data.get("context") or params.get("context")
         
         if not question:
             raise ValueError("Question is required for Q&A task")
@@ -1321,10 +1396,11 @@ Answer:"""
             capability="generate",
             parameters={
                 "prompt": prompt,
-                "max_tokens": self.config.parameters.get("max_answer_length", 500),
+                "max_tokens": params.get("max_answer_length", 500),
                 "temperature": 0.3,
-                "model": self.config.parameters.get("model")
-            }
+                "model": params.get("model")
+            },
+            **self._request_flags(params),
         )
         
         # Execute request
@@ -1339,11 +1415,23 @@ Answer:"""
             "has_context": context is not None
         }
     
-    async def _process_custom(self, adapter: Any, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_custom(
+        self,
+        adapter: Any,
+        input_data: Dict[str, Any],
+        params: Dict[str, Any],
+        *,
+        tenant_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Process custom AI task."""
         # Get custom capability and parameters
-        capability = self.config.parameters.get("capability", "generate")
-        request_params = self.config.parameters.get("request_parameters", {})
+        capability = params.get("capability", "generate")
+        if params.get("input_ref") is not None:
+            return await self._process_custom_by_reference(
+                adapter, capability, params, tenant_id, context or {}
+            )
+        request_params = copy.deepcopy(params.get("request_parameters", {}))
         
         # Merge with input data
         for key, value in input_data.items():
@@ -1353,7 +1441,8 @@ Answer:"""
         # Build request
         request = AdapterRequest(
             capability=capability,
-            parameters=request_params
+            parameters=request_params,
+            **self._request_flags(params),
         )
         
         # Execute request
@@ -1363,6 +1452,59 @@ Answer:"""
             raise Exception(f"Custom AI task failed: {response.error}")
         
         return response.data
+
+    async def _process_custom_by_reference(
+        self,
+        adapter: Any,
+        capability: str,
+        params: Dict[str, Any],
+        tenant_id: Optional[str],
+        context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Run a custom task on content named by `input_ref`, write the model's
+        output through `output_sink`, and return ids, counts, model, usage and
+        duration only. Step input is not merged into the request, no default
+        model is filled in (llama-server serves its loaded model), and a failed
+        call is not retried."""
+        ref_kind, ref_id = content_refs.parse_ref(params.get("input_ref"), "input_ref")
+        resolved = await content_refs.resolve_input(params.get("input_ref"), tenant_id, context)
+
+        request_params = copy.deepcopy(params.get("request_parameters") or {})
+        text = resolved.get("text")
+        if text:
+            if isinstance(request_params.get("messages"), list):
+                request_params["messages"] = [*request_params["messages"], {"role": "user", "content": text}]
+            else:
+                prompt = request_params.get("prompt")
+                request_params["prompt"] = f"{prompt}\n\n{text}" if prompt else text
+        request_flags = dict(self._request_flags(params))
+        if resolved.get("images"):
+            request_flags["images"] = list(resolved["images"])
+
+        request = AdapterRequest(capability=capability, parameters=request_params, **request_flags)
+        started = time.monotonic()
+        try:
+            response = await adapter.execute(request)
+        except PHIEgressRefused:
+            raise
+        except Exception as exc:
+            # The message may echo the resolved content; keep the type only.
+            logger.warning(f"By-reference AI call '{capability}' failed ({type(exc).__name__}); not retried")
+            raise RuntimeError(f"Custom AI task failed: {type(exc).__name__}") from None
+        duration_ms = round((time.monotonic() - started) * 1000, 1)
+        if response.status == "error":
+            raise RuntimeError(f"Custom AI task failed ({response.error_code or 'error'})")
+
+        data = response.data if isinstance(response.data, dict) else {"text": response.data}
+        sink_result = await content_refs.write_output(params.get("output_sink"), tenant_id, context, data)
+        usage = data.get("usage") or ({"total_tokens": response.tokens_used} if response.tokens_used else {})
+        return {
+            "ref": {"kind": ref_kind, "id": ref_id},
+            "sink": sink_result,
+            "model": data.get("model") or request_params.get("model"),
+            "usage": usage,
+            "duration_ms": duration_ms,
+        }
     
     def validate_config(self) -> bool:
         """Validate node configuration."""

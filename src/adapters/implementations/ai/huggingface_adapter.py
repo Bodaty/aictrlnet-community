@@ -238,6 +238,7 @@ class HuggingFaceAdapter(BaseAdapter):
     
     async def execute(self, request: AdapterRequest) -> AdapterResponse:
         """Execute a request to Hugging Face."""
+        self._assert_phi_egress_allowed(request)
         # Validate request
         self.validate_request(request)
         

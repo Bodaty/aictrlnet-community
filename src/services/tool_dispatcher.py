@@ -2151,11 +2151,13 @@ class ToolDispatcher:
             # back to the pool; a new connection won't have app.current_tenant_id set,
             # causing RLS policy violations on INSERT/UPDATE.
             try:
+                from core.database import bind_session_tenant
                 from core.tenant_context import get_current_tenant_id
                 tenant_id = get_current_tenant_id()
                 if tenant_id:
+                    bind_session_tenant(self.db, tenant_id)
                     await self.db.execute(
-                        text("SELECT set_config('app.current_tenant_id', :tid, false)"),
+                        text("SELECT set_config('app.current_tenant_id', :tid, true)"),
                         {"tid": tenant_id}
                     )
             except Exception as e:

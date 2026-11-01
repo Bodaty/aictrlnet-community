@@ -145,6 +145,16 @@ class AdapterRequest(BaseModel):
     # Context
     context: Dict[str, Any] = {}
 
+    # Explicit sampling and structured input/output. Adapters that support them
+    # apply them over anything in `parameters`; None means "not specified".
+    temperature: Optional[float] = None
+    response_format: Optional[Dict[str, Any]] = None
+    images: Optional[List[str]] = None  # base64, no data-URI prefix
+
+    # Set for steps of a workflow marked `phi: true`. Under PHI mode such a
+    # request is refused unless it carries an explicit temperature.
+    phi_pipeline: bool = False
+
 
 class AdapterResponse(BaseModel):
     """Response from an adapter."""

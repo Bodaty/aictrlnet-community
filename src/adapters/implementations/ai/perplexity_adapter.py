@@ -131,6 +131,7 @@ class PerplexityAdapter(BaseAdapter):
         ]
 
     async def execute(self, request: AdapterRequest) -> AdapterResponse:
+        self._assert_phi_egress_allowed(request)
         if request.capability == "answer":
             return await self._handle_answer(request)
         raise ValueError(f"Unknown capability: {request.capability}")

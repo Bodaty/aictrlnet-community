@@ -94,9 +94,64 @@ async def test_default_model_prefers_org_setting(monkeypatch, node):
         def has_own_key(self, provider=None):
             return True
 
-    async def fake_load(self):
+    seen = []
+
+    async def fake_get_org_llm_settings(tenant_id, db):
+        seen.append(tenant_id)
         return Org()
 
-    monkeypatch.setattr(type(node), "_load_org_llm_settings", fake_load)
+    monkeypatch.setattr("llm.org_llm_settings.get_org_llm_settings", fake_get_org_llm_settings)
+    await node._load_org_llm_settings("t-doc")
     model = await node._resolve_default_model()
+    assert seen == ["t-doc"]
     assert model == "gpt-4o"
+
+
+async def test_ai_process_reused_node_resolves_each_input(monkeypatch):
+    from adapters.base_adapter import BaseAdapter
+    from adapters.registry import adapter_registry
+    from adapters.models import AdapterCategory
+
+    recorded = []
+
+    class _RecordingAdapter(BaseAdapter):
+        async def initialize(self):
+            return None
+
+        async def shutdown(self):
+            return None
+
+        def get_capabilities(self):
+            return [AdapterCapability(name="generate", description="generate")]
+
+        async def execute(self, request):
+            recorded.append(request)
+            return AdapterResponse(
+                request_id=request.id,
+                capability=request.capability,
+                status="success",
+                data={"text": "ok"},
+                duration_ms=0.0,
+            )
+
+    monkeypatch.delenv("LLM_SCRIPTED_MODE", raising=False)
+    adapter_registry.register_adapter_class("recording_a1", _RecordingAdapter, AdapterCategory.AI)
+
+    request_parameters = {"page": "{{page_id}}"}
+    node = AIProcessNode(NodeConfig(
+        id="n",
+        name="ai",
+        type=NodeType.TASK,
+        parameters={
+            "ai_task": "custom",
+            "adapter_id": "recording_a1",
+            "capability": "generate",
+            "request_parameters": request_parameters,
+        },
+    ))
+
+    for page_id in ("p1", "p2", "p3"):
+        await node.execute({"page_id": page_id}, {})
+
+    assert [r.parameters["page"] for r in recorded] == ["p1", "p2", "p3"]
+    assert node.config.parameters["request_parameters"] == {"page": "{{page_id}}"}

@@ -14,6 +14,7 @@ from .registry import node_registry
 from .implementations.decision_node import DecisionNode
 from .state_manager import NodeStateManager, state_manager as default_state_manager
 from .error_handler import NodeErrorHandler, node_error_handler as default_error_handler
+from .content_refs import scrub_error
 from events.event_bus import event_bus
 
 # AI Control Spectrum — autonomy gate hook. Community default is the no-op;
@@ -414,12 +415,15 @@ class NodeExecutor:
 
             except Exception as e:
                 # Handle unexpected errors
-                logger.error(f"Unexpected error in node {node_instance.id}: {e}")
+                error_text = scrub_error(
+                    str(e), bool((node_instance.context or {}).get("workflow_phi")), type(e).__name__
+                )
+                logger.error(f"Unexpected error in node {node_instance.id}: {error_text}")
                 await self._persist_node_execution_status(
                     node_instance,
                     status="failed",
                     completed_at=datetime.utcnow(),
-                    error_details={"error": str(e), "source": "executor_unexpected"},
+                    error_details={"error": error_text, "source": "executor_unexpected"},
                 )
                 return await self.error_handler.handle_node_error(
                     e, node_instance, workflow_instance

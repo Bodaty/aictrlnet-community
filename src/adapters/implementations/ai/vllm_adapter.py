@@ -129,6 +129,7 @@ class VLLMAdapter(BaseAdapter, ToolCallingMixin):
 
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
+            follow_redirects=False,
             headers=self._build_headers(),
             timeout=self.timeout,
             limits=httpx.Limits(
@@ -222,6 +223,7 @@ class VLLMAdapter(BaseAdapter, ToolCallingMixin):
         workflow-generation path in llm/generation.py can call this
         adapter with the same capability name it uses for Ollama.
         """
+        self._assert_phi_egress_allowed(request)
         if request.capability in ("chat_completion", "chat"):
             return await self._handle_chat_completion(request)
         if request.capability == "list_models":
@@ -255,6 +257,15 @@ class VLLMAdapter(BaseAdapter, ToolCallingMixin):
             if tools:
                 data["tools"] = tools
                 data["tool_choice"] = request.parameters.get("tool_choice", "auto")
+            if request.temperature is not None:
+                data["temperature"] = request.temperature
+            if request.response_format is not None:
+                data["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": "response", "schema": request.response_format},
+                }
+            if request.images:
+                raise ValueError("The vLLM adapter does not send images; use a vision provider for this step")
             data = {k: v for k, v in data.items() if v is not None}
 
             if data.get("stream"):
@@ -467,6 +478,7 @@ class VLLMAdapter(BaseAdapter, ToolCallingMixin):
         if client is None:
             client = httpx.AsyncClient(
                 base_url=self.base_url,
+                follow_redirects=False,
                 headers=self._build_headers(),
                 timeout=self.timeout,
             )

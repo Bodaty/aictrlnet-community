@@ -124,6 +124,7 @@ class DeepSeekAdapter(BaseAdapter):
 
     async def execute(self, request) -> AdapterResponse:
         """Execute a DeepSeek API request (OpenAI-compatible)."""
+        self._assert_phi_egress_allowed(request)
         start = time.time()
         request_id = getattr(request, "id", "unknown")
         capability = getattr(request, "capability", "chat_completion")

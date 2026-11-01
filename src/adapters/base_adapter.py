@@ -33,7 +33,9 @@ class BaseAdapter(ABC):
     # adapter that cannot be built cannot send anything. Construction is the
     # choke point because not every caller goes through initialize()/start()
     # (llm/generation.py reuses cached adapters), and because llm/service.py
-    # swallows initialize() failures. Bridges and agent-framework adapters
+    # swallows initialize() failures. Every provider adapter also calls it
+    # with the request at the top of execute(), so an endpoint changed after
+    # construction is refused too. Bridges and agent-framework adapters
     # leave these defaults; their egress is guarded at the call sites.
     PHI_PROVIDERS: frozenset = frozenset()
 
@@ -54,20 +56,47 @@ class BaseAdapter(ABC):
         """Provider this instance sends prompts to, or None for non-providers."""
         return None
 
-    def _assert_phi_egress_allowed(self) -> None:
-        """Refuse construction under PHI mode unless this instance's provider
-        is allowlisted (and, for a local provider, its endpoint is local)."""
+    def _assert_phi_egress_allowed(self, request: Optional[AdapterRequest] = None) -> None:
+        """Refuse under PHI mode unless this instance's provider is allowlisted
+        (and, for a local provider, its endpoint is local).
+
+        Called from __init__ and again at the top of every execute(), against
+        the configured URL and the URL the live HTTP client actually sends to,
+        so an endpoint changed after construction is caught. With a request
+        from a PHI pipeline, also refuses one that carries no explicit
+        temperature."""
         provider = self._phi_provider()
         if provider is None:
             return
-        from core.phi_egress import assert_phi_provider_allowed
+        from core.phi_egress import (
+            PHI_REFUSAL_MARKER,
+            PHIEgressRefused,
+            assert_phi_provider_allowed,
+            phi_mode_on,
+        )
+        from core.config import get_settings
 
+        settings = get_settings()
         url = (
             getattr(self, "base_url", None)
             or getattr(self, "endpoint", None)
             or self.config.base_url
         )
-        assert_phi_provider_allowed(provider, url)
+        assert_phi_provider_allowed(provider, url, settings=settings)
+        client_url = getattr(getattr(self, "client", None), "base_url", None)
+        if client_url and str(client_url).rstrip("/") != str(url or "").rstrip("/"):
+            assert_phi_provider_allowed(provider, str(client_url), settings=settings)
+
+        if (
+            getattr(request, "phi_pipeline", False)
+            and getattr(request, "temperature", None) is None
+            and phi_mode_on(settings)
+        ):
+            raise PHIEgressRefused(
+                f"{PHI_REFUSAL_MARKER} Refusing a request from a PHI workflow to "
+                f"'{provider}' with no explicit temperature. Required: set "
+                f"'temperature' on the step."
+            )
 
     @abstractmethod
     async def initialize(self) -> None:

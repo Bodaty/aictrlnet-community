@@ -30,6 +30,7 @@ COMMUNITY_ADAPTERS = {
         {"name": "Claude", "type": "claude", "category": "ai", "provider": "Anthropic", "required_edition": "community"},
         {"name": "OpenAI", "type": "openai", "category": "ai", "provider": "OpenAI", "required_edition": "community"},
         {"name": "Hugging Face", "type": "huggingface", "category": "ai", "provider": "HuggingFace", "required_edition": "community"},
+        {"name": "llama.cpp", "type": "llamacpp", "category": "ai", "provider": "llama.cpp", "required_edition": "community"},
         
         # Internal Service Adapters
         {"name": "LLM Service", "type": "llm-service", "category": "ai", "provider": "AICtrlNet", "required_edition": "community"},
