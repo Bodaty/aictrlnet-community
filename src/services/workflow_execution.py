@@ -25,6 +25,7 @@ from schemas.workflow_execution import (
 from services.iam import IAMService
 from services.schedule_utils import compute_next_run
 from nodes.executor import NodeExecutor
+from nodes.models import ExecutionHandedOff
 from nodes.registry import node_registry
 from events.event_bus import event_bus
 from core.database import get_session_maker
@@ -394,6 +395,18 @@ class WorkflowExecutionService:
                         ni.completed_at = row.completed_at
                         ni.duration_ms = row.duration_ms
 
+                    # This executor now drives the run: RUNNING again, so a
+                    # later approval gate pauses it and a later resume can
+                    # flip it from PAUSED, as at its first gate.
+                    await db.execute(
+                        update(WorkflowExecution)
+                        .where(WorkflowExecution.id == execution_id)
+                        .where(WorkflowExecution.status == WorkflowExecutionStatus.RESUMING)
+                        .values(status=WorkflowExecutionStatus.RUNNING)
+                        .execution_options(synchronize_session=False)
+                    )
+                    await db.commit()
+
                 # Create workflow instance for node executor
                 workflow_instance = NodeWorkflowInstance(
                     id=str(execution_id),
@@ -511,6 +524,9 @@ class WorkflowExecutionService:
                         }
                     )
 
+            except ExecutionHandedOff as handoff:
+                logger.info(f"Workflow execution {execution_id} handed off to another driver: {handoff}")
+                return
             except Exception as e:
                 from nodes.content_refs import scrub_error
 
@@ -801,13 +817,9 @@ class WorkflowExecutionService:
         if not execution:
             raise ValueError(f"Execution {execution_id} not found")
 
-        # Accept both PAUSED (normal case) and RESUMING (re-entry case where
-        # a prior resume crashed mid-flight or the gate node created a fresh
-        # approval that needs another resume to drive through). Without the
-        # RESUMING branch, the lifecycle worker emits resume events that
-        # silently no-op because the previous resume already flipped the
-        # status away from PAUSED — and the workflow stays wedged with a
-        # human-review node stuck in 'running'.
+        # A RESUMING run is accepted but not re-driven: the flip below lands
+        # only on a PAUSED row, so exactly one caller starts a driver and a
+        # run another driver already resumed is left to it.
         if execution.status not in (
             WorkflowExecutionStatus.PAUSED,
             WorkflowExecutionStatus.RESUMING,
@@ -826,9 +838,20 @@ class WorkflowExecutionService:
             if checkpoint:
                 execution.context.update(checkpoint.state_data)
         
-        # Update status
-        execution.status = WorkflowExecutionStatus.RESUMING
+        values = {"status": WorkflowExecutionStatus.RESUMING}
+        if checkpoint_id:
+            values["context"] = dict(execution.context or {})
+        flipped = await self.db.execute(
+            update(WorkflowExecution)
+            .where(WorkflowExecution.id == execution_id)
+            .where(WorkflowExecution.status == WorkflowExecutionStatus.PAUSED)
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
         await self.db.commit()
+        if flipped.rowcount == 0:
+            await self.db.refresh(execution)
+            return WorkflowExecutionResponse.model_validate(execution)
 
         # Resume execution — thread tenant_id so RLS resolves correctly in
         # the background task's session (see _execute_workflow_locally).

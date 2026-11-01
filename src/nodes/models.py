@@ -7,6 +7,15 @@ from pydantic import BaseModel, Field
 import uuid
 
 
+class ExecutionHandedOff(BaseException):
+    """Another driver now owns this run: stop without writing its outcome.
+
+    A BaseException so node and executor error handling, which catch
+    Exception, let it through to the run's driver instead of recording a
+    failure.
+    """
+
+
 class NodeType(str, Enum):
     """Types of nodes in workflows."""
     # Control flow

@@ -7,6 +7,7 @@ from datetime import datetime
 import time
 
 from .models import (
+    ExecutionHandedOff,
     NodeInstance, NodeStatus, NodeExecutionRequest,
     NodeExecutionResult, WorkflowInstance
 )
@@ -531,7 +532,10 @@ class NodeExecutor:
             # Process results
             for i, result in enumerate(results):
                 node_instance = batch[i]
-                
+
+                if isinstance(result, ExecutionHandedOff):
+                    raise result
+
                 if isinstance(result, Exception):
                     logger.error(f"Node {node_instance.id} failed with exception: {result}")
                     continue
