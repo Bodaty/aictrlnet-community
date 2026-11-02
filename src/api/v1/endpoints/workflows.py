@@ -36,7 +36,29 @@ from schemas.workflow_templates import (
     WorkflowTemplateResponse,
     WorkflowFromTemplate
 )
-from services.workflow import WorkflowService
+from core.exceptions import ForbiddenError
+from services.workflow_identity import (
+    SERVER_MANAGED_TRIGGER_TYPES,
+    GrantedWorkflowChangeForbidden,
+    check_granted_workflow_change,
+    ReservedWorkflowName,
+    TriggerRefused,
+    check_identity_grant,
+    check_workflow_name,
+    create_server_managed_trigger,
+    grant_if_protected,
+)
+from services.workflow import (
+    AutonomyChangeForbidden,
+    DefinitionChangeForbidden,
+    PhiDefinitionChangeForbidden,
+    WorkflowService,
+    check_autonomy_change,
+    check_definition_change,
+    merge_definition_update,
+    refuse_clearing_phi_definition,
+    regrant_on_admin_update,
+)
 from services.workflow_template_service import create_workflow_template_service
 from services.workflow_execution import WorkflowExecutionService
 from core.mcp_access import mcp_caller
@@ -76,6 +98,30 @@ async def _authorize_workflow(db, workflow_id, current_user):
     if not wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(wf, current_user, resource_name="Workflow")
+    return wf
+
+
+def _is_tenant_admin(current_user, workflow) -> bool:
+    """An administrator of the workflow's own tenant."""
+    return is_superuser(current_user) and \
+        str(resolve_caller_tenant(current_user)) == str(workflow.tenant_id)
+
+
+def _refuse_granted_change(workflow, current_user) -> None:
+    """403 unless the caller may mutate this workflow: a granted one (the
+    document workflows, the nightly purge) is its tenant administrator's to
+    change, delete, run-control, reschedule or re-trigger. Every mutating route
+    below passes through here after its tenant check."""
+    try:
+        check_granted_workflow_change(workflow, _is_tenant_admin(current_user, workflow))
+    except GrantedWorkflowChangeForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+async def _authorize_workflow_change(db, workflow_id, current_user):
+    """`_authorize_workflow` for a mutating route (see `_refuse_granted_change`)."""
+    wf = await _authorize_workflow(db, workflow_id, current_user)
+    _refuse_granted_change(wf, current_user)
     return wf
 
 
@@ -263,13 +309,19 @@ async def create_workflow(
             parameters=workflow_data.parameters if hasattr(workflow_data, 'parameters') else {}
         )
 
-        # Use the working instantiate method
-        result = await template_service.instantiate_template(
-            db=db,
-            template_id=workflow_data.template_id,
-            user_id=get_safe_user_id(current_user),
-            request=instantiate_request
-        )
+        # Use the working instantiate method. A phi template is an
+        # administrator's to instantiate (ForbiddenError otherwise).
+        try:
+            result = await template_service.instantiate_template(
+                db=db,
+                template_id=workflow_data.template_id,
+                user_id=get_safe_user_id(current_user),
+                request=instantiate_request
+            )
+        except ForbiddenError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        except ReservedWorkflowName as e:
+            raise HTTPException(status_code=422, detail=str(e))
 
         # Get the created workflow
         workflow_id = result.get('workflow_id')
@@ -292,6 +344,11 @@ async def create_workflow(
                 status_code=400,
                 detail="Either template_id or definition must be provided"
             )
+        # A phi definition, or a protected template id, is an administrator's to give.
+        try:
+            check_identity_grant(workflow_data.definition.model_dump(), is_superuser(current_user))
+        except DefinitionChangeForbidden as e:
+            raise HTTPException(status_code=403, detail=str(e))
 
         # Apply Q/G/S/M metadata before saving (Business/Enterprise)
         # Prefer dynamic (risk-driven) path when db is available
@@ -321,7 +378,13 @@ async def create_workflow(
         logger.info(f"[TIMING] create_workflow qgsm={time.monotonic() - t_qgsm:.3f}s")
 
         t_db = time.monotonic()
-        workflow = await workflow_service.create_workflow(workflow_data, tenant_id=tenant_id)
+        # A reserved name is an administrator's to use (ReservedWorkflowName).
+        try:
+            workflow = await workflow_service.create_workflow(
+                workflow_data, tenant_id=tenant_id, actor_is_admin=is_superuser(current_user),
+                actor_id=get_safe_user_id(current_user))
+        except ReservedWorkflowName as e:
+            raise HTTPException(status_code=422, detail=str(e))
         logger.info(f"[TIMING] create_workflow db_insert={time.monotonic() - t_db:.3f}s")
     
     # Track usage
@@ -370,12 +433,17 @@ async def create_workflow_from_template(
         parameters=request.parameters if hasattr(request, 'parameters') and request.parameters is not None else {}
     )
 
-    result = await template_service.instantiate_template(
-        db=db,
-        template_id=template_uuid,
-        user_id=get_safe_user_id(current_user),
-        request=instantiate_request
-    )
+    try:
+        result = await template_service.instantiate_template(
+            db=db,
+            template_id=template_uuid,
+            user_id=get_safe_user_id(current_user),
+            request=instantiate_request
+        )
+    except ForbiddenError as e:  # a phi template is an administrator's to instantiate
+        raise HTTPException(status_code=403, detail=str(e))
+    except ReservedWorkflowName as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
     # Get the created workflow definition
     workflow_def_id = result.get('workflow_definition_id') or result.get('workflow_id')
@@ -436,6 +504,12 @@ async def duplicate_workflow(
     if not source:
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(source, current_user, resource_name="Workflow")
+    # Copying a phi workflow (or one made from a protected template) gives the
+    # copy that identity: an administrator's act.
+    try:
+        check_identity_grant(source.definition, is_superuser(current_user))
+    except DefinitionChangeForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
     tenant_id = resolve_caller_tenant(current_user) or source.tenant_id
     metadata = {
@@ -444,10 +518,15 @@ async def duplicate_workflow(
     }
     metadata["status"] = "draft"
     metadata["duplicated_from"] = str(source.id)
+    copy_name = f"Copy of {source.name}"[:256]
+    try:
+        check_workflow_name(copy_name, is_superuser(current_user))
+    except ReservedWorkflowName as e:
+        raise HTTPException(status_code=422, detail=str(e))
     copy = WorkflowDefinition(
-        name=f"Copy of {source.name}"[:256],
+        name=copy_name,
         description=source.description,
-        definition=source.definition,
+        definition=grant_if_protected(source.definition, get_safe_user_id(current_user)),
         active=True,
         tags=list(source.tags or []),
         tenant_id=tenant_id,
@@ -595,9 +674,37 @@ async def update_workflow(
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(workflow, current_user, resource_name="Workflow")
+    _refuse_granted_change(workflow, current_user)
 
     # Update fields
     update_data = workflow_update.model_dump(exclude_unset=True)
+    if "autonomy_locked" in update_data and update_data["autonomy_locked"] is None:
+        raise HTTPException(status_code=422, detail="autonomy_locked must be true or false")
+    # Moving the dial or its lock is an administrator's job; a full-object
+    # save that repeats the current values is fine.
+    try:
+        check_autonomy_change(workflow, update_data, is_superuser(current_user))
+        # What the definition says it is (phi, its template, a phi workflow's
+        # name) changes only as an administrator's act, or not at all.
+        check_definition_change(workflow, update_data, is_superuser(current_user))
+    except (AutonomyChangeForbidden, DefinitionChangeForbidden) as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except (PhiDefinitionChangeForbidden, ReservedWorkflowName) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # A definition update keeps the keys it does not carry; a PHI workflow
+    # keeps its phi flag and templateId (422 for an update that would not).
+    if "definition" in update_data:
+        try:
+            if update_data["definition"] is None:
+                refuse_clearing_phi_definition(workflow.definition)
+            else:
+                update_data["definition"] = regrant_on_admin_update(
+                    workflow.definition,
+                    merge_definition_update(workflow.definition, update_data["definition"]),
+                    is_superuser(current_user), get_safe_user_id(current_user))
+        except PhiDefinitionChangeForbidden as e:
+            raise HTTPException(status_code=422, detail=str(e))
 
     # Validate definition if provided
     if "definition" in update_data and update_data["definition"]:
@@ -662,6 +769,7 @@ async def delete_workflow(
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(workflow, current_user, resource_name="Workflow")
+    _refuse_granted_change(workflow, current_user)
 
     # Import models that have foreign keys to workflow_definitions
     from models.workflow_execution import WorkflowExecution, WorkflowTrigger, WorkflowSchedule
@@ -856,6 +964,7 @@ async def pause_workflow(
     if not _wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(_wf, current_user, resource_name="Workflow")
+    _refuse_granted_change(_wf, current_user)
     # Get the latest running instance
     result = await db.execute(
         select(WorkflowInstance)
@@ -891,6 +1000,7 @@ async def resume_workflow(
     if not _wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(_wf, current_user, resource_name="Workflow")
+    _refuse_granted_change(_wf, current_user)
     # Get the latest paused instance
     result = await db.execute(
         select(WorkflowInstance)
@@ -926,6 +1036,7 @@ async def cancel_workflow(
     if not _wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(_wf, current_user, resource_name="Workflow")
+    _refuse_granted_change(_wf, current_user)
     # Get the latest active instance
     result = await db.execute(
         select(WorkflowInstance)
@@ -1025,7 +1136,25 @@ async def create_workflow_trigger(
 
     # NEW-Z2: only the workflow's tenant may attach a trigger (otherwise an
     # attacker binds a run-as-owner Gmail poller to another tenant's workflow).
-    await _authorize_workflow(db, workflow_id, current_user)
+    workflow = await _authorize_workflow_change(db, workflow_id, current_user)
+
+    # A server-managed type (the Documents inbox) is created only by an
+    # administrator of the workflow's tenant (403), through the owning edition's
+    # own checks (422 when it refuses); never inserted here as given.
+    if trigger_data.trigger_type in SERVER_MANAGED_TRIGGER_TYPES:
+        is_admin = is_superuser(current_user) and \
+            str(resolve_caller_tenant(current_user)) == str(workflow.tenant_id)
+        try:
+            trigger = await create_server_managed_trigger(workflow, trigger_data, is_admin)
+        except TriggerRefused as e:
+            raise HTTPException(status_code=e.status_code, detail=e.detail)
+        return {
+            "id": str(trigger.id),
+            "workflow_id": str(trigger.workflow_id),
+            "trigger_type": trigger.trigger_type,
+            "config": trigger.config,
+            "is_active": trigger.is_active
+        }
 
     # Gmail inbound trigger: enrich config so the scheduler can poll run-as-owner.
     # The Business scheduler's _process_gmail_triggers reads owner_user_id/provider/
@@ -1173,6 +1302,7 @@ async def create_workflow_schedule(
     if not _wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(_wf, current_user, resource_name="Workflow")
+    _refuse_granted_change(_wf, current_user)
     execution_service = WorkflowExecutionService(db)
     try:
         schedule = await execution_service.create_schedule(
@@ -1216,6 +1346,7 @@ async def delete_workflow_schedule(
     if not parent:
         raise HTTPException(status_code=404, detail="Schedule not found")
     assert_tenant_access(parent, current_user, resource_name="Schedule")
+    _refuse_granted_change(parent, current_user)
 
     await db.delete(schedule)
     await db.commit()
@@ -1247,6 +1378,15 @@ async def delete_workflow_trigger(
     if not parent:
         raise HTTPException(status_code=404, detail="Trigger not found")
     assert_tenant_access(parent, current_user, resource_name="Trigger")
+    _refuse_granted_change(parent, current_user)
+    # A server-managed trigger (the Documents inbox) is an administrator's to
+    # remove, as to create: deleting it switches the practice's intake off.
+    if trigger.trigger_type in SERVER_MANAGED_TRIGGER_TYPES and not (
+            is_superuser(current_user)
+            and str(resolve_caller_tenant(current_user)) == str(parent.tenant_id)):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Only an administrator can delete a {trigger.trigger_type} trigger")
 
     await db.delete(trigger)
     await db.commit()
@@ -1311,6 +1451,7 @@ async def create_workflow_schedule_via_scheduler(
     if not _wf:
         raise HTTPException(status_code=404, detail="Workflow not found")
     assert_tenant_access(_wf, current_user, resource_name="Workflow")
+    _refuse_granted_change(_wf, current_user)
     scheduler = WorkflowScheduler(db)
     
     # Try to create schedule - will fail with upgrade message if Community
@@ -1337,7 +1478,7 @@ async def create_webhook_trigger(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Create a webhook trigger for workflow (Business/Enterprise only)."""
-    await _authorize_workflow(db, workflow_id, current_user)
+    await _authorize_workflow_change(db, workflow_id, current_user)
     scheduler = WorkflowScheduler(db)
 
     # Try to create webhook trigger
@@ -1363,7 +1504,7 @@ async def create_event_trigger(
     current_user: dict = Depends(get_current_active_user),
 ):
     """Create an event trigger for workflow (Business/Enterprise only)."""
-    await _authorize_workflow(db, workflow_id, current_user)
+    await _authorize_workflow_change(db, workflow_id, current_user)
     scheduler = WorkflowScheduler(db)
 
     # Try to create event trigger
@@ -1439,6 +1580,15 @@ async def create_manual_workflow(
     2. Choose which enhancements to apply
     3. Get the workflow enhanced through the unified pipeline
     """
+    # A phi definition, or a protected template id, is an administrator's to give.
+    try:
+        check_identity_grant(request_data.get("definition") or {}, is_superuser(current_user))
+    except DefinitionChangeForbidden as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    try:
+        check_workflow_name(request_data.get("name", "Manual Workflow"), is_superuser(current_user))
+    except ReservedWorkflowName as e:
+        raise HTTPException(status_code=422, detail=str(e))
     try:
         # Extract workflow definition
         workflow_name = request_data.get("name", "Manual Workflow")
@@ -1511,11 +1661,12 @@ async def create_manual_workflow(
         except Exception as qgsm_err:
             logger.warning(f"Q/G/S/M enforcement failed (non-critical): {qgsm_err}")
 
-        # Create the workflow in database
+        # Create the workflow in database (an administrator's protected
+        # identity is stamped with the grant; anyone else's was refused above)
         workflow = WorkflowDefinition(
             name=workflow_name,
             description=workflow_description,
-            definition=final_definition,
+            definition=grant_if_protected(final_definition, get_safe_user_id(current_user)),
             active=True,
             tags=["manual_created", workflow_category],
             tenant_id=get_safe_attr(current_user, 'tenant_id', None) or get_current_tenant_id()

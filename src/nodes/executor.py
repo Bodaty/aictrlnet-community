@@ -63,12 +63,18 @@ class NodeExecutor:
         self,
         workflow_instance: WorkflowInstance,
         is_cancelled: Optional[Callable[[], Awaitable[bool]]] = None,
+        between_batches: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> WorkflowInstance:
         """Execute an entire workflow.
 
         ``is_cancelled`` reports whether the run was cancelled. It is checked
         between batches, and nodes find it in their context so long-running
         ones (loops) can stop between items.
+
+        ``between_batches`` is awaited after each batch of parallel nodes
+        finishes, while no node is running: the caller ends the transaction
+        on the session the nodes share, so a read a node left open does not
+        hold a connection through a later step that waits on a person.
         """
         start_time = time.time()
         if is_cancelled is not None:
@@ -119,6 +125,7 @@ class NodeExecutor:
                 start_nodes,
                 workflow_instance.input_data,
                 is_cancelled=is_cancelled,
+                between_batches=between_batches,
             )
 
             if is_cancelled is not None and await is_cancelled():
@@ -445,6 +452,7 @@ class NodeExecutor:
         node_ids: List[str],
         initial_data: Dict[str, Any],
         is_cancelled: Optional[Callable[[], Awaitable[bool]]] = None,
+        between_batches: Optional[Callable[[], Awaitable[None]]] = None,
     ):
         """Execute workflow starting from given nodes."""
         # Queue of nodes to execute
@@ -528,7 +536,9 @@ class NodeExecutor:
             ]
             
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+            if between_batches is not None:
+                await between_batches()
+
             # Process results
             for i, result in enumerate(results):
                 node_instance = batch[i]
@@ -543,8 +553,9 @@ class NodeExecutor:
                 # Mark as completed
                 completed_nodes.add(node_instance.id)
 
-                # Add next nodes to queue
-                if result.status == NodeStatus.COMPLETED:
+                # Add next nodes to queue. A step skipped by its skip_condition
+                # hands its input on, the way a completed step does.
+                if result.status in (NodeStatus.COMPLETED, NodeStatus.SKIPPED):
                     for next_node_id in result.next_node_ids:
                         if next_node_id not in completed_nodes:
                             # Accumulate data: merge input with output so

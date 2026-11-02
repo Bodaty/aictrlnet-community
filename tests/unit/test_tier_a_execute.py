@@ -71,7 +71,6 @@ KNOWN_BROKEN = {
     'ml-service:quality_verification': 'FQ: execute treats AdapterRequest as a dict',
     'ml-service:risk_assessment': 'FQ: execute treats AdapterRequest as a dict',
     'ml-service:training': 'FQ: execute treats AdapterRequest as a dict',
-    'ollama:delete_model': 'FQ: httpx delete() takes no json',
     'openclaw:delegate_to_agent': 'FQ adapter contract: AdapterResponse(success=...)',
     'openclaw:evaluate_action': 'FQ adapter contract: AdapterResponse(success=...)',
     'openclaw:execute_skill': 'FQ adapter contract: AdapterResponse(success=...)',

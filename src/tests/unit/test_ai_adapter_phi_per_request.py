@@ -261,6 +261,29 @@ async def test_ollama_chat_passes_format_and_images(phi_mode, server):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("capability", ["chat", "generate"])
+@pytest.mark.parametrize("think", [False, True, None])
+async def test_ollama_sends_think_only_when_set(server, capability, think):
+    """`think` reaches Ollama's request body as given; unset, the body has no
+    `think` and the model's default applies."""
+    adapter = await _ollama(server.url)
+    try:
+        parameters = ({"model": "qwen3.8:27b", "messages": [{"role": "user", "content": "Read this page."}]}
+                      if capability == "chat" else {"model": "qwen3.8:27b", "prompt": "Read this page."})
+        response = await adapter.execute(AdapterRequest(
+            capability=capability, parameters=parameters, temperature=0, think=think))
+        assert response.status == "success", response.error
+
+        [body] = server.posted(f"/api/{capability}")
+        if think is None:
+            assert "think" not in body
+        else:
+            assert body["think"] is think
+    finally:
+        await adapter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_ollama_generate_passes_format_images_and_temperature(phi_mode, server):
     adapter = await _ollama(server.url)
     try:
@@ -375,6 +398,19 @@ async def test_ai_step_in_phi_workflow_without_temperature_carries_none(recordin
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("context", [{"workflow_phi": True}, {}])
+async def test_ai_step_think_reaches_the_request(recording_adapter, context):
+    """document-read's extraction step sets think: false; a step that sets
+    none sends None (the provider's default)."""
+    await _ai_node(ai_task="generate", prompt="x", temperature=0, think=False).execute({}, context)
+    await _ai_node(ai_task="generate", prompt="x", temperature=0).execute({}, context)
+
+    first, second = recording_adapter
+    assert first.think is False
+    assert second.think is None
+
+
+@pytest.mark.asyncio
 async def test_ai_step_outside_phi_workflow_is_unchanged(recording_adapter):
     """care-gap-refresh.json's classifier sets temperature 0.2 and
     response_format "json"; outside a phi workflow neither reaches the request."""
@@ -431,7 +467,7 @@ async def test_execution_context_carries_workflow_phi(definition_phi, expected, 
     seen = {}
 
     class _CapturingExecutor:
-        async def execute_workflow(self, workflow_instance, is_cancelled=None):
+        async def execute_workflow(self, workflow_instance, is_cancelled=None, between_batches=None):
             for node_id, ni in workflow_instance.node_instances.items():
                 seen[node_id] = ni.context.get("workflow_phi")
 

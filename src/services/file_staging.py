@@ -47,6 +47,7 @@ MAGIC_BYTES = {
     "application/pdf": [b"%PDF"],
     "image/png": [b"\x89PNG"],
     "image/jpeg": [b"\xff\xd8\xff"],
+    "image/tiff": [b"II*\x00", b"MM\x00*"],  # little- and big-endian
     "application/json": [b"{", b"["],  # JSON starts with { or [
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [b"PK"],  # ZIP-based
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [b"PK"],

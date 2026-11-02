@@ -16,6 +16,7 @@ from core.dependencies import get_current_user_safe
 from core.tenant_context import get_current_tenant_id
 from schemas.workflow import WorkflowResponse, NLPWorkflowResponse, TemplatePreview
 from services.nlp import NLPService
+from services.workflow_identity import ReservedWorkflowName
 from services.workflow_template_service import create_workflow_template_service
 # WorkflowTemplates removed - using WorkflowTemplateService through NLPService
 from models.user import User
@@ -92,6 +93,8 @@ async def process_natural_language(
             return {
                 "plan": jsonable_encoder(workflow_response)
             }
+    except ReservedWorkflowName as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         import traceback
         logger.error(f"Error in NLP endpoint: {str(e)}\n{traceback.format_exc()}")

@@ -53,8 +53,9 @@ def _clear_login_attempts(key: str):
     """Clear failed attempts on successful login."""
     _login_attempts.pop(key, None)
 
-from core.database import get_db
+from core.database import bind_session_tenant, get_db, get_session_maker
 from core.security import (
+    pwd_context,
     verify_password_async,
     get_password_hash_async,
     create_access_token,
@@ -216,6 +217,83 @@ async def register(
     return user
 
 
+_DUMMY_PASSWORD_HASH: Optional[str] = None
+
+
+async def _dummy_password_hash() -> str:
+    """A hash of a random secret, made once: an unknown account's sign-in
+    checks against it, so it costs the same bcrypt time as a real one."""
+    global _DUMMY_PASSWORD_HASH
+    if _DUMMY_PASSWORD_HASH is None:
+        _DUMMY_PASSWORD_HASH = await get_password_hash_async(secrets.token_urlsafe(24))
+    return _DUMMY_PASSWORD_HASH
+
+
+async def _bind_tenant(db: AsyncSession, tenant_id: Optional[str]) -> None:
+    """Run the rest of a pre-tenant auth step under the account's tenant, from
+    a source the server signed or stored (never a client-supplied value)."""
+    if tenant_id:
+        bind_session_tenant(db, str(tenant_id))
+        if db.in_transaction():
+            await db.commit()  # the binding applies from the next transaction
+
+
+def _password_hash(user) -> Optional[str]:
+    """The account's stored password hash, or None when it has none the
+    password context recognises: SAML-provisioned users store "", service
+    accounts "no-login". Such an account can't sign in with a password."""
+    stored = getattr(user, "hashed_password", None) if user else None
+    if not stored:
+        return None
+    try:
+        return stored if pwd_context.identify(stored) else None
+    except ValueError:
+        return None
+
+
+async def _password_matches(password: str, stored: Optional[str]) -> bool:
+    """One bcrypt check, always: against the account's hash when it has a
+    usable one, else against the dummy hash, refused. A hash that looks like
+    bcrypt but is malformed counts as no password (refused, never a 500)."""
+    if stored:
+        try:
+            return await verify_password_async(password, stored)
+        except ValueError:
+            pass
+    await verify_password_async(password, await _dummy_password_hash())
+    return False
+
+
+async def _tenant_of_token(column, token: str) -> Optional[str]:
+    """The tenant of the one account holding this single-use token (a password
+    reset or email verification token, stored on the user row). Read on a
+    session allowed to see every tenant, the tenant id only, like
+    _account_tenant; the step then runs under that tenant."""
+    async with get_session_maker()() as admin:
+        admin.info["is_admin"] = True
+        tenants = set((await admin.execute(
+            select(User.tenant_id).where(column == token))).scalars().all())
+    return next(iter(tenants)) if len(tenants) == 1 else None
+
+
+async def _account_tenant(identifier: str) -> Optional[str]:
+    """The tenant the account named by this email or username belongs to.
+
+    Sign-in comes before any tenant is known, so the request's session is the
+    default tenant's, and row-level security hides every other tenant's users
+    from it: their logins always failed. This one lookup reads only the tenant
+    id, on a session allowed to see every tenant; everything else about the
+    login then runs under that tenant. None when nothing (or more than one
+    tenant) matches, and the login proceeds as before.
+    """
+    async with get_session_maker()() as admin:
+        admin.info["is_admin"] = True
+        tenants = set((await admin.execute(
+            select(User.tenant_id).where((User.email == identifier) | (User.username == identifier))
+        )).scalars().all())
+    return next(iter(tenants)) if len(tenants) == 1 else None
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: Request,
@@ -228,6 +306,8 @@ async def login(
     _check_login_rate_limit(f"ip:{client_ip}")
     _check_login_rate_limit(f"user:{form_data.username}")
 
+    await _bind_tenant(db, await _account_tenant(form_data.username))
+
     # Find user by email or username
     result = await db.execute(
         select(User).where(
@@ -237,7 +317,11 @@ async def login(
     )
     user = result.scalar_one_or_none()
 
-    if not user or not await verify_password_async(form_data.password, user.hashed_password):
+    # An unknown account, or one with no usable password (SSO, service
+    # account), is checked against a dummy hash and refused: same bcrypt cost
+    # and the same 401, so neither the response nor its timing tells them apart.
+    password_ok = await _password_matches(form_data.password, _password_hash(user))  # always runs
+    if not user or not password_ok:
         _record_failed_login(f"ip:{client_ip}")
         _record_failed_login(f"user:{form_data.username}")
         raise HTTPException(
@@ -271,6 +355,7 @@ async def login(
                     session_data = {
                         "user_id": str(user.id),
                         "email": user.email,
+                        "tenant_id": user.tenant_id,
                         "expires_at": (datetime.utcnow() + timedelta(minutes=10)).isoformat()
                     }
                     cache = await get_cache()
@@ -297,6 +382,9 @@ async def login(
         session_data = {
             "user_id": str(user.id),
             "email": user.email,
+            # The account's tenant, kept server-side: the verify step that
+            # consumes this session runs before any token says who the user is.
+            "tenant_id": user.tenant_id,
             "expires_at": (datetime.utcnow() + timedelta(minutes=10)).isoformat()
         }
 
@@ -471,14 +559,20 @@ async def request_password_reset(
     await enforce_rate_limit("pwreset_req_ip", ip, limit=10, window_seconds=3600)
     await enforce_rate_limit("pwreset_req_email", reset_request.email, limit=5, window_seconds=3600)
 
+    # The request has no tenant; the account's own tenant holds its row (and
+    # so the token). Unknown and known accounts take the same lookups.
+    await _bind_tenant(db, await _account_tenant(reset_request.email))
+
     # Find user by email
     result = await db.execute(
         select(User).where(User.email == reset_request.email)
     )
     user = result.scalar_one_or_none()
     
-    # Always return success to prevent email enumeration
-    if user:
+    # Always return success to prevent email enumeration. An account with no
+    # usable password (single sign-on, service account) is never given one:
+    # a reset would let it sign in past its identity provider.
+    if user and _password_hash(user) is not None:
         # Generate reset token (valid for 1 hour)
         reset_token = create_access_token(
             data={"sub": user.id, "type": "password_reset"},
@@ -526,13 +620,17 @@ async def confirm_password_reset(
             detail="Invalid or expired reset token"
         )
     
+    # The account holding this token decides the tenant; a token stored for
+    # one tenant's user can't act on another's.
+    await _bind_tenant(db, await _tenant_of_token(User.password_reset_token, reset_data.token))
+
     # Find user and verify token
     result = await db.execute(
         select(User).where(User.id == user_id)
     )
     user = result.scalar_one_or_none()
     
-    if not user or user.password_reset_token != reset_data.token:
+    if not user or user.password_reset_token != reset_data.token or _password_hash(user) is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid reset token"
@@ -609,6 +707,8 @@ async def verify_email(
             detail="Invalid or expired verification token"
         )
     
+    await _bind_tenant(db, await _tenant_of_token(User.email_verification_token, token))
+
     # Find user by email and token
     result = await db.execute(
         select(User).where(
@@ -693,7 +793,12 @@ async def refresh_access_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token"
         )
-    
+
+    # A refresh request carries no access token, so the session is the default
+    # tenant's; the user is found under the tenant the refresh token was signed
+    # with (login issues it from the account's own tenant).
+    await _bind_tenant(db, payload.get("tenant_id"))
+
     # Find user
     result = await db.execute(
         select(User).where(User.id == user_id)
@@ -772,6 +877,9 @@ async def verify_mfa_login(
     session_data = await cache.get(f"mfa_session:{request.session_token}")
     if not session_data:
         raise HTTPException(401, "MFA session expired. Please log in again to get a new verification code.")
+    # The tenant the login stored with the session (server-side), not anything
+    # the client sends.
+    await _bind_tenant(db, session_data.get("tenant_id"))
 
     service = MFAService(db)
     result = await service.verify_mfa_code(

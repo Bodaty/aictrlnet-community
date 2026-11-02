@@ -150,6 +150,9 @@ class AdapterRequest(BaseModel):
     temperature: Optional[float] = None
     response_format: Optional[Dict[str, Any]] = None
     images: Optional[List[str]] = None  # base64, no data-URI prefix
+    # A reasoning model's thinking pass: False turns it off, True asks for it,
+    # None leaves the provider's default. Adapters without the switch ignore it.
+    think: Optional[bool] = None
 
     # Set for steps of a workflow marked `phi: true`. Under PHI mode such a
     # request is refused unless it carries an explicit temperature.

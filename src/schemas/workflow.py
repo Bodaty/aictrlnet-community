@@ -47,7 +47,11 @@ class EdgeSchema(BaseModel):
 
 
 class WorkflowDefinitionSchema(BaseModel):
-    """Workflow definition schema."""
+    """Workflow definition schema. Top-level keys beyond nodes, edges and
+    metadata (``phi`` among them) are kept, so a definition round-trips."""
+
+    model_config = ConfigDict(extra="allow")
+
     nodes: List[NodeSchema] = Field(default_factory=list)
     edges: List[EdgeSchema] = Field(default_factory=list)
     metadata: Optional[Dict[str, Any]] = None

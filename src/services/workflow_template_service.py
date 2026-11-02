@@ -577,6 +577,18 @@ class WorkflowTemplateService:
             request.parameters
         )
         
+        # A phi template (or a protected template id) is an administrator's to
+        # instantiate; the system actor acts for one.
+        from services.workflow_identity import actor_is_admin, check_workflow_name, protected_identity
+        is_admin = await actor_is_admin(db, user_id)
+        if protected_identity(workflow_config) and not is_admin:
+            raise ForbiddenError("Only an administrator can create a workflow from this template")
+        # So is a reserved name (ReservedWorkflowName, a 422).
+        check_workflow_name(request.name, is_admin)
+        if protected_identity(workflow_config):
+            from services.workflow_identity import grant_identity
+            workflow_config = grant_identity(workflow_config, user_id)
+
         # Check if we should use the unified enhancement pipeline
         use_unified_pipeline = hasattr(request, 'enhancements')
         

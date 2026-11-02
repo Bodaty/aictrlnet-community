@@ -65,15 +65,27 @@ class WorkflowDefinition(Base, UUIDMixin, TimestampMixin, TenantMixin):
         Boolean, nullable=False, server_default=text("false"), default=False
     )
     
-    # Relationships
+    # Relationships. Not loaded with the definition: a workflow's whole run
+    # history (and, through each run, its steps) grows without bound, and
+    # loading it every time a definition, run or step row is read blocked the
+    # event loop for seconds on a busy workflow.
     instances: Mapped[List["WorkflowInstance"]] = relationship(
         back_populates="definition",
-        lazy="selectin",
+        lazy="select",
     )
     executions: Mapped[List["WorkflowExecution"]] = relationship(
         back_populates="workflow",
-        lazy="selectin",
+        lazy="select",
     )
+
+
+# Every ORM write of a definition passes the identity-grant guard: a grant
+# survives only if the server issued it (models.identity_grant).
+from sqlalchemy import event as _sa_event  # noqa: E402
+from . import identity_grant as _identity_grant  # noqa: E402
+
+_sa_event.listen(WorkflowDefinition, "before_insert", _identity_grant.before_insert)
+_sa_event.listen(WorkflowDefinition, "before_update", _identity_grant.before_update)
 
 
 class WorkflowStatus(str, enum.Enum):

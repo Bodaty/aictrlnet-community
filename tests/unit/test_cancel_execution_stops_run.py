@@ -191,7 +191,8 @@ async def test_exception_escaping_a_cancelled_run_ends_it_cancelled(step_type, w
             failed_events.append(data)
         await publish(event_name, data, **kwargs)
 
-    async def raising_run(self, workflow_instance, node_ids, initial_data, is_cancelled=None):
+    async def raising_run(self, workflow_instance, node_ids, initial_data, is_cancelled=None,
+                          between_batches=None):
         ran.append("started")
         await cancelled.wait()
         raise RuntimeError("raised after the run was cancelled")

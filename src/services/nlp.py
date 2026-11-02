@@ -98,6 +98,10 @@ class NLPService:
         # contract ('mode == edit' → response stamps edit_mode) holds even
         # when something blows up before the main edit-mode block.
         is_edit_mode = context.get('mode') == 'edit' if context else False
+        # A reserved name is refused before any generation (ReservedWorkflowName).
+        if not is_edit_mode and (context or {}).get("workflow_name"):
+            from services.workflow_identity import check_workflow_name
+            check_workflow_name(context["workflow_name"], is_admin=False)
 
         # Security validation
         if user_id is None:
@@ -675,10 +679,16 @@ class NLPService:
         template = await self._match_template_with_ai(prompt, intent)
         logger.info(f"AI template matching result: {template.get('name') if template else 'None'}")
         
+        from services.workflow_identity import protected_identity
+
         if template:
-            # Generate workflow from template using the template service
+            # Generate workflow from template using the template service. A
+            # protected (phi) template is never a match: only an administrator
+            # instantiates it, as itself.
             workflow_config = await self.template_service.generate_workflow_for_template(template)
-            return workflow_config
+            if not protected_identity(workflow_config):
+                return workflow_config
+            logger.info("Matched template is protected; not used for a generated workflow")
         
         # Fallback to basic templates
         templates = await self.template_service.get_templates_by_category_async(
@@ -688,8 +698,12 @@ class NLPService:
         if not templates:
             return None
             
-        # Use the best matching template
-        template = templates[0]
+        # Use the best matching template that isn't protected
+        unprotected = [t for t in templates
+                       if not protected_identity(getattr(t, "workflow_definition", None) or {})]
+        if not unprotected:
+            return None
+        template = unprotected[0]
         
         # Extract parameters from prompt
         parameters = self._extract_parameters(prompt, template)
@@ -697,6 +711,9 @@ class NLPService:
         # Generate workflow from template
         workflow_config = await self.template_service.generate_workflow_for_template(template)
         
+        if protected_identity(workflow_config):
+            return None
+
         # Apply parameters
         if parameters:
             workflow_config = self._apply_parameters_to_workflow(
@@ -1133,6 +1150,14 @@ Return ONLY a single number (the index). Example: 5
                     pass
                 # Continue without enhancements
         
+        # Generated workflows never carry a protected identity (phi, or a
+        # protected template id): that is an administrator's grant, given only
+        # by instantiating the template. Strip it rather than create one.
+        from services.workflow_identity import check_workflow_name, without_protected_identity
+        definition = without_protected_identity(definition)
+        # Nor a reserved name: those name the workflows an identity is granted to.
+        check_workflow_name(name, is_admin=False)
+
         workflow = WorkflowDefinition(
             name=name,
             description=f"Generated from: {prompt[:200]}...",

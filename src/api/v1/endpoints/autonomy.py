@@ -8,7 +8,7 @@ mounted at the same path.
 Exposed paths (registered at `/api/v1/autonomy` by community_router):
     GET  /resolve            — effective policy for (workflow, user)
     GET  /workflow/{id}      — per-workflow policy
-    PUT  /workflow/{id}      — owner-only update
+    PUT  /workflow/{id}      — tenant administrator only (level and lock)
     POST /preview            — gate/auto-approve counts per workflow
     GET  /phases             — phase catalog
 
@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
 from core.security import get_current_active_user
+from api.v1.endpoints._auth_helpers import get_safe_attr, get_safe_tenant_id, is_superuser
 from models.community_complete import WorkflowDefinition
 from services.autonomy_resolver import CommunityAutonomyResolver
 from services.autonomy_taxonomy import (
@@ -106,20 +107,12 @@ def _view(level: Optional[int]) -> AutonomyView:
 def _safe_user_id(current_user: Any) -> str:
     if current_user is None:
         return "system"
-    uid = (
-        getattr(current_user, "id", None)
-        or getattr(current_user, "user_id", None)
-        or (current_user.get("id") if isinstance(current_user, dict) else None)
-        or (current_user.get("user_id") if isinstance(current_user, dict) else None)
-    )
+    uid = get_safe_attr(current_user, "id") or get_safe_attr(current_user, "user_id")
     return str(uid) if uid else "system"
 
 
 def _safe_tenant(current_user: Any) -> str:
-    tid = (
-        getattr(current_user, "tenant_id", None)
-        or (current_user.get("tenant_id") if isinstance(current_user, dict) else None)
-    )
+    tid = get_safe_tenant_id(current_user)
     return str(tid) if tid else "default-tenant"
 
 
@@ -213,6 +206,9 @@ async def update_workflow_autonomy(
     caller_tenant = _safe_tenant(current_user)
     if str(tenant_id) != str(caller_tenant):
         raise HTTPException(status_code=403, detail="Cross-tenant workflow update denied")
+    # Only the tenant's administrator moves or unlocks a workflow's dial.
+    if not is_superuser(current_user):
+        raise HTTPException(status_code=403, detail="Not enough permissions. Admin access required.")
 
     data = payload.model_dump(exclude_unset=True)
     values: Dict[str, Any] = {}

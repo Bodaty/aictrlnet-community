@@ -2442,6 +2442,13 @@ class ToolDispatcher:
             missing = missing_workflow_name(name)
             if missing:
                 return missing
+            # A reserved name names a workflow only an administrator's grant
+            # makes; a generated workflow never gets one (422).
+            from services.workflow_identity import ReservedWorkflowName, check_workflow_name
+            try:
+                check_workflow_name(name, is_admin=False)
+            except ReservedWorkflowName as e:
+                return ToolResult(success=False, error=str(e), data={"status_code": 422})
 
             description = args.get('description', '')
 
@@ -2675,6 +2682,30 @@ class ToolDispatcher:
                         "workflow_id": workflow_id
                     }
                 )
+
+            # A granted workflow (the document workflows, the nightly purge) is
+            # an administrator's to change at all (403). A phi workflow keeps its
+            # name (422), whoever asks: other parts of the platform recognise its
+            # runs by name; a reserved name is an administrator's to give (422).
+            # Checked before any write.
+            from services.workflow import PhiDefinitionChangeForbidden, check_definition_change
+            from services.workflow_identity import (
+                DefinitionChangeForbidden, GrantedWorkflowChangeForbidden, ReservedWorkflowName,
+                actor_is_admin, check_granted_workflow_change)
+
+            current = await workflow_service.get_workflow(workflow_id)
+            if current is not None:
+                try:
+                    is_admin = await actor_is_admin(self.db, user_id)
+                    check_granted_workflow_change(current, is_admin)
+                    if args.get('name'):
+                        check_definition_change(current, {"name": args.get('name')}, is_admin)
+                except (PhiDefinitionChangeForbidden, ReservedWorkflowName) as e:
+                    return ToolResult(success=False, error=str(e),
+                                      data={"status_code": 422, "workflow_id": workflow_id})
+                except (DefinitionChangeForbidden, GrantedWorkflowChangeForbidden) as e:
+                    return ToolResult(success=False, error=str(e),
+                                      data={"status_code": 403, "workflow_id": workflow_id})
 
             # Call workflow service to update
             workflow = await workflow_service.update_workflow(

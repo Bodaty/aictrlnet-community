@@ -789,17 +789,26 @@ class OnboardingService:
         except Exception:
             logger.debug("onboarding autonomy: agent stamp skipped", exc_info=True)
 
-        # 2) Stamp any active workflows attached to the user.
+        # 2) Stamp any active workflows attached to the user. A workflow's dial
+        #    is an administrator's to move, and a locked dial is never moved here.
         try:
             workflow_ids = list(config.active_workflows or [])
             if workflow_ids:
                 from models.community_complete import WorkflowDefinition
-                from sqlalchemy import update as _update
+                from models.user import User
+                from sqlalchemy import select as _select, update as _update
 
-                await self.db.execute(
-                    _update(WorkflowDefinition)
-                    .where(WorkflowDefinition.id.in_(workflow_ids))
-                    .values(autonomy_level=autonomy_level)
-                )
+                is_admin = (await self.db.execute(
+                    _select(User.is_superuser).where(User.id == str(config.user_id))
+                )).scalar_one_or_none() is True
+                if is_admin:
+                    await self.db.execute(
+                        _update(WorkflowDefinition)
+                        .where(WorkflowDefinition.id.in_(workflow_ids),
+                               WorkflowDefinition.autonomy_locked.is_(False))
+                        .values(autonomy_level=autonomy_level)
+                    )
+                else:
+                    logger.info("onboarding autonomy: not an administrator; workflow dials left as they are")
         except Exception:
             logger.debug("onboarding autonomy: workflow stamp skipped", exc_info=True)

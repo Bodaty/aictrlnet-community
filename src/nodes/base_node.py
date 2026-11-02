@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import time
 
 from .models import NodeConfig, NodeStatus, NodeInstance, NodeExecutionResult
+from .capacity import run_with_deadline
 from .content_refs import scrub_error
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
@@ -113,10 +114,11 @@ class BaseNode(ABC):
                                 next_node_ids=instance.next_nodes
                             )
 
-                # Execute with timeout
-                output_data = await asyncio.wait_for(
+                # Execute with timeout; time spent waiting for a reader's
+                # capacity (nodes.capacity) does not count toward it.
+                output_data = await run_with_deadline(
                     self.execute(instance.input_data, context),
-                    timeout=self.config.timeout_seconds
+                    self.config.timeout_seconds,
                 )
 
                 if not isinstance(output_data, dict):

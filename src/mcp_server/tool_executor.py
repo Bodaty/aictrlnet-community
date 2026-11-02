@@ -1189,12 +1189,18 @@ async def _handle_preview_autonomy(
 
 
 async def _handle_set_workflow_autonomy(
-    arguments: Dict[str, Any], db: AsyncSession, user_id: str
+    arguments: Dict[str, Any], db: AsyncSession, user_id: str,
+    caller: Optional["MCPCaller"] = None,
 ) -> Dict[str, Any]:
     from sqlalchemy import select, update
 
     from core.tenant_context import get_current_tenant_id
     from models.community_complete import WorkflowDefinition
+
+    # Only the tenant's administrator moves or unlocks a workflow's dial; a
+    # missing principal is a plain owner (fail closed).
+    if not _principal(caller, user_id).is_superuser:
+        raise ToolExecutionError("Only an administrator can change a workflow's autonomy")
 
     workflow_id = arguments["workflow_id"]
     caller_tenant = get_current_tenant_id()
@@ -4413,6 +4419,7 @@ _CALLER_AWARE_TOOLS = frozenset({
     "invoke_external_mcp_tool",
     "list_registered_mcp_servers",
     "unregister_mcp_server",
+    "set_workflow_autonomy",
 })
 
 

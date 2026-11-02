@@ -8,7 +8,9 @@ from datetime import datetime
 
 from core.database import get_db
 from core.security import get_current_active_user
+from core.authz import is_superuser
 from core.exceptions import ValidationError
+from services.workflow_identity import ReservedWorkflowName
 from mcp_server.services import (
     MCPOrchestrationService,
     MCPQualityService,
@@ -147,11 +149,14 @@ async def create_workflow_via_mcp(
         # Create workflow
         result = await workflow_service.create_workflow_via_mcp(
             workflow_definition=request.workflow_definition,
-            execute_immediately=request.execute_immediately
+            execute_immediately=request.execute_immediately,
+            actor_is_admin=is_superuser(current_user),
         )
         
         return MCPWorkflowResponse(**result)
         
+    except ReservedWorkflowName as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
     except ValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -354,6 +359,18 @@ async def expose_workflow_as_mcp_endpoint(
     """Expose an existing workflow as an MCP endpoint."""
     try:
         workflow_service = MCPWorkflowService(db)
+        # A granted workflow (the document workflows) is its tenant
+        # administrator's to change, exposing it included (403).
+        from core.authz import is_superuser, resolve_caller_tenant
+        from services.workflow_identity import (
+            GrantedWorkflowChangeForbidden, check_granted_workflow_change)
+        existing = await workflow_service.workflow_service.get_workflow(workflow_id)
+        if existing is not None:
+            try:
+                check_granted_workflow_change(existing, is_superuser(current_user) and str(
+                    resolve_caller_tenant(current_user)) == str(existing.tenant_id))
+            except GrantedWorkflowChangeForbidden as e:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         result = await workflow_service.expose_workflow_as_mcp_endpoint(
             workflow_id=workflow_id,
             endpoint_config=endpoint_config

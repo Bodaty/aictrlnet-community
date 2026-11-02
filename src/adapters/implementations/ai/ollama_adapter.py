@@ -679,7 +679,8 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             model_name = request.parameters["name"]
             
             # Delete model
-            response = await self.client.delete("/api/delete", json={"name": model_name})
+            # httpx.AsyncClient.delete() takes no body; Ollama reads the model from one
+            response = await self.client.request("DELETE", "/api/delete", json={"model": model_name})
             response.raise_for_status()
             
             duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
@@ -759,6 +760,8 @@ class OllamaAdapter(BaseAdapter, ToolCallingMixin):
             payload["options"] = {**(payload.get("options") or {}), "temperature": request.temperature}
         if request.response_format is not None:
             payload["format"] = request.response_format
+        if request.think is not None:
+            payload["think"] = request.think
 
     async def _apply_request_options(self, payload: Dict[str, Any], keep_warm: bool = False) -> None:
         """`num_ctx` on every request (spec §7.5; see llm/ollama_options.py); `keep_alive`

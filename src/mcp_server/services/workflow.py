@@ -22,12 +22,18 @@ class MCPWorkflowService:
     async def create_workflow_via_mcp(
         self,
         workflow_definition: Dict[str, Any],
-        execute_immediately: bool = False
+        execute_immediately: bool = False,
+        *,
+        actor_is_admin: bool = False,
     ) -> Dict[str, Any]:
-        """Create a workflow via MCP protocol."""
+        """Create a workflow via MCP protocol. A reserved name needs
+        ``actor_is_admin``: ReservedWorkflowName is raised, not reported."""
+        from services.workflow_identity import check_workflow_name
+
+        name = workflow_definition.get("name", f"MCP Workflow {uuid.uuid4().hex[:8]}")
+        check_workflow_name(name, actor_is_admin)
         try:
             # Extract workflow details
-            name = workflow_definition.get("name", f"MCP Workflow {uuid.uuid4().hex[:8]}")
             description = workflow_definition.get("description", "Created via MCP")
             steps = workflow_definition.get("steps", [])
             
@@ -43,7 +49,8 @@ class MCPWorkflowService:
                     "created_via": "mcp",
                     "mcp_version": "1.0",
                     "original_definition": workflow_definition
-                }
+                },
+                actor_is_admin=actor_is_admin,
             )
             
             result = {

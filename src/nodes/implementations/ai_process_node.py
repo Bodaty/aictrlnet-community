@@ -10,7 +10,7 @@ from datetime import datetime
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
-from .. import content_refs
+from .. import capacity, content_refs
 from ..template_utils import (
     resolve_templates,
     get_adapter_credentials_for_tenant,
@@ -335,6 +335,11 @@ class AIProcessNode(BaseNode):
                 "temperature": params.get("temperature"),
                 "response_format": response_format if isinstance(response_format, dict) else None,
             }
+        # A step's explicit `think` (a reasoning model's thinking pass on or off)
+        # reaches the request; a step that sets none leaves the provider default.
+        if isinstance(params.get("think"), bool):
+            params["_adapter_request_flags"] = {**(params.get("_adapter_request_flags") or {}),
+                                                "think": params["think"]}
         await self._load_org_llm_settings(tenant_id)
 
         # Track wall time across the LLM call so the audit row + metering
@@ -472,8 +477,22 @@ class AIProcessNode(BaseNode):
 
         Trial tenants use the system default LLM (Bodaty pays). Node-level
         adapter overrides (e.g. adapter_type: "openai") are ignored to prevent
-        cost leakage. After BYOK, node-level selection is honored.
+        cost leakage. After BYOK, node-level selection is honored. A local
+        provider (Ollama, vLLM, llama.cpp) costs nothing to call, so a node
+        that names one keeps it.
+
+        The local match is by provider name, not by where the adapter points:
+        an operator who configures a vllm/ollama adapter at a remote host has
+        it kept too (the operator's choice; the PHI egress guard still checks
+        the URL on its own). On a cloud trial with no local model running, a
+        node that names a local provider now fails rather than quietly using
+        the cloud default; among the system templates only document-read
+        names one, and it is dark unless DOCUMENT_INTAKE_ENABLED.
         """
+        from core.phi_egress import LOCAL_PROVIDERS
+
+        if adapter_id in LOCAL_PROVIDERS:
+            return adapter_id
         try:
             from core.database import get_session_maker, bind_session_tenant
             from llm.org_llm_settings import get_org_llm_settings
@@ -1467,31 +1486,38 @@ Answer:"""
         model is filled in (llama-server serves its loaded model), and a failed
         call is not retried."""
         ref_kind, ref_id = content_refs.parse_ref(params.get("input_ref"), "input_ref")
-        resolved = await content_refs.resolve_input(params.get("input_ref"), tenant_id, context)
+        # A reader registered with a capacity gate for this content kind is
+        # used by a capped number of steps at once; the wait is not step time.
+        # The content is loaded only once the slot is held, so nothing is kept
+        # in memory across the wait.
+        async with capacity.slot(ref_kind, params.get("_resolved_adapter_id"), tenant_id, context):
+            resolved = await content_refs.resolve_input(params.get("input_ref"), tenant_id, context)
 
-        request_params = copy.deepcopy(params.get("request_parameters") or {})
-        text = resolved.get("text")
-        if text:
-            if isinstance(request_params.get("messages"), list):
-                request_params["messages"] = [*request_params["messages"], {"role": "user", "content": text}]
-            else:
-                prompt = request_params.get("prompt")
-                request_params["prompt"] = f"{prompt}\n\n{text}" if prompt else text
-        request_flags = dict(self._request_flags(params))
-        if resolved.get("images"):
-            request_flags["images"] = list(resolved["images"])
+            request_params = copy.deepcopy(params.get("request_parameters") or {})
+            text = resolved.get("text")
+            if text:
+                if isinstance(request_params.get("messages"), list):
+                    request_params["messages"] = [*request_params["messages"], {"role": "user", "content": text}]
+                else:
+                    prompt = request_params.get("prompt")
+                    request_params["prompt"] = f"{prompt}\n\n{text}" if prompt else text
+            request_flags = dict(self._request_flags(params))
+            if resolved.get("images"):
+                request_flags["images"] = list(resolved["images"])
+            del resolved, text
 
-        request = AdapterRequest(capability=capability, parameters=request_params, **request_flags)
-        started = time.monotonic()
-        try:
-            response = await adapter.execute(request)
-        except PHIEgressRefused:
-            raise
-        except Exception as exc:
-            # The message may echo the resolved content; keep the type only.
-            logger.warning(f"By-reference AI call '{capability}' failed ({type(exc).__name__}); not retried")
-            raise RuntimeError(f"Custom AI task failed: {type(exc).__name__}") from None
-        duration_ms = round((time.monotonic() - started) * 1000, 1)
+            request = AdapterRequest(capability=capability, parameters=request_params, **request_flags)
+            started = time.monotonic()
+            try:
+                response = await adapter.execute(request)
+            except PHIEgressRefused:
+                raise
+            except Exception as exc:
+                # The message may echo the resolved content; keep the type only.
+                logger.warning(f"By-reference AI call '{capability}' failed ({type(exc).__name__}); not retried")
+                raise RuntimeError(f"Custom AI task failed: {type(exc).__name__}") from None
+            duration_ms = round((time.monotonic() - started) * 1000, 1)
+            del request, request_flags
         if response.status == "error":
             raise RuntimeError(f"Custom AI task failed ({response.error_code or 'error'})")
 

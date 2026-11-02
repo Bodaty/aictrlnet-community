@@ -26,12 +26,18 @@ class WorkflowService:
         name: str,
         description: str = "",
         definition: Dict[str, Any] = None,
-        metadata: Dict[str, Any] = None
+        metadata: Dict[str, Any] = None,
+        *,
+        actor_is_admin: bool = False,
     ) -> Workflow:
         """Create a new workflow.
 
-        Automatically assigns current tenant_id.
+        Automatically assigns current tenant_id. A reserved name needs
+        ``actor_is_admin`` (ReservedWorkflowName, a 422).
         """
+        from services.workflow_identity import check_workflow_name
+
+        check_workflow_name(name, actor_is_admin)
         tenant_id = get_current_tenant_id()
         # WorkflowDefinition has no `status` column — liveness is `active: bool` —
         # and its JSON `metadata` column is exposed as `workflow_metadata` because

@@ -33,6 +33,79 @@ from core.tenant_context import get_current_tenant_id
 
 logger = logging.getLogger(__name__)
 
+
+# Steps that branch or wait for a person: a skip_condition on them is refused.
+NO_SKIP_NODE_TYPES = frozenset({
+    "decision", "conditionNode", "condition", "branch", "switch",
+    "approval", "approvalRequest", "humanAgent", "human_agent", "humanTask", "human_task",
+})
+
+
+def node_config_from_definition(node_def: Dict[str, Any]):
+    """The NodeConfig the engine runs for one node of a workflow definition."""
+    from nodes.models import NodeConfig, NodeType
+
+    node_id = node_def.get("id", str(uuid.uuid4()))
+    raw_type = node_def.get("type", "task")
+    parameters = node_def.get("parameters") or node_def.get("config") or node_def.get("data") or {}
+    if not isinstance(parameters, dict):
+        parameters = {}
+    # Flatten nested config: templates and industry templates
+    # store adapter settings in data.config or config sub-dicts
+    if "config" in parameters and isinstance(parameters["config"], dict):
+        nested = parameters.pop("config")
+        for k, v in nested.items():
+            if k not in parameters:
+                parameters[k] = v
+
+    # Resolve node type — preserve raw_type as custom_node_type
+    # so the registry can route to custom node implementations
+    # (e.g., WebhookNode, CodeNode, AIProcessNode) instead of
+    # falling back to generic TaskNode.
+    try:
+        node_type = NodeType(raw_type)
+    except ValueError:
+        node_type = NodeType.TASK  # fallback for unknown enum values
+
+    # Always set custom_node_type so the registry checks custom
+    # implementations first — handles both enum misses (code,
+    # ai_process, notification) and enum hits that have custom
+    # registrations (webhook, approval, loop, parallel).
+    if "custom_node_type" not in parameters:
+        parameters["custom_node_type"] = raw_type
+
+    # Honor a per-node lifecycle timeout from the definition
+    # ("timeout_seconds" in the node's config/data). Without
+    # this every node gets NodeConfig's 300s default, which a
+    # multi-engine GEO audit loop (36 sequential probes)
+    # cannot fit. Distinct from nodes' internal "timeout"
+    # params (per-HTTP-request / subprocess budgets).
+    try:
+        timeout_seconds = int(parameters.get("timeout_seconds", 300))
+    except (TypeError, ValueError):
+        timeout_seconds = 300
+
+    # A step skipped by its condition hands its input on to the next step.
+    # Never on a branch or a human gate: a skipped decision would run every
+    # branch after it, and a skipped approval would bypass the person.
+    skip_condition = parameters.get("skip_condition")
+    if isinstance(skip_condition, str) and skip_condition.strip() and (
+        raw_type in NO_SKIP_NODE_TYPES or node_type in (NodeType.DECISION, NodeType.APPROVAL, NodeType.HUMAN_TASK)
+    ):
+        raise ValueError(
+            f"Node '{node_id}' ({raw_type}) can't have a skip_condition: a decision or approval "
+            f"step is never skipped. Required: remove skip_condition from this step."
+        )
+
+    return NodeConfig(
+        id=node_id,
+        name=node_def.get("name") or node_id,
+        type=node_type,
+        parameters=parameters,
+        timeout_seconds=timeout_seconds,
+        skip_condition=skip_condition if isinstance(skip_condition, str) and skip_condition.strip() else None,
+    )
+
 # Strong references to background workflow tasks. asyncio.create_task returns a
 # Task that the event loop only weakly references; without this set, the task
 # can be GC'd before completion. add_done_callback removes the entry once done.
@@ -62,7 +135,6 @@ class WorkflowExecutionService:
         result = await self.db.execute(
             select(WorkflowDefinition)
             .where(WorkflowDefinition.id == str(workflow_id))
-            .options(selectinload(WorkflowDefinition.instances))
         )
         workflow = result.scalar_one_or_none()
         
@@ -269,53 +341,8 @@ class WorkflowExecutionService:
 
                 node_instances = {}
                 for node_def in nodes:
-                    node_id = node_def.get("id", str(uuid.uuid4()))
-                    raw_type = node_def.get("type", "task")
-                    parameters = node_def.get("parameters") or node_def.get("config") or node_def.get("data") or {}
-                    if not isinstance(parameters, dict):
-                        parameters = {}
-                    # Flatten nested config: templates and industry templates
-                    # store adapter settings in data.config or config sub-dicts
-                    if "config" in parameters and isinstance(parameters["config"], dict):
-                        nested = parameters.pop("config")
-                        for k, v in nested.items():
-                            if k not in parameters:
-                                parameters[k] = v
-
-                    # Resolve node type — preserve raw_type as custom_node_type
-                    # so the registry can route to custom node implementations
-                    # (e.g., WebhookNode, CodeNode, AIProcessNode) instead of
-                    # falling back to generic TaskNode.
-                    try:
-                        node_type = NodeType(raw_type)
-                    except ValueError:
-                        node_type = NodeType.TASK  # fallback for unknown enum values
-
-                    # Always set custom_node_type so the registry checks custom
-                    # implementations first — handles both enum misses (code,
-                    # ai_process, notification) and enum hits that have custom
-                    # registrations (webhook, approval, loop, parallel).
-                    if "custom_node_type" not in parameters:
-                        parameters["custom_node_type"] = raw_type
-
-                    # Honor a per-node lifecycle timeout from the definition
-                    # ("timeout_seconds" in the node's config/data). Without
-                    # this every node gets NodeConfig's 300s default, which a
-                    # multi-engine GEO audit loop (36 sequential probes)
-                    # cannot fit. Distinct from nodes' internal "timeout"
-                    # params (per-HTTP-request / subprocess budgets).
-                    try:
-                        timeout_seconds = int(parameters.get("timeout_seconds", 300))
-                    except (TypeError, ValueError):
-                        timeout_seconds = 300
-
-                    node_config = NodeConfig(
-                        id=node_id,
-                        name=node_def.get("name") or node_id,
-                        type=node_type,
-                        parameters=parameters,
-                        timeout_seconds=timeout_seconds
-                    )
+                    node_config = node_config_from_definition(node_def)
+                    node_id = node_config.id
                     node_instances[node_id] = NodeInstance(
                         id=node_id,
                         node_config=node_config,
@@ -405,7 +432,13 @@ class WorkflowExecutionService:
                         .values(status=WorkflowExecutionStatus.RUNNING)
                         .execution_options(synchronize_session=False)
                     )
-                    await db.commit()
+
+                # End the setup's transaction (and commit the resume flip)
+                # before the nodes run: the run can wait hours on a person,
+                # and an open transaction here would hold a pooled connection,
+                # idle in transaction, for all of it. A node that uses this
+                # session starts its own.
+                await db.commit()
 
                 # Create workflow instance for node executor
                 workflow_instance = NodeWorkflowInstance(
@@ -421,8 +454,24 @@ class WorkflowExecutionService:
                 async def is_cancelled() -> bool:
                     return await self._is_execution_cancelled(execution_id, tenant_id)
 
+                async def end_batch_transaction() -> None:
+                    # Between batches no node is using the shared session, so
+                    # a read a node left open is ended here instead of pinning
+                    # a connection through a later step that waits on a person.
+                    # Nodes commit their own writes, so a commit that fails
+                    # here is a step's write the database refused: the run
+                    # fails now, with that error, and no later step runs.
+                    if not db.in_transaction():
+                        return
+                    try:
+                        await db.commit()
+                    except Exception:
+                        await db.rollback()
+                        raise
+
                 await self.node_executor.execute_workflow(
-                    workflow_instance, is_cancelled=is_cancelled
+                    workflow_instance, is_cancelled=is_cancelled,
+                    between_batches=end_batch_transaction,
                 )
 
                 # Check for node failures. The node executor's error_handler
