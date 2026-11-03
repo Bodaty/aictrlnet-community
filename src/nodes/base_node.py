@@ -332,8 +332,18 @@ class BaseNode(ABC):
                 raise
 
         try:
+            # The run's identity reaches the adapter here, from the runtime's
+            # context, so a tenant-scoped adapter never takes its tenant from a
+            # capability parameter a workflow definition could set.
+            run_context = {
+                key: (context or {}).get(key)
+                for key in ("tenant_id", "user_id", "execution_id", "workflow_id")
+                if (context or {}).get(key) is not None
+            }
+            run_context["node_id"] = self.config.id
             request = AdapterRequest(
-                capability=capability, parameters=parameters, user_id=user_id
+                capability=capability, parameters=parameters, user_id=user_id,
+                context=run_context,
             )
             response = await adapter.handle_request(request)
         finally:

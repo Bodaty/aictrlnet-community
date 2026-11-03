@@ -686,7 +686,11 @@ async def create_user(
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    
+
+    # Ids only: editions that keep people in step (human agents) listen for it.
+    from events.event_bus import event_bus
+    await event_bus.publish("user.created", {"user_id": str(user.id), "tenant_id": user.tenant_id})
+
     return {
         "id": str(user.id),
         "email": user.email,

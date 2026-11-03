@@ -324,6 +324,8 @@ class AIProcessNode(BaseNode):
         # Lets _maybe_upgrade_model_for_narrative decide whether narrative routing
         # (model upgrade) applies. Only Ollama-family adapters get upgraded.
         params["_resolved_adapter_id"] = adapter_id
+        # The run's tenant, for lookups made on the step's behalf (the persona).
+        params["_tenant_id"] = tenant_id
         # A step of a workflow marked `phi: true` sends a PHI-pipeline request: its
         # temperature is the step's own (no default stands in, so the adapter refuses
         # a step that sets none) and a JSON-schema response_format is passed through.
@@ -835,21 +837,28 @@ class AIProcessNode(BaseNode):
             if '/workspace/editions/business/src' not in sys.path:
                 sys.path.insert(0, '/workspace/editions/business/src')
             from aictrlnet_business.models.enhanced_agent import EnhancedAgent
-            from core.database import get_db
             from sqlalchemy import select as _select
         except Exception:
             return None
 
+        # The run's tenant, on a session bound to it: an agent of another
+        # tenant (or the request's, for a scheduled run) is never this step's
+        # persona. A run with no tenant has no persona.
+        tenant_id = params.get("_tenant_id")
+        if not tenant_id:
+            return None
         try:
-            async for db in get_db():
-                stmt = _select(EnhancedAgent)
+            from core.database import bind_session_tenant, get_session_maker
+
+            async with get_session_maker()() as db:
+                bind_session_tenant(db, tenant_id)
+                stmt = _select(EnhancedAgent).where(EnhancedAgent.tenant_id == tenant_id)
                 if agent_id:
                     stmt = stmt.where(EnhancedAgent.id == agent_id)
                 else:
                     stmt = stmt.where(EnhancedAgent.name == agent_name)
-                result = await db.execute(stmt)
-                agent = result.unique().scalar_one_or_none()
-                break
+                result = await db.execute(stmt.limit(1))
+                agent = result.unique().scalars().first()
         except Exception as e:
             logger.debug(f"Persona lookup failed for node {self.config.id}: {e}")
             return None
@@ -877,6 +886,8 @@ class AIProcessNode(BaseNode):
         if rules.get("autonomous_actions"):
             actions = ", ".join(str(a) for a in rules["autonomous_actions"][:5])
             lines.append(f"- Can act autonomously on: {actions}")
+        for rule in (rules.get("rules") or [])[:10]:
+            lines.append(f"- Rule: {rule}")
         return "\n".join(lines) if len(lines) > 1 else None
 
     def _is_narrative_node(self, prompt: str) -> bool:

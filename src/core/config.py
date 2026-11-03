@@ -206,6 +206,10 @@ class Settings(BaseSettings):
     # volume and credentials are held by an encrypted backend. Default false, so
     # deployments that handle no PHI are unaffected.
     AICTRLNET_PHI_MODE: bool = Field(default=False, env="AICTRLNET_PHI_MODE")
+    # Under PHI mode, the outside channels a de-identified nudge (counts and a
+    # sign-in link) may use: those a BAA covers, comma-separated (e.g.
+    # "email"). Empty: nothing leaves HitLai (core/phi_outbound.py).
+    AICTRLNET_PHI_OUTBOUND_CHANNELS: str = Field(default="", env="AICTRLNET_PHI_OUTBOUND_CHANNELS")
     # R-04: which model providers may receive PHI, and which cloud providers
     # have a BAA on file. Read only under AICTRLNET_PHI_MODE (core/phi_egress.py).
     # Empty allowlist = this deployment sends PHI to no model at all: it boots,

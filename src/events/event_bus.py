@@ -241,6 +241,11 @@ async def notify_channel_on_completion(event_name: str, data: Any):
             duration_ms = data.get("duration_ms", 0)
             text = f"Workflow {workflow_id} completed in {duration_ms}ms."
 
+            from core.phi_outbound import refusal_for
+
+            if refusal_for(channel, text):
+                return
+
             from adapters.registry import adapter_registry
             from adapters.models import AdapterRequest as AR
 

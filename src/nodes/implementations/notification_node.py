@@ -48,6 +48,23 @@ class NotificationNode(BaseNode):
         # Get notification configuration
         channel = self.config.parameters.get("channel", "email")
 
+        # Under PHI mode only a de-identified nudge (counts and a sign-in link)
+        # may leave HitLai, on an allowlisted channel (core/phi_outbound.py).
+        # A step that declares `nudge` sends that and nothing else; any other
+        # message is refused, visibly, without failing the run.
+        from core.phi_outbound import DeidentifiedNudge, refusal_for
+
+        nudge_spec = self.config.parameters.get("nudge")
+        message = DeidentifiedNudge(**nudge_spec) if isinstance(nudge_spec, dict) else \
+            self.config.parameters.get("message")
+        refused = refusal_for(channel, message)
+        if refused:
+            logger.warning("Notification step %s refused: %s", self.config.id, refused)
+            return {"notification_sent": False, "channel": channel, "refused": refused}
+        if isinstance(message, DeidentifiedNudge):
+            rendered = message.render()
+            self.config.parameters.update({"message": rendered, "body": rendered, "subject": "HitLai"})
+
         # Node-level dry-run: workflows that run in `dry_run=false` at the
         # workflow level can still mark individual side-effect nodes as
         # dry-run via their config (the workflow-level dry-run interceptor

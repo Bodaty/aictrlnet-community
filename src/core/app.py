@@ -14,6 +14,7 @@ import logging
 from .config import get_settings
 from .database import init_db, close_db
 from .cache import get_cache
+from . import http_log_redaction  # noqa: F401 - strips query strings from httpx's request log
 
 # Configure logging
 logger = logging.getLogger(__name__)

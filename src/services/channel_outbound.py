@@ -46,10 +46,20 @@ def _request(channel_type: str, recipient_id: str, text: str, meta: Dict[str, An
 async def send_text(
     channel_type: str,
     recipient_id: str,
-    text: str,
+    text: Any,
     platform_metadata: Optional[Dict[str, Any]] = None,
 ) -> Delivery:
-    """Send `text` to `recipient_id` on `channel_type`. Never raises."""
+    """Send `text` to `recipient_id` on `channel_type`. Never raises.
+
+    Under PHI mode only a ``DeidentifiedNudge`` on an allowlisted channel goes
+    (core/phi_outbound.py); anything else is refused here."""
+    from core.phi_outbound import DeidentifiedNudge, refusal_for
+
+    refused = refusal_for(channel_type, text)
+    if refused:
+        return Delivery(False, refused)
+    if isinstance(text, DeidentifiedNudge):
+        text = text.render()
     if not text:
         return Delivery(False, "empty message")
     entry = _request(channel_type, recipient_id, text, platform_metadata or {})
