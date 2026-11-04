@@ -1505,6 +1505,16 @@ Answer:"""
             resolved = await content_refs.resolve_input(params.get("input_ref"), tenant_id, context)
 
             request_params = copy.deepcopy(params.get("request_parameters") or {})
+            # A step that names an agent speaks as it here too: its persona
+            # (identity and rules, never content) leads the request.
+            persona_block = await self._build_agent_persona_block(params)
+            if persona_block:
+                if isinstance(request_params.get("messages"), list):
+                    request_params["messages"] = [{"role": "system", "content": persona_block},
+                                                  *request_params["messages"]]
+                else:
+                    prompt = request_params.get("prompt")
+                    request_params["prompt"] = f"{persona_block}\n\n{prompt}" if prompt else persona_block
             text = resolved.get("text")
             if text:
                 if isinstance(request_params.get("messages"), list):
