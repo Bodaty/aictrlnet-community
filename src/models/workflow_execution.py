@@ -44,6 +44,7 @@ class WorkflowExecution(Base):
     instance_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("workflow_instances.id"))
     tenant_id: Mapped[Optional[str]] = mapped_column(String(255))
     user_id: Mapped[Optional[str]] = mapped_column(String(255))
+    definition_version_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)
     
     # Execution details
     status: Mapped[WorkflowExecutionStatus] = mapped_column(

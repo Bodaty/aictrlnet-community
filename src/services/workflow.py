@@ -9,6 +9,7 @@ from models.community import WorkflowDefinition, WorkflowInstance
 from schemas.workflow import WorkflowCreate, WorkflowUpdate
 from .workflow_template_service import create_workflow_template_service
 from core.tenant_context import get_current_tenant_id
+from .managed_workflows import refuse_managed_change
 from .workflow_identity import (  # noqa: F401
     DefinitionChangeForbidden,
     GrantedWorkflowChangeForbidden,
@@ -298,6 +299,7 @@ class WorkflowService:
             return None
         
         update_data = workflow_update.model_dump(exclude_unset=True)
+        refuse_managed_change(workflow, definition_change="definition" in update_data)
         check_granted_workflow_change(workflow, actor_is_admin)
         check_autonomy_change(workflow, update_data, actor_is_admin)
         check_definition_change(workflow, update_data, actor_is_admin)

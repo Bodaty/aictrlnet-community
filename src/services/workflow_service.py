@@ -11,6 +11,7 @@ from models.community_complete import WorkflowDefinition as Workflow
 from models.workflow_execution import WorkflowExecution
 from core.exceptions import ValidationError, NotFoundError
 from core.tenant_context import get_current_tenant_id
+from services.managed_workflows import keep_marker, refuse_managed_change
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,8 @@ class WorkflowService:
             raise NotFoundError(f"Workflow {workflow_id} not found")
         
         if metadata:
+            refuse_managed_change(workflow, new_metadata=metadata)
+            metadata = keep_marker(workflow, metadata)
             # Assigning `.metadata` shadows the declarative MetaData on the
             # instance and never reaches the DB — a silent no-op write.
             workflow.workflow_metadata = metadata

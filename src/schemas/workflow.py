@@ -99,6 +99,7 @@ class WorkflowResponse(WorkflowBase, TimestampSchema):
     tenant_id: Optional[str] = None
     autonomy_level: Optional[int] = None
     autonomy_locked: bool = False
+    managed: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -127,6 +128,8 @@ class WorkflowResponse(WorkflowBase, TimestampSchema):
             result['is_template'] = metadata.get('is_template', False)
             result['template_id'] = metadata.get('template_id')
             result['status'] = metadata.get('status', 'draft')
+            managed = metadata.get('managed')
+            result['managed'] = dict(managed) if isinstance(managed, dict) else None
 
             # Autonomy policy columns (new; may not exist on older rows)
             if hasattr(data, 'autonomy_level'):

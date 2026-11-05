@@ -41,6 +41,20 @@ NO_SKIP_NODE_TYPES = frozenset({
 })
 
 
+async def definition_for(db: AsyncSession, execution: WorkflowExecution) -> Dict[str, Any]:
+    """The definition a run executes: the version it started on, else the live one."""
+    definition = None
+    if execution.definition_version_id:
+        from services.definition_versions import get_version
+
+        version = await get_version(db, execution.definition_version_id)
+        if version is not None:
+            definition = version.definition
+    if definition is None:
+        definition = execution.workflow.definition
+    return json.loads(definition) if isinstance(definition, str) else definition
+
+
 def node_config_from_definition(node_def: Dict[str, Any]):
     """The NodeConfig the engine runs for one node of a workflow definition."""
     from nodes.models import NodeConfig, NodeType
@@ -144,6 +158,18 @@ class WorkflowExecutionService:
         if not workflow.active:
             raise ValueError(f"Workflow {workflow_id} is not active")
         
+        from services.definition_versions import current_version_id, get_version
+        from services.execution_hooks import run_pre_execution_hooks
+
+        await run_pre_execution_hooks(self.db, tenant_id, str(workflow_id))
+        # Hooks may edit the definition on their own sessions: read the
+        # workflow and its newest version afresh, after they have run.
+        await self.db.refresh(workflow)
+        if not workflow.active:
+            raise ValueError(f"Workflow {workflow_id} is not active")
+        version_id = await current_version_id(self.db, str(workflow_id))
+        version = await get_version(self.db, version_id) if version_id else None
+
         # Extract dry-run flag from trigger_metadata and store in context
         is_dry_run = (trigger_metadata or {}).get("is_dry_run", False)
 
@@ -156,9 +182,10 @@ class WorkflowExecutionService:
             trigger_metadata=trigger_metadata or {},
             tenant_id=tenant_id,
             user_id=user_id,
+            definition_version_id=version_id,
             context={
                 "workflow_name": workflow.name,
-                "workflow_version": workflow.version,
+                "workflow_version": version.version if version else workflow.version,
                 "is_dry_run": is_dry_run
             }
         )
@@ -210,7 +237,7 @@ class WorkflowExecutionService:
         await self.db.commit()
         
         # Create node executions for all nodes in workflow
-        workflow_def = json.loads(execution.workflow.definition) if isinstance(execution.workflow.definition, str) else execution.workflow.definition
+        workflow_def = await definition_for(self.db, execution)
         nodes = workflow_def.get("nodes", [])
         
         for node in nodes:
@@ -315,7 +342,7 @@ class WorkflowExecutionService:
                     return
 
                 # Get workflow definition
-                workflow_def = json.loads(execution.workflow.definition) if isinstance(execution.workflow.definition, str) else execution.workflow.definition
+                workflow_def = await definition_for(db, execution)
 
                 # Thread dry-run flag from execution context into workflow variables
                 is_dry_run = execution.context.get("is_dry_run", False) if execution.context else False
@@ -1020,8 +1047,17 @@ class WorkflowExecutionService:
         if not execution:
             raise ValueError(f"Execution {execution_id} not found")
         
+        definition_version = None
+        if execution.definition_version_id:
+            from services.definition_versions import get_version
+
+            version = await get_version(self.db, execution.definition_version_id)
+            definition_version = version.version if version else None
+
         return {
             "execution": WorkflowExecutionResponse.model_validate(execution),
+            "definition_version": definition_version,
+            "definition": await definition_for(self.db, execution),
             "node_executions": [
                 NodeExecutionResponse.model_validate(ne) 
                 for ne in execution.node_executions

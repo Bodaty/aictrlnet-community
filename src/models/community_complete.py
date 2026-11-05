@@ -87,6 +87,12 @@ from . import identity_grant as _identity_grant  # noqa: E402
 _sa_event.listen(WorkflowDefinition, "before_insert", _identity_grant.before_insert)
 _sa_event.listen(WorkflowDefinition, "before_update", _identity_grant.before_update)
 
+# Every change to a definition's steps is kept as a version.
+from . import workflow_definition_version as _definition_versions  # noqa: E402
+
+_sa_event.listen(WorkflowDefinition, "after_insert", _definition_versions.after_insert)
+_sa_event.listen(WorkflowDefinition, "after_update", _definition_versions.after_update)
+
 
 class WorkflowStatus(str, enum.Enum):
     """Workflow status enumeration."""

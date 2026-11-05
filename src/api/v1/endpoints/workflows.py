@@ -37,6 +37,7 @@ from schemas.workflow_templates import (
     WorkflowFromTemplate
 )
 from core.exceptions import ForbiddenError
+from services.managed_workflows import MANAGED_KEY, copy_tags, managed_by, managed_steps_detail
 from services.workflow_identity import (
     SERVER_MANAGED_TRIGGER_TYPES,
     GrantedWorkflowChangeForbidden,
@@ -512,9 +513,10 @@ async def duplicate_workflow(
         raise HTTPException(status_code=403, detail=str(e))
 
     tenant_id = resolve_caller_tenant(current_user) or source.tenant_id
+    marker = managed_by(source)
     metadata = {
         k: v for k, v in (source.workflow_metadata or {}).items()
-        if k not in _DUPLICATE_RESET_METADATA
+        if k not in _DUPLICATE_RESET_METADATA and k != MANAGED_KEY
     }
     metadata["status"] = "draft"
     metadata["duplicated_from"] = str(source.id)
@@ -528,10 +530,11 @@ async def duplicate_workflow(
         description=source.description,
         definition=grant_if_protected(source.definition, get_safe_user_id(current_user)),
         active=True,
-        tags=list(source.tags or []),
+        tags=copy_tags(source.tags, marker),
         tenant_id=tenant_id,
         workflow_metadata=metadata,
         autonomy_level=source.autonomy_level,
+        autonomy_locked=bool(source.autonomy_locked),
     )
     db.add(copy)
     await db.commit()
@@ -678,6 +681,9 @@ async def update_workflow(
 
     # Update fields
     update_data = workflow_update.model_dump(exclude_unset=True)
+    marker = managed_by(workflow)
+    if marker and "definition" in update_data:
+        raise HTTPException(status_code=409, detail=managed_steps_detail(marker))
     if "autonomy_locked" in update_data and update_data["autonomy_locked"] is None:
         raise HTTPException(status_code=422, detail="autonomy_locked must be true or false")
     # Moving the dial or its lock is an administrator's job; a full-object
