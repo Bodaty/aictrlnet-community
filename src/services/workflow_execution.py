@@ -161,7 +161,7 @@ class WorkflowExecutionService:
         from services.definition_versions import current_version_id, get_version
         from services.execution_hooks import run_pre_execution_hooks
 
-        await run_pre_execution_hooks(self.db, tenant_id, str(workflow_id))
+        await run_pre_execution_hooks(tenant_id, str(workflow_id))
         # Hooks may edit the definition on their own sessions: read the
         # workflow and its newest version afresh, after they have run.
         await self.db.refresh(workflow)
