@@ -8,6 +8,7 @@ import uuid
 
 from core.database import get_db
 from core.security import get_current_active_user
+from core.dependencies import require_superuser
 from core.enforcement_dependency import enforce_agent_limit
 from services.iam import IAMService
 from schemas.iam import (
@@ -19,7 +20,9 @@ from schemas.iam import (
     IAMMessageHistory
 )
 
-router = APIRouter()
+# IAM agents, messages and sessions carry no tenant or owner yet, so until they
+# do (G45) every route answers superusers only.
+router = APIRouter(dependencies=[Depends(require_superuser)])
 
 
 # Agent management endpoints
