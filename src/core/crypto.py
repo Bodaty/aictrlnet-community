@@ -244,6 +244,23 @@ def oauth2_cipher(configured) -> MultiFernet:
     return _purpose_cipher("oauth2", configured, _ENCRYPTION_KEY_DEFAULTS["OAUTH2_ENCRYPTION_KEY"], _as_text)
 
 
+_phi_ciphers: Dict[str, Fernet] = {}
+
+
+def phi_cipher(tenant_id: str) -> Fernet:
+    """Cipher for PHI the HIPAA adapter encrypts on a tenant's behalf.
+
+    The key is derived from ENCRYPTION_KEY for this purpose and this tenant, so
+    a PHI token opens only under its own tenant's key, and never with
+    get_cipher() (credentials) or another tenant's PHI key.
+    """
+    if not tenant_id:
+        raise ValueError("phi_cipher needs a tenant")
+    if tenant_id not in _phi_ciphers:
+        _phi_ciphers[tenant_id] = Fernet(_derive(f"hipaa-phi:{tenant_id}", ENCRYPTION_KEY).encode())
+    return _phi_ciphers[tenant_id]
+
+
 def encrypt_data(data: Any) -> str:
     """Encrypt data to a string.
     
