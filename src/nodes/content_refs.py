@@ -28,6 +28,9 @@ class ContentRefError(ValueError):
 
 _resolvers: Dict[str, Resolver] = {}
 _sinks: Dict[str, Sink] = {}
+# Sinks that handle a preview run themselves. In a preview any other sink is
+# not called, so a sink can't act in a preview unless it says it handles one.
+_preview_sinks: set = set()
 
 
 def register_resolver(kind: str, resolve: Resolver) -> None:
@@ -38,12 +41,17 @@ def unregister_resolver(kind: str) -> None:
     _resolvers.pop(kind, None)
 
 
-def register_sink(kind: str, write: Sink) -> None:
+def register_sink(kind: str, write: Sink, *, previews: bool = False) -> None:
     _sinks[kind] = write
+    if previews:
+        _preview_sinks.add(kind)
+    else:
+        _preview_sinks.discard(kind)
 
 
 def unregister_sink(kind: str) -> None:
     _sinks.pop(kind, None)
+    _preview_sinks.discard(kind)
 
 
 def parse_ref(ref: Any, field: str) -> Tuple[str, str]:
@@ -84,6 +92,8 @@ async def write_output(output_sink: Any, tenant_id: Optional[str], context: dict
     write = _sinks.get(kind)
     if write is None:
         raise ContentRefError(f"No content sink is registered for output_sink kind '{kind}'")
+    if (context or {}).get("preview") and kind not in _preview_sinks:
+        return {"saved": False, "preview": True}
     result = await write(_require_tenant(tenant_id), sink_id, context, data)
     if not isinstance(result, dict):
         raise ContentRefError(f"The '{kind}' sink must return a dict of ids and counts")

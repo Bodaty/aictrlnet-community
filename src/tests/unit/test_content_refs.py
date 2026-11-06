@@ -421,3 +421,47 @@ def _adapter_instance():
 
     cls = adapter_registry.get_adapter_class("recording_a6")
     return cls(AdapterConfig(name="recording_a6", version="1.0.0", category=AdapterCategory.AI))
+
+
+# --- previews -----------------------------------------------------------------
+# A preview writes through a sink only when the sink says it handles previews;
+# any other sink is not called, so a sink added later can't act in a preview.
+
+@pytest.fixture
+def two_sinks():
+    calls = []
+
+    async def plain(tenant_id, sink_id, context, data):
+        calls.append(("plain", sink_id))
+        return {"saved": True}
+
+    async def aware(tenant_id, sink_id, context, data):
+        calls.append(("aware", sink_id, bool(context.get("preview"))))
+        return {"saved": False, "chars": 3}
+
+    content_refs.register_sink("plain-sink", plain)
+    content_refs.register_sink("aware-sink", aware, previews=True)
+    yield calls
+    content_refs.unregister_sink("plain-sink")
+    content_refs.unregister_sink("aware-sink")
+
+
+@pytest.mark.asyncio
+async def test_a_preview_does_not_call_a_sink_that_does_not_handle_previews(two_sinks):
+    result = await content_refs.write_output({"kind": "plain-sink", "id": "x"}, "t1", {"preview": True}, {"text": "hi"})
+    assert two_sinks == []
+    assert result == {"saved": False, "preview": True}
+
+
+@pytest.mark.asyncio
+async def test_a_preview_calls_a_sink_that_handles_previews(two_sinks):
+    result = await content_refs.write_output({"kind": "aware-sink", "id": "x"}, "t1", {"preview": True}, {"text": "hi"})
+    assert two_sinks == [("aware", "x", True)]
+    assert result == {"saved": False, "chars": 3}
+
+
+@pytest.mark.asyncio
+async def test_a_live_run_calls_every_sink(two_sinks):
+    await content_refs.write_output({"kind": "plain-sink", "id": "a"}, "t1", {}, {"text": "hi"})
+    await content_refs.write_output({"kind": "aware-sink", "id": "b"}, "t1", {"preview": False}, {"text": "hi"})
+    assert two_sinks == [("plain", "a"), ("aware", "b", False)]
