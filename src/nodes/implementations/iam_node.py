@@ -5,8 +5,6 @@ from typing import Any, Dict, List, Optional
 import fnmatch
 import uuid
 
-from sqlalchemy import select
-
 from ..base_node import BaseNode
 from ..models import NodeConfig
 from events.event_bus import event_bus
@@ -37,12 +35,17 @@ class IAMNode(BaseNode):
     
     async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the IAM node. Returns output dict for BaseNode.run() to wrap."""
-        # Get IAM service from context or create new instance
+        # The service acts for the user who started the run, in the run's
+        # tenant: their own agents and the tenant's system agents (G45).
+        from core.database import session_tenant
+        from core.iam_access import iam_caller_for_user
         from services.iam import IAMService
         db = context.get('db')
         if not db:
             raise ValueError("Database session not provided in context")
-        self._iam_service = IAMService(db)
+        caller = await iam_caller_for_user(
+            db, context.get("user_id"), context.get("tenant_id") or session_tenant(db))
+        self._iam_service = IAMService(db, caller)
         self._db = db
 
         # Get IAM operation type
@@ -97,32 +100,22 @@ class IAMNode(BaseNode):
                 return agent
         raise ValueError(f"IAM agent '{ref}' not found")
 
-    async def _require_agent_access(self, context: Dict[str, Any]) -> None:
-        """Sending as, to, or across IAM agents is a superuser's act.
-
-        IAM agents carry no tenant and no owner, so there is nothing to check a
-        non-superuser's claim to an agent against; without this, any workflow
-        author could name any agent as the sender and have its messages
-        attributed to it. Until agents have owners, anyone else gets the same
-        answer as for an agent that does not exist.
-        """
-        from models.user import User
-
-        user_id = context.get("user_id")
-        allowed = bool(user_id) and bool(await self._db.scalar(
-            select(User.is_superuser).where(User.id == str(user_id))))
-        if not allowed:
-            raise ValueError("IAM agent not found")
-
     async def _sender(self, context: Dict[str, Any]):
-        """The IAM agent the message is sent as: ``sender_agent`` or the context's agent."""
-        await self._require_agent_access(context)
+        """The IAM agent the message is sent as: ``sender_agent`` or the context's agent.
+
+        It must be one the run's user may send as (their own, or any in the
+        tenant for a tenant administrator or superuser); any other answers
+        exactly as an agent that does not exist.
+        """
         ref = self.config.parameters.get("sender_agent") or context.get("agent_id")
         if not ref:
             raise ValueError(
                 "A sender is required: set sender_agent to the id or name of a registered "
                 "IAM agent (the workflow itself is not an IAM agent)")
-        return await self._resolve_agent(ref)
+        agent = await self._resolve_agent(ref)
+        if not self._iam_service.can_act_as(agent):
+            raise ValueError(f"IAM agent '{ref}' not found")
+        return agent
 
     def _message_create(self, message_content: Any, recipient_id, default_type: str):
         message_type = self.config.parameters.get("message_type", default_type)
@@ -170,7 +163,7 @@ class IAMNode(BaseNode):
                 "node_id": self.config.id,
             }
 
-        sender = await self._sender(context)  # checks the caller's access to agents
+        sender = await self._sender(context)
         recipient = await self._resolve_agent(target_agent)
         sent = await self._iam_service.send_message(
             sender.id, self._message_create(message_content, recipient.id, "notification"))

@@ -1,7 +1,7 @@
 """Internal Agent Messaging (IAM) models for Community Edition."""
 
 from typing import Optional, Dict, Any, List
-from sqlalchemy import String, Text, JSON, Boolean, Integer, ForeignKey, Enum, DateTime, Float, UniqueConstraint
+from sqlalchemy import String, Text, JSON, Boolean, Integer, ForeignKey, Enum, DateTime, Float, UniqueConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from datetime import datetime
@@ -58,7 +58,11 @@ class IAMAgent(Base):
     __tablename__ = "iam_agents"
     
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    # Per-tenant (G45): row-level security keeps each tenant to its own agents.
+    # owner_user_id is NULL for the tenant's system agents.
+    tenant_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    owner_user_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)
     agent_type: Mapped[IAMAgentType] = mapped_column(Enum(IAMAgentType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     status: Mapped[IAMAgentStatus] = mapped_column(
         Enum(IAMAgentStatus, values_callable=lambda x: [e.value for e in x]), 
@@ -80,6 +84,15 @@ class IAMAgent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    # Names are unique per owner in a tenant (two members may each have a
+    # "Support Agent"), and system agents' names are unique per tenant.
+    __table_args__ = (
+        Index("uq_iam_agents_owner_name", "tenant_id", "owner_user_id", "name", unique=True,
+              postgresql_where=text("owner_user_id IS NOT NULL")),
+        Index("uq_iam_agents_system_name", "tenant_id", "name", unique=True,
+              postgresql_where=text("owner_user_id IS NULL")),
+    )
+
     # Relationships
     sent_messages: Mapped[List["IAMMessage"]] = relationship(
         back_populates="sender",
@@ -103,6 +116,7 @@ class IAMMessage(Base):
     __tablename__ = "iam_messages"
     
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     message_type: Mapped[IAMMessageType] = mapped_column(Enum(IAMMessageType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     
     # Sender and recipient
@@ -156,6 +170,7 @@ class IAMSession(Base):
     __tablename__ = "iam_sessions"
     
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     initiator_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("iam_agents.id"), nullable=False)
     
     # Session metadata
@@ -188,6 +203,7 @@ class IAMEventLog(Base):
     __tablename__ = "iam_event_logs"
     
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("iam_agents.id"))
     message_id: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("iam_messages.id"))
@@ -213,6 +229,7 @@ class IAMMetric(Base):
     __tablename__ = "iam_metrics"
     
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     agent_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("iam_agents.id"), nullable=False)
     
     # Metric data

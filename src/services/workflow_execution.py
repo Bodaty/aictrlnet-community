@@ -778,9 +778,15 @@ class WorkflowExecutionService:
         await self.iam_service.send_message(coordinator.id, message_data)
     
     async def _get_or_create_coordinator_agent(self) -> IAMAgent:
-        """Get or create the workflow coordinator agent."""
+        """Get or create this tenant's workflow coordinator, one of its system agents."""
+        from core.database import session_tenant
+
         result = await self.db.execute(
-            select(IAMAgent).where(IAMAgent.name == "workflow_coordinator")
+            select(IAMAgent).where(
+                IAMAgent.tenant_id == session_tenant(self.db),
+                IAMAgent.owner_user_id.is_(None),
+                IAMAgent.name == "workflow_coordinator",
+            )
         )
         agent = result.scalar_one_or_none()
         
@@ -793,7 +799,7 @@ class WorkflowExecutionService:
                 capabilities=["workflow_coordination", "execution_dispatch"],
                 config={"system_agent": True}
             )
-            agent = await self.iam_service.create_agent(agent_data)
+            agent = await self.iam_service.create_agent(agent_data, system=True)
         
         return agent
     

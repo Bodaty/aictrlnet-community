@@ -2,13 +2,16 @@
 
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, func, desc, String
+from sqlalchemy import select, and_, or_, func, desc, String, true, false
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from datetime import datetime, timedelta
 import uuid
 import asyncio
 import logging
 
+from core.database import bind_session_tenant, session_tenant
+from core.iam_access import IAMCaller
 from models.iam import (
     IAMAgent, IAMMessage, IAMSession, IAMEventLog, IAMMetric,
     IAMMessageType, IAMMessageStatus, IAMAgentStatus
@@ -28,35 +31,153 @@ logger = logging.getLogger(__name__)
 _BACKGROUND_TASKS: set = set()
 
 
+class IAMAgentNotFound(LookupError):
+    """An agent the caller may not see or act as: answered exactly like a missing one."""
+
+
 class IAMService:
-    """Service for managing Internal Agent Messaging."""
+    """Service for managing Internal Agent Messaging.
+
+    Rows belong to the session's tenant (row-level security). With a ``caller``
+    the service also applies the owner rules (core/iam_access.py): a member
+    sees their own agents and the tenant's system agents and acts only as their
+    own. Without one it is internal platform code acting for the tenant, which
+    sees and acts as every agent in it.
+    """
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, caller: Optional[IAMCaller] = None):
         self.db = db
+        self.caller = caller
+
+    # Visibility
+    @property
+    def _restricted(self) -> bool:
+        return self.caller is not None and not self.caller.sees_all
+
+    def _agent_visible(self):
+        """Which agents the caller sees: everything, or their own plus system agents."""
+        if not self._restricted:
+            return true()
+        if not self.caller.user_id:
+            return IAMAgent.owner_user_id.is_(None)
+        return or_(IAMAgent.owner_user_id.is_(None), IAMAgent.owner_user_id == self.caller.user_id)
+
+    def _visible_agent_ids(self):
+        return select(IAMAgent.id).where(self._agent_visible())
+
+    def _message_visible(self):
+        """A member sees a message one of their own agents sent or received.
+
+        Not "any agent they can see": every member sees the tenant's system
+        agents, and in the shared default tenant that would show each user every
+        other user's messages to those agents.
+        """
+        if not self._restricted:
+            return true()
+        if not self.caller.user_id:
+            return false()
+        own = select(IAMAgent.id).where(IAMAgent.owner_user_id == self.caller.user_id)
+        return or_(IAMMessage.sender_id.in_(own), IAMMessage.recipient_id.in_(own))
+
+    def _session_visible(self):
+        """A member sees sessions one of their own agents started."""
+        if not self._restricted:
+            return true()
+        if not self.caller.user_id:
+            return false()
+        own = select(IAMAgent.id).where(IAMAgent.owner_user_id == self.caller.user_id)
+        return IAMSession.initiator_id.in_(own)
+
+    def _event_visible(self):
+        """A member sees events of their own agents and messages, and system agents'
+        own events; never a system agent's event about someone else's message."""
+        if not self._restricted:
+            return true()
+        if not self.caller.user_id:
+            return false()
+        own = select(IAMAgent.id).where(IAMAgent.owner_user_id == self.caller.user_id)
+        system = select(IAMAgent.id).where(IAMAgent.owner_user_id.is_(None))
+        visible_messages = select(IAMMessage.id).where(self._message_visible())
+        return or_(
+            IAMEventLog.message_id.in_(visible_messages),
+            and_(IAMEventLog.message_id.is_(None),
+                 or_(IAMEventLog.agent_id.in_(own), IAMEventLog.agent_id.in_(system))),
+        )
+
+    def can_act_as(self, agent: Any) -> bool:
+        """Send, heartbeat and update as ``agent``: its owner, a tenant admin or superuser, or the platform."""
+        if not self._restricted:
+            return True
+        owner = getattr(agent, "owner_user_id", None)
+        return owner is not None and owner == self.caller.user_id
+
+    async def _name_taken(self, tenant_id: str, owner: Optional[str], name: str) -> bool:
+        """Names are unique per owner in a tenant; system agents' per tenant."""
+        same_owner = (IAMAgent.owner_user_id == owner) if owner else IAMAgent.owner_user_id.is_(None)
+        return bool(await self.db.scalar(
+            select(func.count(IAMAgent.id)).where(
+                IAMAgent.tenant_id == tenant_id, same_owner, IAMAgent.name == name)
+        ))
+
+    async def _visible_agent(self, agent_id: uuid.UUID) -> Optional[IAMAgent]:
+        result = await self.db.execute(
+            select(IAMAgent).where(IAMAgent.id == agent_id, self._agent_visible())
+        )
+        return result.scalar_one_or_none()
+
+    async def _actable_agent(self, agent_id: uuid.UUID) -> Optional[IAMAgent]:
+        agent = await self._visible_agent(agent_id)
+        return agent if agent is not None and self.can_act_as(agent) else None
     
     # Agent management
-    async def create_agent(self, agent_data: IAMAgentCreate) -> IAMAgentResponse:
-        """Create a new IAM agent."""
-        agent = IAMAgent(**agent_data.model_dump())
+    async def create_agent(
+        self,
+        agent_data: IAMAgentCreate,
+        *,
+        owner_user_id: Optional[str] = None,
+        system: bool = False,
+    ) -> IAMAgentResponse:
+        """Create an IAM agent in the session's tenant.
+
+        A caller's agents are theirs. Platform code names the owner, or creates
+        one of the tenant's system agents (``system=True``, no owner).
+        """
+        if system:
+            owner = None
+        elif self.caller is not None:
+            owner = self.caller.user_id
+        else:
+            owner = owner_user_id
+        if not system and not owner:
+            raise ValueError("An IAM agent needs an owner, or must be created as a system agent")
+
+        tenant_id = session_tenant(self.db)
+        if await self._name_taken(tenant_id, owner, agent_data.name):
+            raise ValueError("An IAM agent with this name already exists")
+
+        agent = IAMAgent(id=uuid.uuid4(), tenant_id=tenant_id, owner_user_id=owner,
+                         **agent_data.model_dump())
         self.db.add(agent)
         
         # Log agent creation
         await self._log_event(
             event_type="agent_created",
             agent_id=agent.id,
+            tenant_id=tenant_id,
             event_data={"name": agent.name, "type": agent.agent_type}
         )
         
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            raise ValueError("An IAM agent with this name already exists")
         await self.db.refresh(agent)
         return IAMAgentResponse.model_validate(agent)
     
     async def get_agent(self, agent_id: uuid.UUID) -> Optional[IAMAgentResponse]:
-        """Get an IAM agent by ID."""
-        result = await self.db.execute(
-            select(IAMAgent).where(IAMAgent.id == agent_id)
-        )
-        agent = result.scalar_one_or_none()
+        """Get an IAM agent by ID, if the caller may see it."""
+        agent = await self._visible_agent(agent_id)
         return IAMAgentResponse.model_validate(agent) if agent else None
     
     async def list_agents(
@@ -66,8 +187,8 @@ class IAMService:
         skip: int = 0,
         limit: int = 100
     ) -> List[IAMAgentResponse]:
-        """List IAM agents with optional filters."""
-        query = select(IAMAgent)
+        """List the IAM agents the caller may see, with optional filters."""
+        query = select(IAMAgent).where(self._agent_visible())
         
         if agent_type:
             query = query.where(IAMAgent.agent_type == agent_type)
@@ -85,16 +206,16 @@ class IAMService:
         agent_id: uuid.UUID,
         agent_update: IAMAgentUpdate
     ) -> Optional[IAMAgentResponse]:
-        """Update an IAM agent."""
-        result = await self.db.execute(
-            select(IAMAgent).where(IAMAgent.id == agent_id)
-        )
-        agent = result.scalar_one_or_none()
+        """Update an IAM agent the caller may act as."""
+        agent = await self._actable_agent(agent_id)
         
         if not agent:
             return None
         
         update_data = agent_update.model_dump(exclude_unset=True)
+        if update_data.get("name") and update_data["name"] != agent.name:
+            if await self._name_taken(agent.tenant_id, agent.owner_user_id, update_data["name"]):
+                raise ValueError("An IAM agent with this name already exists")
         for field, value in update_data.items():
             setattr(agent, field, value)
         
@@ -103,6 +224,7 @@ class IAMService:
         await self._log_event(
             event_type="agent_updated",
             agent_id=agent_id,
+            tenant_id=agent.tenant_id,
             event_data=update_data
         )
         
@@ -111,11 +233,8 @@ class IAMService:
         return IAMAgentResponse.model_validate(agent)
     
     async def update_agent_heartbeat(self, agent_id: uuid.UUID) -> bool:
-        """Update agent heartbeat timestamp."""
-        result = await self.db.execute(
-            select(IAMAgent).where(IAMAgent.id == agent_id)
-        )
-        agent = result.scalar_one_or_none()
+        """Update the heartbeat of an agent the caller may act as."""
+        agent = await self._actable_agent(agent_id)
         
         if not agent:
             return False
@@ -131,8 +250,20 @@ class IAMService:
         sender_id: uuid.UUID,
         message_data: IAMMessageCreate
     ) -> IAMMessageResponse:
-        """Send an IAM message."""
+        """Send an IAM message as ``sender_id`` to a recipient the caller may see.
+
+        Raises IAMAgentNotFound when the caller may not send as the sender or
+        cannot see the recipient, exactly as for agents that do not exist.
+        """
+        sender = await self._actable_agent(sender_id)
+        if sender is None:
+            raise IAMAgentNotFound("IAM agent not found")
+        if message_data.recipient_id is not None:
+            if await self._visible_agent(message_data.recipient_id) is None:
+                raise IAMAgentNotFound("IAM agent not found")
         message = IAMMessage(
+            id=uuid.uuid4(),
+            tenant_id=sender.tenant_id,
             sender_id=sender_id,
             **message_data.model_dump()
         )
@@ -148,6 +279,7 @@ class IAMService:
             event_type="message_sent",
             agent_id=sender_id,
             message_id=message.id,
+            tenant_id=sender.tenant_id,
             event_data={
                 "type": message.message_type,
                 "recipient": str(message.recipient_id) if message.recipient_id else "broadcast"
@@ -158,7 +290,8 @@ class IAMService:
         await self.db.refresh(message)
         
         # Process message delivery asynchronously
-        _delivery_task = asyncio.create_task(self._process_message_delivery(message.id))
+        _delivery_task = asyncio.create_task(
+            self._process_message_delivery(message.id, message.tenant_id))
         _BACKGROUND_TASKS.add(_delivery_task)
         _delivery_task.add_done_callback(_BACKGROUND_TASKS.discard)
         
@@ -175,7 +308,7 @@ class IAMService:
         )
         
         # Apply filters
-        conditions = []
+        conditions = [self._message_visible()]
         if filter_params.source_id:
             conditions.append(IAMMessage.sender_id == filter_params.source_id)
         if filter_params.destination_id:
@@ -225,7 +358,7 @@ class IAMService:
                 selectinload(IAMMessage.recipient),
                 selectinload(IAMMessage.session)
             )
-            .where(IAMMessage.id == message_id)
+            .where(IAMMessage.id == message_id, self._message_visible())
         )
         message = result.scalar_one_or_none()
         
@@ -266,8 +399,13 @@ class IAMService:
         initiator_id: uuid.UUID,
         session_data: IAMSessionCreate
     ) -> IAMSessionResponse:
-        """Create a new IAM session."""
+        """Create an IAM session initiated by an agent the caller may act as."""
+        initiator = await self._actable_agent(initiator_id)
+        if initiator is None:
+            raise IAMAgentNotFound("IAM agent not found")
         session = IAMSession(
+            id=uuid.uuid4(),
+            tenant_id=initiator.tenant_id,
             initiator_id=initiator_id,
             **session_data.model_dump()
         )
@@ -277,6 +415,7 @@ class IAMService:
             event_type="session_created",
             agent_id=initiator_id,
             session_id=session.id,
+            tenant_id=initiator.tenant_id,
             event_data={"type": session.session_type}
         )
         
@@ -289,7 +428,7 @@ class IAMService:
         result = await self.db.execute(
             select(IAMSession)
             .options(selectinload(IAMSession.initiator))
-            .where(IAMSession.id == session_id)
+            .where(IAMSession.id == session_id, self._session_visible())
         )
         session = result.scalar_one_or_none()
         return IAMSessionResponse.model_validate(session) if session else None
@@ -299,13 +438,13 @@ class IAMService:
         session_id: uuid.UUID,
         session_update: IAMSessionUpdate
     ) -> Optional[IAMSessionResponse]:
-        """Update a session."""
+        """Update a session whose initiator the caller may act as."""
         result = await self.db.execute(
             select(IAMSession).where(IAMSession.id == session_id)
         )
         session = result.scalar_one_or_none()
         
-        if not session:
+        if not session or await self._actable_agent(session.initiator_id) is None:
             return None
         
         update_data = session_update.model_dump(exclude_unset=True)
@@ -334,7 +473,7 @@ class IAMService:
         
         # Build query
         query = select(IAMMessage).where(
-            IAMMessage.created_at >= start_time
+            IAMMessage.created_at >= start_time, self._message_visible()
         )
         
         if agent_ids:
@@ -408,27 +547,29 @@ class IAMService:
     async def get_system_metrics(self) -> IAMSystemMetrics:
         """Get system-wide metrics."""
         # Get basic counts
-        total_messages = (await self.db.scalar(select(func.count(IAMMessage.id)))) or 0
+        visible = self._message_visible()
+        total_messages = (await self.db.scalar(select(func.count(IAMMessage.id)).where(visible))) or 0
         active_agents = (await self.db.scalar(
-            select(func.count(IAMAgent.id)).where(IAMAgent.status == IAMAgentStatus.ACTIVE)
+            select(func.count(IAMAgent.id)).where(
+                IAMAgent.status == IAMAgentStatus.ACTIVE, self._agent_visible())
         )) or 0
 
         # Calculate messages per minute (last hour)
         one_hour_ago = datetime.utcnow() - timedelta(hours=1)
         recent_messages = (await self.db.scalar(
-            select(func.count(IAMMessage.id)).where(IAMMessage.created_at >= one_hour_ago)
+            select(func.count(IAMMessage.id)).where(IAMMessage.created_at >= one_hour_ago, visible)
         )) or 0
         messages_per_minute = recent_messages / 60.0 if recent_messages else 0
 
         # Calculate error rate
         error_messages = (await self.db.scalar(
-            select(func.count(IAMMessage.id)).where(IAMMessage.status == IAMMessageStatus.FAILED)
+            select(func.count(IAMMessage.id)).where(IAMMessage.status == IAMMessageStatus.FAILED, visible)
         )) or 0
         error_rate = error_messages / total_messages if total_messages > 0 else 0
         
         # Calculate average message size from actual content
         avg_size_result = await self.db.scalar(
-            select(func.avg(func.length(func.cast(IAMMessage.content, String))))
+            select(func.avg(func.length(func.cast(IAMMessage.content, String)))).where(visible)
         )
         avg_message_size = int(avg_size_result) if avg_size_result else 0
 
@@ -439,7 +580,8 @@ class IAMService:
                 func.extract('epoch', IAMMessage.created_at)
             )).where(
                 IAMMessage.delivered_at.isnot(None),
-                IAMMessage.status == IAMMessageStatus.DELIVERED
+                IAMMessage.status == IAMMessageStatus.DELIVERED,
+                visible
             )
         )
         if avg_response_result and avg_response_result > 0:
@@ -449,7 +591,7 @@ class IAMService:
 
         # Calculate uptime from earliest agent registration
         earliest_agent = await self.db.scalar(
-            select(func.min(IAMAgent.created_at))
+            select(func.min(IAMAgent.created_at)).where(self._agent_visible())
         )
         if earliest_agent:
             uptime_seconds = int((datetime.utcnow() - earliest_agent).total_seconds())
@@ -473,12 +615,14 @@ class IAMService:
         if not agent:
             return None
         
-        # Get message counts
+        # Get message counts: only messages the caller may see, so a system
+        # agent's numbers never include other members' traffic.
+        visible = self._message_visible()
         sent_count = (await self.db.scalar(
-            select(func.count(IAMMessage.id)).where(IAMMessage.sender_id == agent_id)
+            select(func.count(IAMMessage.id)).where(IAMMessage.sender_id == agent_id, visible)
         )) or 0
         received_count = (await self.db.scalar(
-            select(func.count(IAMMessage.id)).where(IAMMessage.recipient_id == agent_id)
+            select(func.count(IAMMessage.id)).where(IAMMessage.recipient_id == agent_id, visible)
         )) or 0
 
         # Get error rate
@@ -486,7 +630,8 @@ class IAMService:
             select(func.count(IAMMessage.id)).where(
                 and_(
                     IAMMessage.sender_id == agent_id,
-                    IAMMessage.status == IAMMessageStatus.FAILED
+                    IAMMessage.status == IAMMessageStatus.FAILED,
+                    visible
                 )
             )
         )) or 0
@@ -499,7 +644,8 @@ class IAMService:
                 or_(
                     IAMMessage.sender_id == agent_id,
                     IAMMessage.recipient_id == agent_id
-                )
+                ),
+                visible
             )
             .order_by(desc(IAMMessage.created_at))
             .limit(1)
@@ -514,7 +660,8 @@ class IAMService:
             )).where(
                 IAMMessage.sender_id == agent_id,
                 IAMMessage.delivered_at.isnot(None),
-                IAMMessage.status == IAMMessageStatus.DELIVERED
+                IAMMessage.status == IAMMessageStatus.DELIVERED,
+                visible
             )
         )
         avg_response_ms = int(avg_response_result * 1000) if avg_response_result and avg_response_result > 0 else 0
@@ -548,7 +695,7 @@ class IAMService:
                 IAMMessage.message_type,
                 func.count(IAMMessage.id).label("count")
             )
-            .where(IAMMessage.created_at >= start_time)
+            .where(IAMMessage.created_at >= start_time, self._message_visible())
             .group_by(IAMMessage.message_type)
         )
         type_counts = type_result.all()
@@ -573,7 +720,8 @@ class IAMService:
             .where(
                 and_(
                     IAMMessage.created_at >= start_time,
-                    IAMMessage.recipient_id.isnot(None)
+                    IAMMessage.recipient_id.isnot(None),
+                    self._message_visible()
                 )
             )
             .group_by(IAMMessage.sender_id, IAMMessage.recipient_id)
@@ -607,7 +755,7 @@ class IAMService:
     ) -> List[IAMErrorLog]:
         """Get error logs."""
         query = select(IAMMessage).where(
-            IAMMessage.status == IAMMessageStatus.FAILED
+            IAMMessage.status == IAMMessageStatus.FAILED, self._message_visible()
         )
         
         if start_time:
@@ -640,7 +788,7 @@ class IAMService:
     async def get_active_agents(self) -> List[IAMAgentResponse]:
         """Get currently active agents."""
         result = await self.db.execute(
-            select(IAMAgent).where(IAMAgent.status == IAMAgentStatus.ACTIVE)
+            select(IAMAgent).where(IAMAgent.status == IAMAgentStatus.ACTIVE, self._agent_visible())
         )
         agents = result.scalars().all()
         return [IAMAgentResponse.model_validate(agent) for agent in agents]
@@ -652,10 +800,15 @@ class IAMService:
         event_data: Dict[str, Any],
         agent_id: Optional[uuid.UUID] = None,
         message_id: Optional[uuid.UUID] = None,
-        session_id: Optional[uuid.UUID] = None
+        session_id: Optional[uuid.UUID] = None,
+        tenant_id: Optional[str] = None
     ):
-        """Log an IAM event."""
+        """Log an IAM event in its agent's tenant (the session's, when it has none)."""
+        # The event has no relationship to its agent, message or session, so the
+        # unit of work could insert it first; write them before it.
+        await self.db.flush()
         event = IAMEventLog(
+            tenant_id=tenant_id or session_tenant(self.db),
             event_type=event_type,
             event_data=event_data,
             agent_id=agent_id,
@@ -664,11 +817,13 @@ class IAMService:
         )
         self.db.add(event)
     
-    async def _process_message_delivery(self, message_id: uuid.UUID):
+    async def _process_message_delivery(self, message_id: uuid.UUID, tenant_id: str):
         """Process message delivery: update status, log, and publish event."""
         try:
             from core.database import get_session_maker
             async with get_session_maker()() as session:
+                # A fresh session: bind the message's tenant, or RLS shows nothing.
+                bind_session_tenant(session, tenant_id)
                 result = await session.execute(
                     select(IAMMessage).where(IAMMessage.id == message_id)
                 )
@@ -689,6 +844,7 @@ class IAMService:
 
                 # Log the delivery event
                 event = IAMEventLog(
+                    tenant_id=message.tenant_id,
                     event_type="message_delivered",
                     message_id=message_id,
                     agent_id=message.recipient_id,
@@ -735,14 +891,16 @@ class IAMService:
         """Get IAM system health status."""
         # Get active agents count
         active_agents_result = await self.db.execute(
-            select(func.count(IAMAgent.id)).where(IAMAgent.status == IAMAgentStatus.ACTIVE)
+            select(func.count(IAMAgent.id)).where(
+                IAMAgent.status == IAMAgentStatus.ACTIVE, self._agent_visible())
         )
         active_agents = active_agents_result.scalar() or 0
         
         # Get recent message stats
         one_hour_ago = datetime.utcnow() - timedelta(hours=1)
         recent_messages_result = await self.db.execute(
-            select(func.count(IAMMessage.id)).where(IAMMessage.created_at >= one_hour_ago)
+            select(func.count(IAMMessage.id)).where(
+                IAMMessage.created_at >= one_hour_ago, self._message_visible())
         )
         recent_messages = recent_messages_result.scalar() or 0
         
@@ -751,7 +909,8 @@ class IAMService:
             select(func.count(IAMMessage.id)).where(
                 and_(
                     IAMMessage.created_at >= one_hour_ago,
-                    IAMMessage.status == IAMMessageStatus.FAILED
+                    IAMMessage.status == IAMMessageStatus.FAILED,
+                    self._message_visible()
                 )
             )
         )
@@ -792,7 +951,7 @@ class IAMService:
     ) -> List[Dict[str, Any]]:
         """Get IAM events."""
         # Query event logs
-        query = select(IAMEventLog)
+        query = select(IAMEventLog).where(self._event_visible())
         
         if event_type:
             query = query.where(IAMEventLog.event_type == event_type)
@@ -820,7 +979,7 @@ class IAMService:
     async def discover_agents(self, capabilities: List[str]) -> List[IAMAgentResponse]:
         """Discover agents by capabilities."""
         # Query agents that have all requested capabilities
-        query = select(IAMAgent).where(IAMAgent.status == IAMAgentStatus.ACTIVE)
+        query = select(IAMAgent).where(IAMAgent.status == IAMAgentStatus.ACTIVE, self._agent_visible())
         
         # Filter by capabilities using PostgreSQL array operations
         for capability in capabilities:

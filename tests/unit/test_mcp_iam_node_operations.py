@@ -16,6 +16,7 @@ import pytest
 from nodes.implementations.iam_node import IAMNode, IAMOperationUnavailable
 from nodes.implementations.mcp_node import MCPNode, MCPOperationUnavailable
 from nodes.models import NodeConfig, NodeType
+from core.iam_access import IAMCaller
 from schemas.iam import IAMAgentResponse, IAMAgentMetrics, IAMMessageResponse
 from services.iam import IAMService
 from services.mcp_service import MCPService
@@ -27,10 +28,11 @@ def _cfg(**parameters):
 
 # ---------------------------------------------------------------- IAM
 
-def _agent(name, capabilities=(), status="active"):
+def _agent(name, capabilities=(), status="active", owner=None):
     return IAMAgentResponse(
-        id=uuid.uuid4(), name=name, agent_type="service", capabilities=list(capabilities),
-        status=status, created_at="2026-01-01T00:00:00", updated_at="2026-01-01T00:00:00")
+        id=uuid.uuid4(), tenant_id="t1", owner_user_id=owner, name=name, agent_type="service",
+        capabilities=list(capabilities), status=status,
+        created_at="2026-01-01T00:00:00", updated_at="2026-01-01T00:00:00")
 
 
 def _sent(sender_id, create):
@@ -52,6 +54,7 @@ def iam():
     service.get_agent_metrics.return_value = IAMAgentMetrics(
         agent_id=alice.id, messages_sent=2, messages_received=1, avg_response_time_ms=5,
         error_rate=0.0, last_activity="2026-01-01T00:00:00", health_score=1.0)
+    service.can_act_as.return_value = True  # the run's user may send as the sender
     service.agents = SimpleNamespace(alice=alice, bob=bob, carol=carol)
     return service
 
@@ -60,7 +63,6 @@ def _iam_node(service, **parameters):
     node = IAMNode(_cfg(**parameters))
     node._iam_service = service
     node._db = MagicMock()
-    node._db.scalar = AsyncMock(return_value=True)  # the caller is a superuser
     return node
 
 
@@ -87,17 +89,51 @@ async def test_iam_send_message_without_a_registered_sender_fails_clearly(iam):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("context", [{"user_id": "staff"}, {}])
-async def test_iam_a_non_superuser_cannot_send_as_or_to_any_agent(iam, context):
+async def test_iam_a_user_cannot_send_as_an_agent_they_may_not_act_as(iam):
+    iam.can_act_as.return_value = False
     node = _iam_node(iam, target_agent="bob", message="hi", sender_agent="alice")
-    node._db.scalar = AsyncMock(return_value=False)
-    with pytest.raises(ValueError, match="IAM agent not found"):
-        await node._send_message({}, context)
+    with pytest.raises(ValueError, match="IAM agent 'alice' not found"):
+        await node._send_message({}, _RUN)
     node = _iam_node(iam, message="hi", sender_agent="alice")
-    node._db.scalar = AsyncMock(return_value=False)
-    with pytest.raises(ValueError, match="IAM agent not found"):
-        await node._broadcast_message({}, context)
+    with pytest.raises(ValueError, match="IAM agent 'alice' not found"):
+        await node._broadcast_message({}, _RUN)
     iam.send_message.assert_not_called()
+    assert iam.can_act_as.call_args.args == (iam.agents.alice,)
+
+
+@pytest.mark.parametrize("caller,owner,allowed", [
+    (IAMCaller(user_id="u1", tenant_id="t1"), "u1", True),
+    (IAMCaller(user_id="u1", tenant_id="t1"), "u2", False),
+    (IAMCaller(user_id="u1", tenant_id="t1"), None, False),
+    (IAMCaller(user_id=None, tenant_id="t1"), None, False),
+    (IAMCaller(user_id="u1", tenant_id="t1", is_tenant_admin=True), "u2", True),
+    (IAMCaller(user_id="u1", tenant_id="t1", is_superuser=True), None, True),
+])
+def test_who_may_send_as_an_agent(caller, owner, allowed):
+    """A member sends as their own agents only; a run with no user, as none."""
+    assert IAMService(None, caller).can_act_as(SimpleNamespace(owner_user_id=owner)) is allowed
+
+
+@pytest.mark.asyncio
+async def test_iam_execute_acts_for_the_runs_user_and_tenant(monkeypatch):
+    seen = {}
+
+    async def fake_caller(db, user_id, tenant_id):
+        seen["args"] = (user_id, tenant_id)
+        return IAMCaller(user_id=user_id, tenant_id=tenant_id)
+
+    def fake_service(db, caller=None):
+        seen["caller"] = caller
+        service = create_autospec(IAMService, instance=True)
+        service.list_agents.return_value = []
+        return service
+
+    monkeypatch.setattr("core.iam_access.iam_caller_for_user", fake_caller)
+    monkeypatch.setattr("services.iam.IAMService", fake_service)
+    await IAMNode(_cfg(operation="discover_agents")).execute(
+        {}, {"db": MagicMock(), "user_id": "u1", "tenant_id": "practice-1"})
+    assert seen["args"] == ("u1", "practice-1")
+    assert seen["caller"] == IAMCaller(user_id="u1", tenant_id="practice-1")
 
 
 @pytest.mark.asyncio
@@ -182,7 +218,7 @@ async def test_iam_tag_filters_fail_clearly(iam):
 async def test_iam_execute_builds_the_real_service_and_runs_discover(monkeypatch):
     service = create_autospec(IAMService, instance=True)
     service.list_agents.return_value = [_agent("alice")]
-    monkeypatch.setattr("services.iam.IAMService", lambda db: service)
+    monkeypatch.setattr("services.iam.IAMService", lambda db, caller=None: service)
     out = await IAMNode(_cfg(operation="discover_agents")).execute({}, {"db": MagicMock()})
     assert out["count"] == 1
 

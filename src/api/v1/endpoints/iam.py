@@ -8,9 +8,9 @@ import uuid
 
 from core.database import get_db
 from core.security import get_current_active_user
-from core.dependencies import require_superuser
 from core.enforcement_dependency import enforce_agent_limit
-from services.iam import IAMService
+from core.iam_access import iam_caller
+from services.iam import IAMAgentNotFound, IAMService
 from schemas.iam import (
     IAMAgentCreate, IAMAgentUpdate, IAMAgentResponse,
     IAMMessageCreate, IAMMessageResponse, IAMMessageFilter,
@@ -20,9 +20,14 @@ from schemas.iam import (
     IAMMessageHistory
 )
 
-# IAM agents, messages and sessions carry no tenant or owner yet, so until they
-# do (G45) every route answers superusers only.
-router = APIRouter(dependencies=[Depends(require_superuser)])
+# Every route serves the caller's tenant (row-level security) and, for members,
+# their own agents plus the tenant's system agents (G45). Anything else answers
+# exactly as an id that does not exist.
+router = APIRouter()
+
+
+async def _service(db: AsyncSession, current_user) -> IAMService:
+    return IAMService(db, await iam_caller(db, current_user))
 
 
 # Agent management endpoints
@@ -33,9 +38,12 @@ async def create_agent(
     current_user: dict = Depends(get_current_active_user),
     _limit=Depends(enforce_agent_limit),
 ):
-    """Create a new IAM agent."""
-    service = IAMService(db)
-    return await service.create_agent(agent_data)
+    """Create an IAM agent, owned by the caller, in the caller's tenant."""
+    service = await _service(db, current_user)
+    try:
+        return await service.create_agent(agent_data)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("/agents", response_model=List[IAMAgentResponse])
@@ -48,7 +56,7 @@ async def list_agents(
     current_user: dict = Depends(get_current_active_user)
 ):
     """List IAM agents."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.list_agents(
         agent_type=agent_type,
         status=status,
@@ -63,7 +71,7 @@ async def get_active_agents(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get currently active agents."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.get_active_agents()
 
 
@@ -75,7 +83,7 @@ async def discover_agents_get(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Discover agents by capabilities (GET version for frontend compatibility)."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     # Parse comma-separated capabilities
     capability_list = []
     if capabilities:
@@ -90,7 +98,7 @@ async def get_agent(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get an IAM agent by ID."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     agent = await service.get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -105,8 +113,11 @@ async def update_agent(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Update an IAM agent."""
-    service = IAMService(db)
-    agent = await service.update_agent(agent_id, agent_update)
+    service = await _service(db, current_user)
+    try:
+        agent = await service.update_agent(agent_id, agent_update)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     return agent
@@ -119,7 +130,7 @@ async def agent_heartbeat(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Update agent heartbeat."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     success = await service.update_agent_heartbeat(agent_id)
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -135,13 +146,11 @@ async def send_message(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Send an IAM message."""
-    service = IAMService(db)
-    # Verify sender exists
-    sender = await service.get_agent(sender_id)
-    if not sender:
-        raise HTTPException(status_code=404, detail="Sender agent not found")
-    
-    return await service.send_message(sender_id, message_data)
+    service = await _service(db, current_user)
+    try:
+        return await service.send_message(sender_id, message_data)
+    except IAMAgentNotFound:
+        raise HTTPException(status_code=404, detail="Agent not found")
 
 
 @router.get("/messages", response_model=IAMMessageHistory)
@@ -160,7 +169,7 @@ async def get_messages(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM messages with filtering."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     filter_params = IAMMessageFilter(
         source_id=source_id,
         destination_id=destination_id,
@@ -183,7 +192,7 @@ async def get_message_details(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get detailed information about a message."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     details = await service.get_message_details(message_id)
     if not details:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -199,13 +208,11 @@ async def create_session(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Create a new IAM session."""
-    service = IAMService(db)
-    # Verify initiator exists
-    initiator = await service.get_agent(initiator_id)
-    if not initiator:
-        raise HTTPException(status_code=404, detail="Initiator agent not found")
-    
-    return await service.create_session(initiator_id, session_data)
+    service = await _service(db, current_user)
+    try:
+        return await service.create_session(initiator_id, session_data)
+    except IAMAgentNotFound:
+        raise HTTPException(status_code=404, detail="Agent not found")
 
 
 @router.get("/sessions/{session_id}", response_model=IAMSessionResponse)
@@ -215,7 +222,7 @@ async def get_session(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get a session by ID."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     session = await service.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -230,7 +237,7 @@ async def update_session(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Update a session."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     session = await service.update_session(session_id, session_update)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -252,7 +259,7 @@ async def get_message_history(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM message history for monitoring."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     filter_params = IAMMessageFilter(
         source_id=source_id,
         destination_id=destination_id,
@@ -274,7 +281,7 @@ async def get_flow_data(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM flow data for visualization."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.get_flow_data(
         time_range=timeRange,
         agent_ids=agent_ids
@@ -288,7 +295,7 @@ async def get_monitoring_message_details(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get detailed message information for monitoring."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     details = await service.get_message_details(message_id)
     if not details:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -301,7 +308,7 @@ async def get_system_metrics(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM system metrics."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.get_system_metrics()
 
 
@@ -311,7 +318,7 @@ async def get_monitoring_active_agents(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get active agents for monitoring."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.get_active_agents()
 
 
@@ -322,7 +329,7 @@ async def get_agent_metrics(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get metrics for a specific agent."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     metrics = await service.get_agent_metrics(agent_id)
     if not metrics:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -336,7 +343,7 @@ async def get_communication_patterns(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM communication patterns."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.get_communication_patterns(time_range=timeRange)
 
 
@@ -349,7 +356,7 @@ async def get_error_logs(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM error logs."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.get_error_logs(
         start_time=start_time,
         end_time=end_time,
@@ -369,7 +376,7 @@ async def get_iam_flow_data(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM flow data (HitLai compatibility endpoint)."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     # Default to last hour if no time range specified
     time_range = "1h"
     agent_ids = [agentId] if agentId else None
@@ -385,7 +392,7 @@ async def get_iam_performance_metrics(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM performance metrics (HitLai compatibility endpoint)."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     
     if agentId:
         metrics = await service.get_agent_metrics(agentId)
@@ -404,7 +411,7 @@ async def get_iam_health(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM system health status."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.get_health_status()
 
 
@@ -419,7 +426,7 @@ async def get_iam_events(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Get IAM events."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.get_events(
         event_type=event_type,
         agent_id=agent_id,
@@ -436,7 +443,7 @@ async def discover_agents(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Discover agents by capabilities."""
-    service = IAMService(db)
+    service = await _service(db, current_user)
     return await service.discover_agents(capabilities=capabilities)
 
 

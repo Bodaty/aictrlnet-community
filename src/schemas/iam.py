@@ -79,6 +79,8 @@ class IAMAgentResponse(IAMAgentBase):
     )
     
     id: uuid.UUID
+    tenant_id: str
+    owner_user_id: Optional[str] = None
     status: IAMAgentStatus
     last_heartbeat: Optional[datetime] = None
     health_status: Optional[Dict[str, Any]] = None

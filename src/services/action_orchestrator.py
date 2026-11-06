@@ -908,17 +908,19 @@ class ActionOrchestrator:
         try:
             iam_service = IAMService(self.db)
             
-            # Map conversation params to IAM service params
-            agent_data = {
-                "name": params.get("name", "Unnamed Agent"),
-                "agent_type": params.get("agent_type", "executor"),
-                "capabilities": params.get("capabilities", []),
-                "description": params.get("description", ""),
-                "config": params.get("config", {}),
-                "created_by": user_id
-            }
+            from schemas.iam import IAMAgentCreate
+
+            # Map conversation params to IAM service params. The agent belongs
+            # to the user who asked for it, in their tenant.
+            agent_data = IAMAgentCreate(
+                name=params.get("name", "Unnamed Agent"),
+                agent_type=params.get("agent_type", "ai"),
+                capabilities=params.get("capabilities", []),
+                description=params.get("description", ""),
+                config=params.get("config", {}),
+            )
             
-            agent = await iam_service.create_agent(agent_data)
+            agent = await iam_service.create_agent(agent_data, owner_user_id=user_id)
             
             return {
                 "success": True,
