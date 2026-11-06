@@ -3297,7 +3297,7 @@ class ToolDispatcher:
         """Get platform-wide metrics: workflow count, success rate, active users."""
         try:
             from sqlalchemy import select, func
-            from models.workflow import Workflow
+            from models.community_complete import WorkflowDefinition as Workflow
             from models.conversation import ConversationSession
 
             # Workflow counts
@@ -3305,7 +3305,7 @@ class ToolDispatcher:
             wf_result = await self.db.execute(wf_stmt)
             total_workflows = wf_result.scalar() or 0
 
-            active_stmt = select(func.count(Workflow.id)).where(Workflow.status == "active")
+            active_stmt = select(func.count(Workflow.id)).where(Workflow.active.is_(True))
             active_result = await self.db.execute(active_stmt)
             active_workflows = active_result.scalar() or 0
 
@@ -3330,9 +3330,9 @@ class ToolDispatcher:
         except Exception as e:
             logger.warning(f"[v4] Platform metrics query failed: {e}")
             return ToolResult(
-                success=True,
-                data={"status": "healthy", "edition": self.edition.value,
-                      "message": "Metrics query unavailable, platform is running"}
+                success=False,
+                error=f"Platform metrics query failed: {e}",
+                error_type="service_error",
             )
 
     async def _get_recent_activity(self, args: Dict) -> ToolResult:

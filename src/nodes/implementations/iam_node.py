@@ -2,27 +2,37 @@
 
 import logging
 from typing import Any, Dict, List, Optional
-from datetime import datetime
-import json
+import fnmatch
 import uuid
+
+from sqlalchemy import select
 
 from ..base_node import BaseNode
 from ..models import NodeConfig
 from events.event_bus import event_bus
+from schemas.iam import IAMMessageCreate, IAMMessageType
 
 
 logger = logging.getLogger(__name__)
+
+# One page of the agent registry: the registry is small, and a filter runs over the whole of it.
+_AGENT_LIMIT = 1000
+
+
+class IAMOperationUnavailable(RuntimeError):
+    """The operation has no implementation behind it on this platform."""
+
+
+def _unavailable(operation: str, why: str) -> IAMOperationUnavailable:
+    return IAMOperationUnavailable(f"IAM operation '{operation}' is not available: {why}")
 
 
 class IAMNode(BaseNode):
     """Node for Internal Agent Messaging operations.
     
-    Enables:
-    - Agent-to-agent communication
-    - Message routing and delivery
-    - Agent discovery
-    - Broadcast messaging
-    - Request-response patterns
+    Operations: send_message, broadcast, discover_agents, get_agent_info.
+    ``request``, ``subscribe`` and ``publish`` are accepted in a workflow
+    definition but fail when run: IAM has no reply-waiting request and no topics.
     """
     
     async def execute(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -33,6 +43,7 @@ class IAMNode(BaseNode):
         if not db:
             raise ValueError("Database session not provided in context")
         self._iam_service = IAMService(db)
+        self._db = db
 
         # Get IAM operation type
         operation = self.config.parameters.get("operation", "send_message")
@@ -67,11 +78,79 @@ class IAMNode(BaseNode):
 
         return output_data
     
+    # ------------------------------------------------------------------
+    # Agents and messages
+    # ------------------------------------------------------------------
+
+    async def _resolve_agent(self, ref: Any):
+        """An IAM agent by id or by name, or ValueError."""
+        try:
+            agent_id = ref if isinstance(ref, uuid.UUID) else uuid.UUID(str(ref))
+        except ValueError:
+            agent_id = None
+        if agent_id is not None:
+            agent = await self._iam_service.get_agent(agent_id)
+            if agent:
+                return agent
+        for agent in await self._iam_service.list_agents(limit=_AGENT_LIMIT):
+            if agent.name == str(ref):
+                return agent
+        raise ValueError(f"IAM agent '{ref}' not found")
+
+    async def _require_agent_access(self, context: Dict[str, Any]) -> None:
+        """Sending as, to, or across IAM agents is a superuser's act.
+
+        IAM agents carry no tenant and no owner, so there is nothing to check a
+        non-superuser's claim to an agent against; without this, any workflow
+        author could name any agent as the sender and have its messages
+        attributed to it. Until agents have owners, anyone else gets the same
+        answer as for an agent that does not exist.
+        """
+        from models.user import User
+
+        user_id = context.get("user_id")
+        allowed = bool(user_id) and bool(await self._db.scalar(
+            select(User.is_superuser).where(User.id == str(user_id))))
+        if not allowed:
+            raise ValueError("IAM agent not found")
+
+    async def _sender(self, context: Dict[str, Any]):
+        """The IAM agent the message is sent as: ``sender_agent`` or the context's agent."""
+        await self._require_agent_access(context)
+        ref = self.config.parameters.get("sender_agent") or context.get("agent_id")
+        if not ref:
+            raise ValueError(
+                "A sender is required: set sender_agent to the id or name of a registered "
+                "IAM agent (the workflow itself is not an IAM agent)")
+        return await self._resolve_agent(ref)
+
+    def _message_create(self, message_content: Any, recipient_id, default_type: str):
+        message_type = self.config.parameters.get("message_type", default_type)
+        try:
+            message_type = IAMMessageType(message_type)
+        except ValueError:
+            raise ValueError(
+                f"Invalid message_type '{message_type}'. "
+                f"Must be one of {[t.value for t in IAMMessageType]}")
+        if self.config.parameters.get("expires_at"):
+            raise ValueError("expires_at is not supported; set ttl_seconds")
+        content = message_content if isinstance(message_content, dict) else {"text": message_content}
+        return IAMMessageCreate(
+            message_type=message_type,
+            content=content,
+            priority=self.config.parameters.get("priority", 0),
+            ttl_seconds=self.config.parameters.get("ttl_seconds"),
+            recipient_id=recipient_id,
+        )
+
+    @staticmethod
+    def _status_of(message) -> str:
+        return getattr(message.status, "value", str(message.status))
+
     async def _send_message(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Send a message to a specific agent."""
         # Get message configuration
         target_agent = self.config.parameters.get("target_agent") or input_data.get("target_agent")
-        message_type = self.config.parameters.get("message_type", "data")
         message_content = self.config.parameters.get("message") or input_data.get("message")
 
         # Auto-generated system templates carry descriptive agentDelegation nodes
@@ -90,282 +169,114 @@ class IAMNode(BaseNode):
                 "reason": reason,
                 "node_id": self.config.id,
             }
-        
-        # Build message
-        message = {
-            "id": str(uuid.uuid4()),
-            "type": message_type,
-            "from_agent": context.get("agent_id", "workflow"),
-            "to_agent": target_agent,
-            "content": message_content,
-            "timestamp": datetime.utcnow().isoformat(),
-            "workflow_id": context.get("workflow_id"),
-            "node_id": self.config.id
-        }
-        
-        # Add optional fields
-        if self.config.parameters.get("priority"):
-            message["priority"] = self.config.parameters["priority"]
-        if self.config.parameters.get("expires_at"):
-            message["expires_at"] = self.config.parameters["expires_at"]
-        
-        # Send message
-        delivery_status = await self._iam_service.send_message(
-            to_agent=target_agent,
-            message=message
-        )
-        
+
+        sender = await self._sender(context)  # checks the caller's access to agents
+        recipient = await self._resolve_agent(target_agent)
+        sent = await self._iam_service.send_message(
+            sender.id, self._message_create(message_content, recipient.id, "notification"))
+
+        # Delivery is asynchronous: the message is stored and queued, and its
+        # status moves on from here.
         return {
-            "message_id": message["id"],
-            "delivered": delivery_status.get("delivered", False),
-            "delivery_time": delivery_status.get("delivery_time"),
-            "target_agent": target_agent
+            "message_id": str(sent.id),
+            "status": self._status_of(sent),
+            "target_agent": recipient.name
         }
-    
+
+    async def _agents_for(self, capability=None, status=None) -> List[Any]:
+        if capability:
+            capabilities = [capability] if isinstance(capability, str) else list(capability)
+            return await self._iam_service.discover_agents(capabilities)
+        return await self._iam_service.list_agents(status=status, limit=_AGENT_LIMIT)
+
     async def _broadcast_message(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Broadcast a message to multiple agents."""
-        # Get broadcast configuration
+        """Send a message to each agent matching a filter (all agents by default)."""
         agent_filter = self.config.parameters.get("agent_filter", {})
-        message_type = self.config.parameters.get("message_type", "broadcast")
         message_content = self.config.parameters.get("message") or input_data.get("message")
-        
+
         if not message_content:
             raise ValueError("message content is required for broadcast")
-        
-        # Build message
-        message = {
-            "id": str(uuid.uuid4()),
-            "type": message_type,
-            "from_agent": context.get("agent_id", "workflow"),
-            "content": message_content,
-            "timestamp": datetime.utcnow().isoformat(),
-            "workflow_id": context.get("workflow_id"),
-            "node_id": self.config.id
-        }
-        
-        # Apply filters to find target agents
-        if agent_filter.get("capability"):
-            # Filter by capability
-            agents = await self._iam_service.find_agents_by_capability(
-                capability=agent_filter["capability"]
-            )
-        elif agent_filter.get("tag"):
-            # Filter by tag
-            agents = await self._iam_service.find_agents_by_tag(
-                tag=agent_filter["tag"]
-            )
-        elif agent_filter.get("pattern"):
-            # Filter by name pattern
-            agents = await self._iam_service.find_agents_by_pattern(
-                pattern=agent_filter["pattern"]
-            )
-        else:
-            # Broadcast to all agents
-            agents = await self._iam_service.get_all_agents()
-        
-        # Send to all matching agents
-        delivery_results = []
+        if agent_filter.get("tag"):
+            raise _unavailable("broadcast", "IAM agents carry capabilities, not tags")
+
+        sender = await self._sender(context)
+        agents = await self._agents_for(agent_filter.get("capability"), agent_filter.get("status"))
+        if agent_filter.get("pattern"):
+            agents = [a for a in agents if fnmatch.fnmatchcase(a.name, agent_filter["pattern"])]
+        agents = [a for a in agents if a.id != sender.id]
+
+        results = []
         for agent in agents:
             try:
-                status = await self._iam_service.send_message(
-                    to_agent=agent["id"],
-                    message=message
-                )
-                delivery_results.append({
-                    "agent_id": agent["id"],
-                    "delivered": status.get("delivered", False)
+                sent = await self._iam_service.send_message(
+                    sender.id, self._message_create(message_content, agent.id, "broadcast"))
+                results.append({
+                    "agent_id": str(agent.id),
+                    "message_id": str(sent.id),
+                    "status": self._status_of(sent),
                 })
             except Exception as e:
-                delivery_results.append({
-                    "agent_id": agent["id"],
-                    "delivered": False,
-                    "error": str(e)
-                })
-        
-        # Calculate delivery statistics
-        total_agents = len(delivery_results)
-        successful_deliveries = sum(1 for r in delivery_results if r["delivered"])
-        
+                results.append({"agent_id": str(agent.id), "status": "failed", "error": str(e)})
+
+        failed = sum(1 for r in results if r["status"] == "failed")
         return {
-            "message_id": message["id"],
             "broadcast_stats": {
-                "total_agents": total_agents,
-                "successful_deliveries": successful_deliveries,
-                "failed_deliveries": total_agents - successful_deliveries
+                "total_agents": len(results),
+                "messages_sent": len(results) - failed,
+                "failed": failed
             },
-            "delivery_results": delivery_results
+            "delivery_results": results
         }
-    
+
     async def _send_request(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Send a request and wait for response."""
-        # Get request configuration
-        target_agent = self.config.parameters.get("target_agent") or input_data.get("target_agent")
-        request_type = self.config.parameters.get("request_type", "query")
-        request_content = self.config.parameters.get("request") or input_data.get("request")
-        timeout = self.config.parameters.get("timeout", 30)
-        
-        if not target_agent:
-            raise ValueError("target_agent is required for request operation")
-        if not request_content:
-            raise ValueError("request content is required")
-        
-        # Build request
-        request = {
-            "id": str(uuid.uuid4()),
-            "type": f"request.{request_type}",
-            "from_agent": context.get("agent_id", "workflow"),
-            "to_agent": target_agent,
-            "content": request_content,
-            "timestamp": datetime.utcnow().isoformat(),
-            "workflow_id": context.get("workflow_id"),
-            "node_id": self.config.id,
-            "expects_response": True
-        }
-        
-        # Send request and wait for response
-        response = await self._iam_service.send_request(
-            to_agent=target_agent,
-            request=request,
-            timeout=timeout
-        )
-        
-        if response:
-            return {
-                "request_id": request["id"],
-                "response_received": True,
-                "response": response.get("content"),
-                "response_time": response.get("timestamp"),
-                "target_agent": target_agent
-            }
-        else:
-            return {
-                "request_id": request["id"],
-                "response_received": False,
-                "timeout": True,
-                "target_agent": target_agent
-            }
-    
+        raise _unavailable(
+            "request", "IAM stores and routes messages but has no request that waits for a reply")
+
     async def _discover_agents(self) -> Dict[str, Any]:
-        """Discover available agents."""
-        # Get discovery filters
+        """Discover registered agents."""
         filters = self.config.parameters.get("filters", {})
-        
-        # Apply filters
-        if filters.get("capability"):
-            agents = await self._iam_service.find_agents_by_capability(
-                capability=filters["capability"]
-            )
-        elif filters.get("tag"):
-            agents = await self._iam_service.find_agents_by_tag(
-                tag=filters["tag"]
-            )
-        elif filters.get("status"):
-            agents = await self._iam_service.find_agents_by_status(
-                status=filters["status"]
-            )
-        else:
-            # Get all agents
-            agents = await self._iam_service.get_all_agents()
-        
+        if filters.get("tag"):
+            raise _unavailable("discover_agents", "IAM agents carry capabilities, not tags")
+
+        agents = await self._agents_for(filters.get("capability"), filters.get("status"))
+
         # Get detailed info if requested
-        include_details = self.config.parameters.get("include_details", False)
-        if include_details:
-            detailed_agents = []
-            for agent in agents:
-                details = await self._iam_service.get_agent_details(agent["id"])
-                detailed_agents.append(details)
-            agents = detailed_agents
-        
+        if self.config.parameters.get("include_details", False):
+            agents = [await self._iam_service.get_agent(a.id) for a in agents]
+
         return {
-            "agents": agents,
+            "agents": [a.model_dump(mode="json") for a in agents if a],
             "count": len(agents)
         }
-    
+
     async def _get_agent_info(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Get information about a specific agent."""
         agent_id = self.config.parameters.get("agent_id") or input_data.get("agent_id")
-        
+
         if not agent_id:
             raise ValueError("agent_id is required for get_agent_info operation")
-        
-        # Get agent details
-        agent_info = await self._iam_service.get_agent_details(agent_id)
-        
-        if not agent_info:
-            raise ValueError(f"Agent '{agent_id}' not found")
-        
-        # Get additional info if requested
-        include_metrics = self.config.parameters.get("include_metrics", False)
-        if include_metrics:
-            metrics = await self._iam_service.get_agent_metrics(agent_id)
-            agent_info["metrics"] = metrics
-        
-        include_capabilities = self.config.parameters.get("include_capabilities", False)
-        if include_capabilities:
-            capabilities = await self._iam_service.get_agent_capabilities(agent_id)
-            agent_info["capabilities"] = capabilities
-        
+
+        agent = await self._resolve_agent(agent_id)
+        agent_info = agent.model_dump(mode="json")
+
+        if self.config.parameters.get("include_metrics", False):
+            metrics = await self._iam_service.get_agent_metrics(agent.id)
+            agent_info["metrics"] = metrics.model_dump(mode="json") if metrics else None
+
+        # An agent's capabilities are part of the agent record.
+        if self.config.parameters.get("include_capabilities", False):
+            agent_info["capabilities"] = list(agent.capabilities or [])
+
         return {
             "agent": agent_info
         }
-    
+
     async def _subscribe_to_topic(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Subscribe to a messaging topic."""
-        topic = self.config.parameters.get("topic") or input_data.get("topic")
-        
-        if not topic:
-            raise ValueError("topic is required for subscribe operation")
-        
-        # Subscribe the current agent/workflow to the topic
-        subscriber_id = context.get("agent_id", f"workflow-{context.get('workflow_id', 'unknown')}")
-        
-        subscription = await self._iam_service.subscribe_to_topic(
-            topic=topic,
-            subscriber_id=subscriber_id,
-            filters=self.config.parameters.get("filters", {})
-        )
-        
-        return {
-            "subscription_id": subscription.get("id"),
-            "topic": topic,
-            "subscriber_id": subscriber_id,
-            "active": subscription.get("active", True)
-        }
-    
+        raise _unavailable("subscribe", "IAM has no topics or subscriptions")
+
     async def _publish_to_topic(self, input_data: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Publish a message to a topic."""
-        topic = self.config.parameters.get("topic") or input_data.get("topic")
-        message_content = self.config.parameters.get("message") or input_data.get("message")
-        
-        if not topic:
-            raise ValueError("topic is required for publish operation")
-        if not message_content:
-            raise ValueError("message content is required")
-        
-        # Build topic message
-        message = {
-            "id": str(uuid.uuid4()),
-            "topic": topic,
-            "publisher": context.get("agent_id", "workflow"),
-            "content": message_content,
-            "timestamp": datetime.utcnow().isoformat(),
-            "workflow_id": context.get("workflow_id"),
-            "node_id": self.config.id
-        }
-        
-        # Publish to topic
-        publish_result = await self._iam_service.publish_to_topic(
-            topic=topic,
-            message=message
-        )
-        
-        return {
-            "message_id": message["id"],
-            "topic": topic,
-            "subscribers_notified": publish_result.get("subscribers_notified", 0),
-            "publish_time": message["timestamp"]
-        }
-    
+        raise _unavailable("publish", "IAM has no topics or subscriptions")
+
     def validate_config(self) -> bool:
         """Validate node configuration."""
         operation = self.config.parameters.get("operation")

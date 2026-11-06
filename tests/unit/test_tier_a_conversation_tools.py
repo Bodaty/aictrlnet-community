@@ -31,7 +31,6 @@ KNOWN_DEAD = {
 # Make-it-real: tools answering success from literals (ledger MR-*). Must shrink.
 KNOWN_PURE = {
     'get_help': "MR-032 canned counts ('50+ templates')",
-    'get_platform_metrics': 'MR-030 healthy on query failure',
     'get_system_status': 'MR-029 unconditional healthy',
 }
 # Tools whose answer is legitimately computed in-process from arguments or static

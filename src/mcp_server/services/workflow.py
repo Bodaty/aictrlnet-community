@@ -227,7 +227,8 @@ class MCPWorkflowService:
         endpoint_name = endpoint_config.get("endpoint_name", workflow.name.lower().replace(" ", "-"))
         
         # Store endpoint configuration in workflow metadata
-        metadata = workflow.metadata or {}
+        # `workflow.metadata` is SQLAlchemy's declarative MetaData, not the column.
+        metadata = dict(workflow.workflow_metadata or {})
         metadata["mcp_endpoint"] = {
             "enabled": True,
             "endpoint_name": endpoint_name,
