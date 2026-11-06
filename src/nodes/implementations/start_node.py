@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 class StartNode(BaseNode):
     """Start node for workflows."""
+
+    preview_exempt = True
     
     async def execute(
         self,

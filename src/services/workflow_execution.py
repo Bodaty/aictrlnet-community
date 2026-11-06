@@ -172,6 +172,17 @@ class WorkflowExecutionService:
 
         # Extract dry-run flag from trigger_metadata and store in context
         is_dry_run = (trigger_metadata or {}).get("is_dry_run", False)
+        # A preview run is independent of dry run: its own flag, and the
+        # steps its caller asks to run for real.
+        preview = bool((trigger_metadata or {}).get("preview", False))
+        run_context = {
+            "workflow_name": workflow.name,
+            "workflow_version": version.version if version else workflow.version,
+            "is_dry_run": is_dry_run,
+            "preview": preview,
+        }
+        if preview:
+            run_context["preview_real_steps"] = list((trigger_metadata or {}).get("preview_real_steps") or [])
 
         # Create execution record
         execution = WorkflowExecution(
@@ -183,11 +194,7 @@ class WorkflowExecutionService:
             tenant_id=tenant_id,
             user_id=user_id,
             definition_version_id=version_id,
-            context={
-                "workflow_name": workflow.name,
-                "workflow_version": version.version if version else workflow.version,
-                "is_dry_run": is_dry_run
-            }
+            context=run_context
         )
         
         self.db.add(execution)
@@ -316,6 +323,8 @@ class WorkflowExecutionService:
             # the failure happens before the context is loaded (which would
             # swallow the failure event and leave the row 'running' forever).
             is_dry_run = False
+            preview = False
+            prior_metadata = {}
             workflow_phi = False
             try:
                 # Scope this session to the execution's tenant for RLS. Must
@@ -346,6 +355,11 @@ class WorkflowExecutionService:
 
                 # Thread dry-run flag from execution context into workflow variables
                 is_dry_run = execution.context.get("is_dry_run", False) if execution.context else False
+                # Read from the stored context, so a resumed run is still a preview.
+                preview = bool((execution.context or {}).get("preview", False))
+                preview_real_steps = list((execution.context or {}).get("preview_real_steps") or [])
+                # Kept for the failure path, where the rolled-back row can't be read.
+                prior_metadata = dict(execution.execution_metadata or {})
 
                 # Build node instances from workflow definition
                 from nodes.models import (
@@ -408,6 +422,8 @@ class WorkflowExecutionService:
                     ni.context["tenant_id"] = tenant_id
                     ni.context["workflow_instance_id"] = str(execution_id)
                     ni.context["is_dry_run"] = is_dry_run
+                    ni.context["preview"] = preview
+                    ni.context["preview_real_steps"] = preview_real_steps
                     ni.context["workflow_phi"] = workflow_phi
                     if resolved_autonomy is not None:
                         ni.context["autonomy"] = resolved_autonomy
@@ -473,7 +489,11 @@ class WorkflowExecutionService:
                     template_id=str(execution.workflow_id),
                     name=execution.workflow.name,
                     input_data=execution.input_data or {},
-                    variables={"_is_dry_run": is_dry_run},
+                    variables={
+                        "_is_dry_run": is_dry_run,
+                        "_preview": preview,
+                        "_preview_real_steps": preview_real_steps,
+                    },
                     node_instances=node_instances
                 )
 
@@ -566,6 +586,18 @@ class WorkflowExecutionService:
                         "nodes_intercepted": intercepted
                     }
 
+                # A preview is marked on the run, with the step it stopped
+                # before when it stopped.
+                if preview:
+                    preview_values = {"preview": True}
+                    preview_stopped = workflow_instance.metadata.get("preview_stopped")
+                    if preview_stopped:
+                        preview_values["preview_stopped"] = preview_stopped
+                    final_values["execution_metadata"] = {
+                        **final_values.get("execution_metadata", execution.execution_metadata or {}),
+                        **preview_values,
+                    }
+
                 # A run cancelled while it was executing stays cancelled: the
                 # final write only lands on a row that is not CANCELLED, and a
                 # cancelled run publishes neither completion nor failure.
@@ -584,6 +616,7 @@ class WorkflowExecutionService:
                             "triggered_by": execution.triggered_by,
                             "trigger_metadata": execution.trigger_metadata or {},
                             "is_dry_run": is_dry_run,
+                            "preview": preview,
                             "failed_node_count": len(failed_rows),
                         }
                     )
@@ -597,6 +630,7 @@ class WorkflowExecutionService:
                             "triggered_by": execution.triggered_by,
                             "trigger_metadata": execution.trigger_metadata or {},
                             "is_dry_run": is_dry_run,
+                            "preview": preview,
                         }
                     )
 
@@ -609,11 +643,14 @@ class WorkflowExecutionService:
                 error_text = scrub_error(str(e), workflow_phi, type(e).__name__)
                 if execution:
                     await db.rollback()
-                    written = await self._write_final_status(db, execution_id, {
+                    failure_values = {
                         "status": WorkflowExecutionStatus.FAILED,
                         "completed_at": datetime.utcnow(),
                         "error_details": {"error": error_text},
-                    })
+                    }
+                    if preview:
+                        failure_values["execution_metadata"] = {**prior_metadata, "preview": True}
+                    written = await self._write_final_status(db, execution_id, failure_values)
                     if not written:
                         logger.info(f"Workflow execution {execution_id} was cancelled; ignoring {type(e).__name__}: {error_text}")
                         return
@@ -626,6 +663,7 @@ class WorkflowExecutionService:
                         "execution_id": str(execution_id),
                         "error": error_text,
                         "is_dry_run": is_dry_run,
+                        "preview": preview,
                     }
                 )
     

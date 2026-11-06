@@ -16,6 +16,7 @@ from .implementations.decision_node import DecisionNode
 from .state_manager import NodeStateManager, state_manager as default_state_manager
 from .error_handler import NodeErrorHandler, node_error_handler as default_error_handler
 from .content_refs import scrub_error
+from .preview import PreviewStop
 from events.event_bus import event_bus
 
 # AI Control Spectrum — autonomy gate hook. Community default is the no-op;
@@ -119,14 +120,19 @@ class NodeExecutor:
             if not start_nodes:
                 raise ValueError("No start nodes found in workflow")
             
-            # Execute workflow
-            await self._execute_from_nodes(
-                workflow_instance,
-                start_nodes,
-                workflow_instance.input_data,
-                is_cancelled=is_cancelled,
-                between_batches=between_batches,
-            )
+            # Execute workflow. A preview stop ends the run here, cleanly:
+            # it completes with the stop recorded.
+            try:
+                await self._execute_from_nodes(
+                    workflow_instance,
+                    start_nodes,
+                    workflow_instance.input_data,
+                    is_cancelled=is_cancelled,
+                    between_batches=between_batches,
+                )
+            except PreviewStop as stop:
+                logger.info(f"Preview of workflow {workflow_instance.id} stopped before {stop.node_id}: {stop.reason}")
+                workflow_instance.metadata["preview_stopped"] = stop.as_record()
 
             if is_cancelled is not None and await is_cancelled():
                 await self.cancel_workflow(workflow_instance)
@@ -341,6 +347,8 @@ class NodeExecutor:
                     # back onto the node so subsequent nodes in the same
                     # execution can see them.
                     node_instance.context.update(gate_context)
+                except PreviewStop:
+                    raise
                 except RuntimeError as gate_error:
                     logger.warning(
                         "Autonomy gate blocked node %s: %s",
@@ -366,6 +374,8 @@ class NodeExecutor:
                         node_instance,
                         workflow_instance.variables
                     )
+                except PreviewStop:
+                    raise
                 except Exception as node_error:
                     # Handle node execution error
                     result = await self.error_handler.handle_node_error(
@@ -420,6 +430,19 @@ class NodeExecutor:
                             )
 
                 return result
+
+            except PreviewStop as stop:
+                # Never retried and never a failure: the step is skipped and
+                # the stop travels up to end the run.
+                node_instance.status = NodeStatus.SKIPPED
+                node_instance.completed_at = datetime.utcnow()
+                await self._persist_node_execution_status(
+                    node_instance,
+                    status="skipped",
+                    completed_at=node_instance.completed_at,
+                    outputs={"_preview_stopped": {"reason": stop.reason, "detail": stop.detail}},
+                )
+                raise
 
             except Exception as e:
                 # Handle unexpected errors
@@ -538,6 +561,15 @@ class NodeExecutor:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             if between_batches is not None:
                 await between_batches()
+
+            # A preview stop in any step of the batch ends the run: no step
+            # after it starts, on any branch. A hand-off still wins.
+            for result in results:
+                if isinstance(result, ExecutionHandedOff):
+                    raise result
+            for result in results:
+                if isinstance(result, PreviewStop):
+                    raise result
 
             # Process results
             for i, result in enumerate(results):

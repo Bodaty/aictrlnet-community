@@ -10,6 +10,7 @@ import time
 from .models import NodeConfig, NodeStatus, NodeInstance, NodeExecutionResult
 from .capacity import run_with_deadline
 from .content_refs import scrub_error
+from .preview import PreviewStop, RUN, SIMULATE, get_preview_policy
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterRequest
@@ -24,7 +25,11 @@ _dry_run_interceptor_checked = False
 
 class BaseNode(ABC):
     """Base class for all workflow nodes."""
-    
+
+    # The engine's own start and end markers: they act on nothing, so a
+    # preview runs them without asking its policy.
+    preview_exempt = False
+
     def __init__(self, config: NodeConfig):
         self.config = config
         self.status = NodeStatus.PENDING
@@ -70,6 +75,14 @@ class BaseNode(ABC):
                 
                 # Prepare context
                 is_dry_run = workflow_variables.get("_is_dry_run", False)
+                # The run's own context backs up the variables, which a
+                # step's outputs could overwrite mid-run.
+                preview = bool(workflow_variables.get("_preview") or instance.context.get("preview"))
+                preview_real_steps = list(
+                    workflow_variables.get("_preview_real_steps")
+                    or instance.context.get("preview_real_steps")
+                    or []
+                )
                 context = {
                     **instance.context,
                     "workflow_id": instance.workflow_instance_id,
@@ -77,8 +90,39 @@ class BaseNode(ABC):
                     "node_name": self.config.name,
                     "attempt": instance.attempt_number,
                     "workflow_variables": workflow_variables,
-                    "is_dry_run": is_dry_run
+                    "is_dry_run": is_dry_run,
+                    "preview": preview,
+                    "preview_real_steps": preview_real_steps,
                 }
+
+                # Preview: the policy decides before the step acts. A stop
+                # ends the whole run (the executor records it).
+                if preview and not self.preview_exempt:
+                    policy = get_preview_policy()
+                    effective_type = self._effective_type()
+                    decision = policy.classify(effective_type, self.config, preview_real_steps)
+                    if decision == SIMULATE:
+                        simulated = {
+                            **policy.simulate(effective_type, self.config, instance.input_data),
+                            "_preview": True,
+                        }
+                        instance.output_data = simulated
+                        instance.status = NodeStatus.COMPLETED
+                        instance.completed_at = datetime.utcnow()
+                        instance.duration_ms = (time.time() - start_time) * 1000
+                        return NodeExecutionResult(
+                            node_instance_id=instance.id,
+                            status=NodeStatus.COMPLETED,
+                            output_data=simulated,
+                            duration_ms=instance.duration_ms,
+                            next_node_ids=instance.next_nodes
+                        )
+                    if decision != RUN:
+                        raise PreviewStop(
+                            self.config.id,
+                            "stopped_before_" + effective_type,
+                            {"node_name": self.config.name},
+                        )
 
                 # Dry-run interception (Business+ feature, import cached at module level)
                 if is_dry_run:
@@ -93,12 +137,7 @@ class BaseNode(ABC):
 
                     if _dry_run_interceptor:
                         should_intercept_fn, simulate_node_fn = _dry_run_interceptor
-                        # Resolve effective node type: custom_node_type takes priority over enum type
-                        effective_type = self.config.parameters.get("custom_node_type") if (
-                            hasattr(self.config, 'parameters') and isinstance(self.config.parameters, dict)
-                        ) else None
-                        if not effective_type:
-                            effective_type = self.config.type.value if hasattr(self.config.type, 'value') else str(self.config.type)
+                        effective_type = self._effective_type()
                         if should_intercept_fn(effective_type, self.config):
                             logger.info(f"DRY-RUN INTERCEPTED node {self.config.id} (effective_type={effective_type})")
                             simulated = simulate_node_fn(effective_type, self.config, instance.input_data)
@@ -162,6 +201,9 @@ class BaseNode(ABC):
                     next_node_ids=next_node_ids
                 )
                 
+            except PreviewStop:
+                raise
+
             except asyncio.TimeoutError:
                 error = f"Node execution timed out after {self.config.timeout_seconds}s"
                 return await self._handle_error(instance, error, start_time)
@@ -173,6 +215,15 @@ class BaseNode(ABC):
                     instance, scrub_error(str(e), workflow_phi, type(e).__name__), start_time
                 )
     
+    def _effective_type(self) -> str:
+        """custom_node_type takes priority over the enum type."""
+        effective_type = self.config.parameters.get("custom_node_type") if (
+            hasattr(self.config, 'parameters') and isinstance(self.config.parameters, dict)
+        ) else None
+        if not effective_type:
+            effective_type = self.config.type.value if hasattr(self.config.type, 'value') else str(self.config.type)
+        return effective_type
+
     async def _handle_error(
         self,
         instance: NodeInstance,
