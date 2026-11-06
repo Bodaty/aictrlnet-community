@@ -113,7 +113,11 @@ async def purge_expired() -> int:
 
 def schedule_purge() -> None:
     """Purge in the background, at most once an hour per worker."""
+    from core.background_workers import background_workers_enabled, record_started
+
     global _last_purge
+    if not background_workers_enabled():
+        return
     now = time.monotonic()
     if now - _last_purge < _PURGE_EVERY_S:
         return
@@ -128,6 +132,7 @@ def schedule_purge() -> None:
     task = asyncio.get_running_loop().create_task(purge(), name="conversation-job-purge")
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
+    record_started("conversation_job_purge")
 
 
 def _limit() -> asyncio.Semaphore:

@@ -5,6 +5,7 @@ task on its own session, and cancel_execution arrives on another session
 while a step is in flight.
 """
 import asyncio
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -25,7 +26,10 @@ from nodes.registry import node_registry
 from services import workflow_execution as workflow_execution_module
 from services.workflow_execution import WorkflowExecutionService
 
-TENANT = "default-tenant"
+# Its own tenant: the Tier A sweeps delete every default-tenant row created
+# while they run (tests/smoke_common/sweep_residue.py), and they run beside
+# this test (other xdist workers, other editions' suites).
+TENANT = f"t-{uuid.uuid4().hex[:12]}"
 STEP_TYPE = "b2CancelTestStep"
 ran = []
 

@@ -39,6 +39,7 @@ DECLARED_PURE_ROUTES = {
     'GET /api/v1/conversation/budgets': 'static latency budget config',
     'GET /api/v1/edition': 'edition config',
     'GET /api/v1/health/detail': 'in-process runtime stats (event loop, executors, pool)',
+    'GET /api/v1/health/workers': 'in-process registry of the pollers this worker started (superuser only)',
     'GET /api/v1/knowledge/manifest': 'generated from the static feature manifest',
     'GET /api/v1/llm/models': 'in-process model registry',
     'GET /api/v1/llm/models/system-defaults': 'model tier config',

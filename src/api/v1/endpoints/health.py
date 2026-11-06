@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from core.database import get_db
 from core.config import get_settings
+from core.dependencies import require_superuser
 from schemas.common import HealthResponse
 
 router = APIRouter()
@@ -87,6 +88,20 @@ async def health_detail():
     }
 
     return detail
+
+
+@router.get("/health/workers", dependencies=[Depends(require_superuser)])
+async def health_workers():
+    """The pollers this worker process started (superuser only).
+
+    The test gate's guard reads it: on a gate stack (BACKGROUND_WORKERS_ENABLED
+    off) ``started`` must be empty in every worker process.
+    """
+    import os
+
+    from core.background_workers import background_workers_enabled, started_workers
+
+    return {"pid": os.getpid(), "enabled": background_workers_enabled(), "started": started_workers()}
 
 
 @router.get("/edition")

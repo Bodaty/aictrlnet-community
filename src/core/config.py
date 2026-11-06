@@ -200,6 +200,10 @@ class Settings(BaseSettings):
     # prod/staging leave it false. Enforced together with ENVIRONMENT=development.
     ALLOW_DEV_TOKENS: bool = Field(default=False, env="ALLOW_DEV_TOKENS")
     USE_CREATE_ALL: bool = Field(default=False, env="USE_CREATE_ALL")  # Default to migrations even in dev
+    # The pollers a service starts on its own (scheduler, sweeps, dispatchers,
+    # purges; core/background_workers.py). Off only on a stack running the test
+    # gate (docker-compose.gate.yml), so nothing but the tests touches test tenants.
+    BACKGROUND_WORKERS_ENABLED: bool = Field(default=True, env="BACKGROUND_WORKERS_ENABLED")
     DATA_PATH: str = Field(default="/tmp/aictrlnet", env="DATA_PATH")
     # Explicit opt-in for a deployment that handles PHI. When true, the startup
     # guard below refuses to boot unless documents can only land on the encrypted

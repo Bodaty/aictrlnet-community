@@ -5,6 +5,7 @@ run, start_execution hands it to a background task on its own session, and the
 policy registered in nodes.preview decides each step.
 """
 import asyncio
+import uuid
 
 import pytest
 import pytest_asyncio
@@ -24,7 +25,10 @@ from nodes.registry import node_registry
 from services import workflow_execution as workflow_execution_module
 from services.workflow_execution import WorkflowExecutionService
 
-TENANT = "default-tenant"
+# Its own tenant: the Tier A sweeps delete every default-tenant row created
+# while they run (tests/smoke_common/sweep_residue.py), and they run beside
+# this test (other xdist workers, other editions' suites).
+TENANT = f"t-{uuid.uuid4().hex[:12]}"
 STEP_TYPE = "previewTestStep"
 ran = []
 seen = {}
