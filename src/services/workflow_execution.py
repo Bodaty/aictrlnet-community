@@ -304,6 +304,21 @@ class WorkflowExecutionService:
     async def _execute_workflow_locally(
         self, execution_id: uuid.UUID, tenant_id: Optional[str] = None
     ):
+        """Run the execution as its tenant: the session (below) and the
+        request tenant context. A run started by the scheduler, a trigger, the
+        approval resumer or the document dispatcher has no request, so code a
+        node reaches that reads ``get_current_tenant_id()`` would otherwise
+        get default-tenant."""
+        if not tenant_id:
+            return await self._execute_workflow_in_tenant(execution_id, tenant_id)
+        from core.tenant_context import TenantContext
+
+        with TenantContext(tenant_id):
+            return await self._execute_workflow_in_tenant(execution_id, tenant_id)
+
+    async def _execute_workflow_in_tenant(
+        self, execution_id: uuid.UUID, tenant_id: Optional[str] = None
+    ):
         """Execute workflow locally using a dedicated DB session.
 
         This runs as an asyncio.create_task background task, so it must use
