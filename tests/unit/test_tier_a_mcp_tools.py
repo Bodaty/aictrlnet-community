@@ -22,6 +22,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from mcp_server.tools import get_tools_for_edition
+from core.tenant_context import TenantContext
 from mcp_server import tool_executor
 from mcp_server.tool_executor import execute_tool, ToolExecutionError, ScopeError
 from mcp_server.plan_gate import PlanError, PlanService
@@ -36,15 +37,13 @@ for _root in _pathlib.Path(__file__).resolve().parents:  # tests/smoke_common, w
         break
 else:
     _sys.path.append("/workspace/tests")
-from smoke_common.sweep_residue import (  # noqa: E402
-    database_now, delete_rows_created_since, restore_user_rows, snapshot_user_rows,
-)
+from smoke_common.sweep_residue import create_sweep_owner, delete_owned_rows  # noqa: E402
 
 TOOLS = {t["name"]: t for t in get_tools_for_edition()}
 DECLARED_PENDING = {n for n, t in TOOLS.items() if "feature_pending" in (t.get("description") or "")}
 PER_TOOL_TIMEOUT = 20
 
-# On a fresh DB (no Business demo seed), default-tenant's plan resolves
+# On a fresh DB (no Business demo seed), a tenant's plan resolves
 # from subscription rows that only that seed creates -- absent it, every
 # copy of this sweep would resolve "community" and see 106/142 tools
 # GATED before real classification is possible. Pin the tier this
@@ -123,31 +122,25 @@ def _chain_has(exc, cls):
 
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _delete_sweep_residue(db, dev_user_id):
-    """Delete every row the sweep created in the dev tenant or as the dev user.
+@pytest_asyncio.fixture
+async def sweep_owner(db):
+    """The sweep's own tenant and superuser, and afterwards everything they own deleted.
 
     The write tools commit on the request session, so the module's
-    `finally: await db.rollback()` cannot undo them: every gate run used to
-    leave another policy, pod, agent and MCP server behind for the UI gates to
-    render (tests/smoke_common/sweep_residue.py). The dev user's personal agent
-    config, which the sweep updates rather than creates, is put back as it was.
+    `finally: await db.rollback()` cannot undo them. Run as dev@ in
+    default-tenant, the cleanup had to delete what was created there while the
+    sweep ran, and the parallel gate's other tests lost their rows with it
+    (tests/smoke_common/sweep_residue.py).
     """
-    since = await database_now(db)
-    before = await snapshot_user_rows(db, dev_user_id)
-    yield
-    await delete_rows_created_since(db, since, tenant_id="default-tenant", user_id=dev_user_id)
-    await restore_user_rows(db, before)
-
-@pytest_asyncio.fixture
-async def dev_user_id(db):
-    await db.execute(text("select set_config('app.current_tenant_id', 'default-tenant', false)"))
-    row = (await db.execute(text("SELECT id FROM users WHERE email='dev@aictrlnet.com'"))).first()
-    assert row, "dev@aictrlnet.com missing - make fresh"
-    return str(row[0])
+    owner = await create_sweep_owner(db)
+    await db.execute(text("select set_config('app.current_tenant_id', :t, false)"), {"t": owner.tenant_id})
+    try:
+        yield owner
+    finally:
+        await delete_owned_rows(db, owner.tenant_id, owner.user_id)
 
 
-async def _classify(name, db, dev_user_id, plan_service):
+async def _classify(name, db, owner, plan_service):
     args = synthesize_value(TOOLS[name]["inputSchema"], components={})
     handler = tool_executor.TOOL_HANDLERS.get(name)
     seen = {}
@@ -158,13 +151,15 @@ async def _classify(name, db, dev_user_id, plan_service):
                 return await handler(*a, **k)
         tool_executor.TOOL_HANDLERS[name] = _probed
     try:
-        result = await asyncio.wait_for(
-            execute_tool(
-                name, args, db, dev_user_id, tenant_id="default-tenant",
-                plan_service=plan_service,
-            ),
-            timeout=PER_TOOL_TIMEOUT,
-        )
+        # As a request does: the tenant middleware sets the caller's tenant for its handlers.
+        with TenantContext(owner.tenant_id):
+            result = await asyncio.wait_for(
+                execute_tool(
+                    name, args, db, owner.user_id, tenant_id=owner.tenant_id,
+                    plan_service=plan_service,
+                ),
+                timeout=PER_TOOL_TIMEOUT,
+            )
     except ToolExecutionError as e:
         msg = str(e)
         return ("DEAD", msg) if msg.startswith("Unknown tool") else ("SURFACED", msg[:120])
@@ -195,11 +190,11 @@ async def _classify(name, db, dev_user_id, plan_service):
 
 
 @pytest.mark.asyncio
-async def test_every_mcp_tool_is_not_dead_or_is_in_the_ledger(db, dev_user_id):
+async def test_every_mcp_tool_is_not_dead_or_is_in_the_ledger(db, sweep_owner):
     plan_service = _PinnedPlanService(db, PINNED_PLAN_TIER)
     classes, detail = {}, {}
     for name in sorted(TOOLS):
-        k, d = await _classify(name, db, dev_user_id, plan_service)
+        k, d = await _classify(name, db, sweep_owner, plan_service)
         classes[name] = k; detail[name] = d
     from collections import Counter
     counts = Counter(classes.values())
