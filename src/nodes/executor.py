@@ -11,7 +11,6 @@ from .models import (
     NodeInstance, NodeStatus, NodeExecutionRequest,
     NodeExecutionResult, WorkflowInstance
 )
-from .registry import node_registry
 from .implementations.decision_node import DecisionNode
 from .state_manager import NodeStateManager, state_manager as default_state_manager
 from .error_handler import NodeErrorHandler, node_error_handler as default_error_handler
@@ -756,3 +755,9 @@ class NodeExecutor:
         }
         
         return progress
+
+
+# Imported after NodeExecutor exists: importing the registry runs the edition node
+# hook, whose nodes import NodeExecutor from this module. Imported at the top, an
+# executor-first import left those nodes unregistered (a circular import).
+from .registry import node_registry  # noqa: E402

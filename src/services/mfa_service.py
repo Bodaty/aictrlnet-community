@@ -306,7 +306,8 @@ class MFAService:
         user = await self.get_user(user_id)
         
         response = {
-            "mfa_enabled": user.mfa_enabled,
+            # NULL on users created without the ORM default; NULL means not enrolled.
+            "mfa_enabled": bool(user.mfa_enabled),
             "enrolled_at": user.mfa_enrolled_at,
             "last_used_at": user.mfa_last_used_at
         }
