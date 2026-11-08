@@ -16,8 +16,8 @@ class User(Base):
     username = Column(String(50), unique=True, index=True)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(100))
-    is_active = Column(Boolean, default=True)
-    is_superuser = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True, nullable=False, server_default="true")
+    is_superuser = Column(Boolean, default=False, nullable=False, server_default="false")
     tenant_id = Column(String(100), index=True, nullable=True)  # NULL for Community/Business, required for Enterprise
     edition = Column(String(20), default="community")
     preferences = Column(JSON, default=dict)
@@ -30,11 +30,11 @@ class User(Base):
     password_reset_expires = Column(DateTime, nullable=True)
     
     # Email verification fields
-    email_verified = Column(Boolean, default=False)
+    email_verified = Column(Boolean, default=False, nullable=False, server_default="false")
     email_verification_token = Column(String, nullable=True)
     
     # MFA fields
-    mfa_enabled = Column(Boolean, default=False)
+    mfa_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
     mfa_secret = Column(String(255), nullable=True)  # Encrypted TOTP secret
     mfa_backup_codes = Column(String, nullable=True)  # Encrypted JSON array
     mfa_enrolled_at = Column(DateTime, nullable=True)

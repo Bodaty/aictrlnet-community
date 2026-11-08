@@ -741,9 +741,12 @@ async def update_user(
         update_data["hashed_password"] = get_password_hash(update_data.pop("password"))
     
     for field, value in update_data.items():
+        # A null for a column that can't hold one (the users flags) leaves it as it was.
+        if value is None and field in User.__table__.c and not User.__table__.c[field].nullable:
+            continue
         if hasattr(user, field):
             setattr(user, field, value)
-    
+
     await db.commit()
     await db.refresh(user)
     

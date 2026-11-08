@@ -66,6 +66,14 @@ class UserUpdate(BaseModel):
             raise ValueError('Email must contain only ASCII characters')
         return v
 
+    @field_validator('password')
+    @classmethod
+    def validate_password_not_null(cls, v):
+        # Runs only when the body sends password; leave it out to keep the current one.
+        if v is None:
+            raise ValueError('Password cannot be null; leave it out to keep the current password')
+        return v
+
 
 class UserResponse(UserBase):
     """Schema for user response."""
