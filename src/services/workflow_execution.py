@@ -914,27 +914,33 @@ class WorkflowExecutionService:
         # Update status
         execution.status = WorkflowExecutionStatus.PAUSED
         
-        # Create automatic checkpoint
+        # Create automatic checkpoint, in the same transaction as the status
         checkpoint_data = WorkflowCheckpointCreate(
             checkpoint_type="auto",
             state_data={"paused_at": datetime.utcnow().isoformat()},
             description="Automatic checkpoint on pause"
         )
-        await self.create_checkpoint(execution_id, checkpoint_data)
-        
-        await self.db.commit()
+        self.db.add(WorkflowCheckpoint(execution_id=execution_id, **checkpoint_data.model_dump()))
+
+        # Read the run back before the commit, and nothing after it: the
+        # approval that paused the run waits on a person next, on this session,
+        # and a read after the commit would hold its connection idle in
+        # transaction until the approval's first poll.
+        await self.db.flush()
         await self.db.refresh(execution)
+        response = WorkflowExecutionResponse.model_validate(execution)
+        await self.db.commit()
         
         # Publish pause event
         await event_bus.publish(
             "workflow.execution.paused",
             {
                 "execution_id": str(execution_id),
-                "workflow_id": str(execution.workflow_id)
+                "workflow_id": str(response.workflow_id)
             }
         )
         
-        return WorkflowExecutionResponse.model_validate(execution)
+        return response
     
     async def resume_execution(
         self,
