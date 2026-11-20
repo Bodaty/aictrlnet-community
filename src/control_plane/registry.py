@@ -31,15 +31,22 @@ class ComponentRegistry:
     async def register_component(
         self, 
         component: Component,
-        user_id: str
+        user_id: str,
+        refresh_existing: bool = False
     ) -> tuple[Component, str, datetime]:
-        """Register a new component and return it with JWT token."""
+        """Register a new component and return it with JWT token.
+
+        With refresh_existing, a component this registrant already holds under
+        the same name and type is refreshed and returned instead of refused.
+        """
         async with self._lock:
             # Check if component already exists
             existing = self._find_component_by_name_and_type(
-                component.name, 
+                component.name,
                 component.type
             )
+            if existing and refresh_existing and existing.registered_by == user_id:
+                return self._refresh_component(existing, component)
             if existing and existing.status == ComponentStatus.ACTIVE:
                 raise ValueError(f"Component {component.name} already registered")
             
@@ -258,6 +265,37 @@ class ComponentRegistry:
             
             return inactive_ids
     
+    def _refresh_component(
+        self,
+        existing: Component,
+        component: Component
+    ) -> tuple[Component, str, datetime]:
+        """Take a re-registration's details onto the existing component (caller holds the lock)."""
+        for capability in existing.capabilities:
+            ids = self.components_by_capability.get(capability.name, [])
+            if existing.id in ids:
+                ids.remove(existing.id)
+
+        for field in ("version", "description", "capabilities", "edition", "required_edition",
+                      "config", "endpoint_url", "webhook_url"):
+            setattr(existing, field, getattr(component, field))
+        existing.status = ComponentStatus.ACTIVE
+        existing.last_heartbeat = datetime.utcnow()
+
+        for capability in existing.capabilities:
+            self.components_by_capability[capability.name].append(existing.id)
+
+        token, expires_at = component_auth.create_component_token(existing)
+        existing.token = token
+        existing.token_expires_at = expires_at
+
+        self.events.append(ComponentEvent(
+            component_id=existing.id,
+            event_type="refreshed",
+            data={"name": existing.name, "type": existing.type.value, "version": existing.version}
+        ))
+        return existing, token, expires_at
+
     def _find_component_by_name_and_type(
         self, 
         name: str, 

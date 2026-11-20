@@ -17,7 +17,7 @@ from ..template_utils import (
 )
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
-from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest, AdapterStatus
+from adapters.models import AdapterConfig, AdapterCategory, AdapterRequest
 from core.phi_egress import (
     ALLOWLIST_SETTING,
     PHI_REFUSAL_MARKER,
@@ -302,16 +302,7 @@ class AIProcessNode(BaseNode):
             timeout_seconds=node_timeout,
         )
         adapter = adapter_class(adapter_config)
-        try:
-            await adapter.start()
-        except Exception as start_err:
-            # Adapter may already be registered from a prior execution — that's OK
-            if "already registered" in str(start_err):
-                await adapter.initialize()
-                adapter.status = AdapterStatus.READY
-                adapter._initialized = True
-            else:
-                raise
+        await adapter.start()
 
         # Build template context: input_data keys available both at top level
         # and under "input_data" prefix so {{key}} and {{input_data.key}} work.

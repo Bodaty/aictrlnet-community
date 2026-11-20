@@ -339,7 +339,7 @@ class BaseNode(ABC):
         adapter itself falls back to its env key (e.g. PERPLEXITY_API_KEY) when
         none is stored. Per-org tenant-scoped credential resolution lands in B2.
         """
-        from adapters.models import AdapterConfig, AdapterCategory, AdapterStatus
+        from adapters.models import AdapterConfig, AdapterCategory
         from nodes.template_utils import resolve_adapter_credentials
 
         adapter_class = adapter_registry.get_adapter_class(adapter_id)
@@ -371,16 +371,7 @@ class BaseNode(ABC):
             timeout_seconds=(self.config.parameters or {}).get("timeout", 300),
         )
         adapter = adapter_class(adapter_config)
-        try:
-            await adapter.start()
-        except Exception as start_err:
-            # Adapter may already be registered from a prior execution — reuse it.
-            if "already registered" in str(start_err):
-                await adapter.initialize()
-                adapter.status = AdapterStatus.READY
-                adapter._initialized = True
-            else:
-                raise
+        await adapter.start()
 
         try:
             # The run's identity reaches the adapter here, from the runtime's

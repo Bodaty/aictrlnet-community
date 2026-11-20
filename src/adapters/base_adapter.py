@@ -159,7 +159,8 @@ class BaseAdapter(ABC):
             
             registration = await control_plane_service.register_component(
                 registration_request,
-                user_id="system"
+                user_id="system",
+                refresh_existing=True
             )
             
             self._component_id = registration.component.id

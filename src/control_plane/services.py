@@ -27,9 +27,14 @@ class ControlPlaneService:
     async def register_component(
         self,
         request: ComponentRegistrationRequest,
-        user_id: str
+        user_id: str,
+        refresh_existing: bool = False
     ) -> ComponentRegistrationResponse:
-        """Register a new component."""
+        """Register a new component.
+
+        With refresh_existing, re-registering a component this user already
+        holds refreshes it rather than failing (an adapter started again).
+        """
         try:
             # Create component from request
             component = Component(
@@ -50,8 +55,17 @@ class ControlPlaneService:
             # Register in registry
             registered_component, token, expires_at = await self.registry.register_component(
                 component,
-                user_id
+                user_id,
+                refresh_existing=refresh_existing
             )
+
+            if registered_component is not component:
+                logger.debug(f"Component {registered_component.name} registration refreshed")
+                return ComponentRegistrationResponse(
+                    component=registered_component,
+                    token=token,
+                    expires_at=expires_at
+                )
             
             # Publish registration event
             await self.event_bus.publish(
