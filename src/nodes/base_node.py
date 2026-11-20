@@ -11,6 +11,15 @@ from .models import NodeConfig, NodeStatus, NodeInstance, NodeExecutionResult
 from .capacity import run_with_deadline
 from .content_refs import scrub_error
 from .preview import PreviewStop, RUN, SIMULATE, get_preview_policy
+
+
+class AdapterCallError(RuntimeError):
+    """An adapter answered with an error. Carries the adapter's error_code (e.g.
+    ``HTTP_503``) so a step can decide whether the failure is worth retrying."""
+
+    def __init__(self, message: str, error_code: Optional[str] = None):
+        super().__init__(message)
+        self.error_code = error_code
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
 from adapters.models import AdapterRequest
@@ -395,7 +404,7 @@ class BaseNode(ABC):
                 pass
 
         if response.status == "error":
-            raise RuntimeError(f"Adapter error: {response.error}")
+            raise AdapterCallError(f"Adapter error: {response.error}", response.error_code)
 
         return response.data
     

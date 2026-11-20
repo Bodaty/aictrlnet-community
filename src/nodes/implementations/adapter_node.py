@@ -1,12 +1,17 @@
 """Adapter node for calling external adapters."""
 
+import asyncio
 import logging
 from typing import Any, Dict
 
-from nodes.base_node import BaseNode
+from nodes.base_node import AdapterCallError, BaseNode
 
 
 logger = logging.getLogger(__name__)
+
+# Upstream errors that are usually gone on a second try: rate limits and server-side
+# failures. A 4xx other than 429 (bad key, bad request) is never retried.
+DEFAULT_RETRY_ERROR_CODES = ("HTTP_429", "HTTP_500", "HTTP_502", "HTTP_503", "HTTP_504", "HTTP_520", "HTTP_529")
 
 
 class AdapterNode(BaseNode):
@@ -60,13 +65,8 @@ class AdapterNode(BaseNode):
             }
 
         try:
-            # Call adapter
-            result = await self.call_adapter(
-                adapter_id=adapter_id,
-                capability=capability,
-                parameters=adapter_params,
-                context=context,
-            )
+            # Call adapter, retrying a transient failure when the step asks for it.
+            result, attempts = await self._call_with_retry(adapter_id, capability, adapter_params, context)
 
             # Process adapter response
             output = self._process_adapter_response(result)
@@ -74,6 +74,8 @@ class AdapterNode(BaseNode):
             # Add metadata
             output["_adapter_called"] = adapter_id
             output["_capability_used"] = capability
+            if attempts > 1:
+                output["_attempts"] = attempts
 
             return output
 
@@ -171,6 +173,42 @@ class AdapterNode(BaseNode):
                     "_failed": True
                 }
     
+    async def _call_with_retry(self, adapter_id, capability, adapter_params, context):
+        """Call the adapter; on an error whose code is in ``retry_on_error_codes``,
+        wait and try again, up to ``retry_attempts`` more times (default 0: no retry).
+        The wait starts at ``retry_backoff_seconds`` and doubles each time. Any other
+        error, or the last attempt's error, is raised as before."""
+        params = self.config.parameters or {}
+        try:
+            retries = max(0, int(params.get("retry_attempts", 0) or 0))
+        except (TypeError, ValueError):
+            retries = 0
+        try:
+            delay = max(0.0, float(params.get("retry_backoff_seconds", 2) or 0))
+        except (TypeError, ValueError):
+            delay = 2.0
+        codes = set(params.get("retry_on_error_codes") or DEFAULT_RETRY_ERROR_CODES)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                result = await self.call_adapter(
+                    adapter_id=adapter_id,
+                    capability=capability,
+                    parameters=adapter_params,
+                    context=context,
+                )
+                return result, attempt
+            except AdapterCallError as e:
+                if attempt > retries or e.error_code not in codes:
+                    raise
+                logger.warning(
+                    "Adapter node %s: %s/%s failed with %s (attempt %d of %d), retrying in %.0fs",
+                    self.config.id, adapter_id, capability, e.error_code, attempt, retries + 1, delay,
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
+
     def _prepare_adapter_params(
         self,
         input_data: Dict[str, Any],
