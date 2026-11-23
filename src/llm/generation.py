@@ -479,6 +479,10 @@ class LLMGenerationEngine:
             "workflow_creation",
             "detailed_analysis",
             "tool_use",
+            # Reading an AI call's transcript into its outcome and the patient's own words
+            # (services/call_outcome_reader.py). The 3B BALANCED model dropped preferred times
+            # the caller gave; the 8B reads them (Bobby, 23 Nov 2026).
+            "voice_outcome_read",
         }
 
         # Check for exact matches first
