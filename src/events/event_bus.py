@@ -1,6 +1,7 @@
 """Event bus for workflow and system events."""
 
 import asyncio
+import inspect
 import logging
 from typing import Dict, List, Callable, Any, Optional
 from datetime import datetime
@@ -85,22 +86,21 @@ class EventBus:
     
     async def _dispatch_event(self, event_name: str, data: Any):
         """Dispatch event to all subscribers."""
-        # Get exact match subscribers
-        subscribers = self._subscribers.get(event_name, [])
-        
+        # Copy: the stored lists must not grow with every dispatch.
+        subscribers = list(self._subscribers.get(event_name, []))
+
         # Get wildcard subscribers
         parts = event_name.split(".")
         for i in range(len(parts)):
             wildcard_pattern = ".".join(parts[:i]) + ".*"
             subscribers.extend(self._subscribers.get(wildcard_pattern, []))
-        
-        # Call all subscribers
+
+        # Call all subscribers; a sync handler may return an awaitable
         for subscriber in subscribers:
             try:
-                if asyncio.iscoroutinefunction(subscriber):
-                    await subscriber(event_name, data)
-                else:
-                    subscriber(event_name, data)
+                result = subscriber(event_name, data)
+                if inspect.isawaitable(result):
+                    await result
             except Exception as e:
                 logger.error(f"Error in event subscriber: {e}")
     

@@ -33,6 +33,61 @@ from core.tenant_context import get_current_tenant_id
 
 logger = logging.getLogger(__name__)
 
+# A run in one of these states is finished; a late driver never rewrites it.
+FINISHED_EXECUTION_STATUSES = (
+    WorkflowExecutionStatus.COMPLETED,
+    WorkflowExecutionStatus.FAILED,
+    WorkflowExecutionStatus.CANCELLED,
+)
+
+
+def final_status_update_statement(execution_id: uuid.UUID, values: Dict[str, Any]):
+    """The conditional UPDATE behind `_write_final_status`."""
+    return (
+        update(WorkflowExecution)
+        .where(WorkflowExecution.id == execution_id)
+        .where(WorkflowExecution.status.notin_(FINISHED_EXECUTION_STATUSES))
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def collect_degraded(
+    node_outputs: Dict[str, Any],
+    node_inputs: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """The degraded markers a run's steps reported, as `{node_id, reason, detail}`.
+
+    A step that did less than it was asked to (a source down, an engine that
+    did not answer) puts a top-level `degraded: {"reason": str, "detail": dict}`
+    in its output. The run still ends `completed`; the markers surface on the
+    run's `output_data["degraded"]`. A malformed marker is ignored.
+
+    The payload accumulates down the graph (`{**input, **output}`), and a step
+    such as `end` copies its input, so a marker can reappear in a later step's
+    output. With `node_inputs` given, a marker equal to the one in the step's
+    own input was inherited, not raised there, and is not counted again.
+    """
+    degraded: List[Dict[str, Any]] = []
+    for node_id, output in node_outputs.items():
+        if not isinstance(output, dict) or "degraded" not in output:
+            continue
+        marker = output["degraded"]
+        inherited = (node_inputs or {}).get(node_id)
+        if isinstance(inherited, dict) and inherited.get("degraded") == marker:
+            continue
+        reason = marker.get("reason") if isinstance(marker, dict) else None
+        if not isinstance(reason, str) or not reason:
+            logger.debug("Ignoring malformed degraded marker on node %s: %r", node_id, marker)
+            continue
+        detail = marker.get("detail")
+        degraded.append({
+            "node_id": node_id,
+            "reason": reason,
+            "detail": detail if isinstance(detail, dict) else {},
+        })
+    return degraded
+
 
 # Steps that branch or wait for a person: a skip_condition on them is refused.
 NO_SKIP_NODE_TYPES = frozenset({
@@ -582,6 +637,20 @@ class WorkflowExecutionService:
                 else:
                     final_values["status"] = WorkflowExecutionStatus.COMPLETED
 
+                # Steps that did less than asked mark their output `degraded`;
+                # the run stays completed and carries the markers (G53).
+                degraded = collect_degraded(
+                    {node_id: getattr(ni, "output_data", None)
+                     for node_id, ni in workflow_instance.node_instances.items()},
+                    {node_id: getattr(ni, "input_data", None)
+                     for node_id, ni in workflow_instance.node_instances.items()},
+                )
+                if degraded:
+                    final_values["output_data"] = {
+                        **(workflow_instance.output_data or {}),
+                        "degraded": degraded,
+                    }
+
                 # Count intercepted nodes for dry-run summary (regardless of
                 # final status — a failed dry-run still reports what would
                 # have been intercepted up to the failure point). Scan the
@@ -613,11 +682,12 @@ class WorkflowExecutionService:
                         **preview_values,
                     }
 
-                # A run cancelled while it was executing stays cancelled: the
-                # final write only lands on a row that is not CANCELLED, and a
-                # cancelled run publishes neither completion nor failure.
+                # A run that finished meanwhile (cancelled, or completed or
+                # failed by another driver) keeps its status: the final write
+                # only lands on a row that is not finished, and the late
+                # driver publishes neither completion nor failure.
                 if not await self._write_final_status(db, execution_id, final_values):
-                    logger.info(f"Workflow execution {execution_id} was cancelled; final status left as cancelled")
+                    logger.info(f"Workflow execution {execution_id} was already finished; final status left as it was")
                     return
 
                 # Publish completion or failure event, matching the resolved status
@@ -667,7 +737,7 @@ class WorkflowExecutionService:
                         failure_values["execution_metadata"] = {**prior_metadata, "preview": True}
                     written = await self._write_final_status(db, execution_id, failure_values)
                     if not written:
-                        logger.info(f"Workflow execution {execution_id} was cancelled; ignoring {type(e).__name__}: {error_text}")
+                        logger.info(f"Workflow execution {execution_id} was already finished; ignoring {type(e).__name__}: {error_text}")
                         return
                 logger.error(f"Workflow execution failed: {error_text}")
 
@@ -703,17 +773,15 @@ class WorkflowExecutionService:
     async def _write_final_status(
         self, db: AsyncSession, execution_id: uuid.UUID, values: Dict[str, Any]
     ) -> bool:
-        """Write a run's final state unless it was cancelled meanwhile.
+        """Write a run's final state unless the run already finished.
 
-        Returns False when the row is CANCELLED and nothing was written.
+        One conditional UPDATE: it lands only on a row that is not COMPLETED,
+        FAILED or CANCELLED, so a late second driver (the 24h in-process
+        approval waiter after the resumer finished the run) cannot overwrite a
+        finished run. Returns False when the row was already finished and
+        nothing was written.
         """
-        result = await db.execute(
-            update(WorkflowExecution)
-            .where(WorkflowExecution.id == execution_id)
-            .where(WorkflowExecution.status.notin_([WorkflowExecutionStatus.CANCELLED]))
-            .values(**values)
-            .execution_options(synchronize_session=False)
-        )
+        result = await db.execute(final_status_update_statement(execution_id, values))
         await db.commit()
         return result.rowcount > 0
 
