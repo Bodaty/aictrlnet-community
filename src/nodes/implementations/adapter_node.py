@@ -15,14 +15,46 @@ DEFAULT_RETRY_ERROR_CODES = ("HTTP_429", "HTTP_500", "HTTP_502", "HTTP_503", "HT
 
 
 class AdapterNode(BaseNode):
-    """Node that calls an adapter."""
-    
+    """Node that calls an adapter.
+
+    ``output_key``: when set, the step's whole output (the adapter's answer, a dry run, or a
+    failure kept by ``fail_on_error: false`` with its ``_failed``, ``error`` and ``error_code``)
+    is returned under that one key. The run's data accumulates step over step, so a later step
+    can tell this call's answer from another adapter step's, including whether it failed.
+
+    ``degrade_on_error``: a reason (such as ``"send_failed"``). When the call fails and the
+    failure is kept (``fail_on_error: false``), the step's output also carries a top-level
+    ``degraded`` marker ``{reason, detail: {adapter, capability, error_code}}``, beside any
+    ``output_key``, so the run ends ``completed`` with the failure on its ``output_data.degraded``
+    instead of hiding it.
+    """
+
     async def execute(
         self,
         input_data: Dict[str, Any],
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Execute adapter call."""
+        params = self.config.parameters or {}
+        output = await self._call(input_data, context)
+        output_key = params.get("output_key")
+        result = output
+        if isinstance(output_key, str) and output_key.strip():
+            result = {output_key.strip(): output}
+        reason = params.get("degrade_on_error")
+        if isinstance(reason, str) and reason.strip() and isinstance(output, dict) and output.get("_failed"):
+            result = {**result, "degraded": {"reason": reason.strip(), "detail": {
+                "adapter": output.get("_adapter_called"),
+                "capability": output.get("_capability_used"),
+                "error_code": output.get("error_code"),
+            }}}
+        return result
+
+    async def _call(
+        self,
+        input_data: Dict[str, Any],
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
         # Get adapter configuration
         adapter_id = self.config.adapter_id or self.config.parameters.get("adapter_id")
         capability = self.config.adapter_capability or self.config.parameters.get("capability")
@@ -168,6 +200,7 @@ class AdapterNode(BaseNode):
             else:
                 return {
                     "error": str(e),
+                    "error_code": getattr(e, "error_code", None),
                     "_adapter_called": adapter_id,
                     "_capability_used": capability,
                     "_failed": True

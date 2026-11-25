@@ -397,6 +397,13 @@ class AIProcessNode(BaseNode):
             }
         )
 
+        # ``output_key``: the step's whole output under one key, as the adapter step's
+        # output_key does. The run's data accumulates ({**input, **output}), and a JSON
+        # answer's top-level fields are copied onto the output, so without it a model's
+        # answer could overwrite anything an earlier step put in the run.
+        output_key = params.get("output_key")
+        if isinstance(output_key, str) and output_key.strip():
+            return {output_key.strip(): output_data}
         return output_data
     
     async def _resolve_org_adapter(self, tenant_id: Optional[str]) -> Optional[str]:

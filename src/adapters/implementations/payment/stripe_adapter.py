@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 class StripeAdapter(BaseAdapter):
     """Adapter for Stripe payment processing."""
+
+    LIST_EVENTS_MAX = 1000
     
     def __init__(self, config: AdapterConfig):
         # Ensure category is set correctly
@@ -201,6 +203,21 @@ class StripeAdapter(BaseAdapter):
                 cost_per_request=0.0
             ),
             AdapterCapability(
+                name="list_events",
+                description="List Stripe events (newest cursor, oldest-first result) for incremental ingestion",
+                category="payment_processing",
+                parameters={
+                    "types": {"type": "array", "description": "Event types to include (sent as repeated types[] params)"},
+                    "created_gte": {"type": "integer", "description": "Only events created at or after this Unix time"},
+                    "ending_before": {"type": "string", "description": "Cursor: return only events newer than this event id"},
+                    "limit": {"type": "integer", "description": "Page size, 1-100 (default 100)"}
+                },
+                required_parameters=[],
+                async_supported=True,
+                estimated_duration_seconds=2.0,
+                cost_per_request=0.0
+            ),
+            AdapterCapability(
                 name="create_payment_method",
                 description="Create a payment method",
                 category="payment_processing",
@@ -245,6 +262,7 @@ class StripeAdapter(BaseAdapter):
             "cancel_subscription": self._handle_cancel_subscription,
             "create_refund": self._handle_create_refund,
             "list_transactions": self._handle_list_transactions,
+            "list_events": self._handle_list_events,
             "create_payment_method": self._handle_create_payment_method,
             "attach_payment_method": self._handle_attach_payment_method
         }
@@ -743,6 +761,103 @@ class StripeAdapter(BaseAdapter):
                 duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000
             )
     
+    async def _handle_list_events(self, request: AdapterRequest) -> AdapterResponse:
+        """List Stripe events newer than a cursor, returned oldest-first.
+
+        /v1/events returns newest first. With ``ending_before=<id>`` Stripe returns
+        the events newer than that id (still newest-first within the page, the page
+        being the ones nearest the cursor), so the next page uses the page's first
+        (newest) id as its ``ending_before``. Without a cursor the first page is the
+        newest events and older pages follow with ``starting_after``. Stops when
+        ``has_more`` is false or ``LIST_EVENTS_MAX`` events are collected.
+        ``newest_id`` is the newest id seen, or the input cursor when there are none.
+        Without a cursor, hitting the cap with more pages left returns ``truncated: true``
+        and the older events are skipped.
+
+        An error's ``error_code`` is ``HTTP_<status>`` for a rate limit or a server error (the
+        codes an adapter step retries), and Stripe's own error code for any other refusal, e.g.
+        ``resource_missing`` when the ``ending_before`` event no longer exists (Stripe keeps
+        events for 30 days).
+        """
+        start_time = datetime.utcnow()
+
+        try:
+            p = request.parameters
+            cursor = p.get("ending_before")
+            limit = max(1, min(int(p.get("limit") or 100), 100))
+            base: List[tuple] = [("limit", limit)]
+            for event_type in p.get("types") or []:
+                base.append(("types[]", event_type))
+            if p.get("created_gte") is not None:
+                base.append(("created[gte]", int(p["created_gte"])))
+
+            pages: List[List[Dict[str, Any]]] = []
+            total = 0
+            truncated = False
+            page_cursor = cursor
+            while True:
+                query = list(base)
+                if page_cursor:
+                    key = "ending_before" if cursor else "starting_after"
+                    query.append((key, page_cursor))
+                response = await self.client.get("/events", params=query)
+                response.raise_for_status()
+                body = response.json()
+                page = body.get("data", [])
+                if not page:
+                    break
+                pages.append(page)
+                total += len(page)
+                if not body.get("has_more"):
+                    break
+                if total >= self.LIST_EVENTS_MAX:
+                    truncated = not cursor
+                    break
+                # newest-first pages: newer events follow the page's first id;
+                # older events (no cursor) follow its last id
+                page_cursor = page[0]["id"] if cursor else page[-1]["id"]
+
+            if cursor:
+                ordered = [e for page in pages for e in reversed(page)]
+                newest_id = pages[-1][0]["id"] if pages else cursor
+            else:
+                ordered = [e for page in reversed(pages) for e in reversed(page)]
+                newest_id = pages[0][0]["id"] if pages else None
+
+            events = [
+                {"id": e["id"], "type": e.get("type"), "created": e.get("created"), "data": e.get("data")}
+                for e in ordered
+            ]
+            return AdapterResponse(
+                request_id=request.id,
+                capability=request.capability,
+                status="success",
+                data={"events": events, "newest_id": newest_id, **({"truncated": True} if truncated else {})},
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
+                cost=0.0
+            )
+
+        except Exception as e:
+            response = getattr(e, "response", None)
+            status = getattr(response, "status_code", None)
+            stripe_code = None
+            try:
+                stripe_code = ((response.json() or {}).get("error") or {}).get("code") if response is not None else None
+            except Exception:
+                stripe_code = None
+            if status and status != 429 and status < 500 and stripe_code:
+                error_code = str(stripe_code)
+            else:
+                error_code = f"HTTP_{status}" if status else None
+            return AdapterResponse(
+                request_id=request.id,
+                capability=request.capability,
+                status="error",
+                error=str(e),
+                error_code=error_code,
+                duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000
+            )
+
     async def _handle_create_payment_method(self, request: AdapterRequest) -> AdapterResponse:
         """Handle payment method creation."""
         start_time = datetime.utcnow()
