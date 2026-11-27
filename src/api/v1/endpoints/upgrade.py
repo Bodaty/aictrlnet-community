@@ -2,7 +2,7 @@
 
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 try:
@@ -24,8 +24,6 @@ from schemas.upgrade import (
     TrialRequest,
     TrialResponse,
     UsageSummaryResponse,
-    SubscriptionRequest,
-    SubscriptionResponse,
     LimitOverrideRequest,
     LimitOverrideResponse
 )
@@ -33,6 +31,8 @@ from schemas.upgrade import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+TRIALABLE_EDITIONS = (Edition.BUSINESS_STARTER, Edition.BUSINESS_GROWTH, Edition.BUSINESS_SCALE)
 
 
 @router.get("/options", response_model=UpgradeOptionsResponse)
@@ -210,21 +210,23 @@ async def start_feature_trial(
                 detail=f"Unknown edition '{request.target_edition}'",
             )
 
-        # No trials for community edition
-        if target_edition == Edition.COMMUNITY:
+        # Feature trials cover the self-serve Business tiers only. Enterprise
+        # is contact-sales, and Community is free.
+        if target_edition not in TRIALABLE_EDITIONS:
             raise HTTPException(
                 status_code=400,
-                detail="Trial not available for Community edition"
+                detail=f"Trial not available for the {target_edition.value} edition"
             )
 
-        # Check if trial already exists for this edition
+        # One feature trial per tenant across all Business tiers, so trying
+        # Starter, then Growth, then Scale cannot chain free periods.
         result = await db.execute(
             select(FeatureTrial).where(
                 and_(
                     FeatureTrial.tenant_id == tenant_id,
-                    FeatureTrial.edition_required == target_edition.value
+                    FeatureTrial.edition_required.in_([e.value for e in TRIALABLE_EDITIONS])
                 )
-            )
+            ).order_by(FeatureTrial.started_at.desc()).limit(1)
         )
         existing_trial = result.scalar_one_or_none()
 
@@ -244,15 +246,18 @@ async def start_feature_trial(
         if existing_trial:
             raise HTTPException(
                 status_code=400,
-                detail="Trial for this edition has already been used and expired"
+                detail="Your Business trial has already been used"
             )
+
+        # The trial length is the server's, never the client's.
+        trial_days = get_settings().TRIAL_DAYS
 
         # Create trial
         trial = FeatureTrial(
             tenant_id=tenant_id,
             feature_name=f"{request.target_edition}_trial",
             edition_required=request.target_edition,
-            expires_at=datetime.utcnow() + timedelta(days=request.trial_days or get_settings().TRIAL_DAYS)
+            expires_at=datetime.utcnow() + timedelta(days=trial_days)
         )
         db.add(trial)
 
@@ -260,7 +265,7 @@ async def start_feature_trial(
         prompt = UpgradePrompt(
             tenant_id=tenant_id,
             prompt_type="trial_started",
-            prompt_message=f"Started {request.target_edition} trial for {request.trial_days or get_settings().TRIAL_DAYS} days",
+            prompt_message=f"Started {request.target_edition} trial for {trial_days} days",
             target_edition=request.target_edition
         )
         db.add(prompt)
@@ -293,198 +298,6 @@ async def start_feature_trial(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to start trial: {str(e)}"
-        )
-
-
-@router.post("/subscribe", response_model=SubscriptionResponse)
-async def create_subscription(
-    request: SubscriptionRequest,
-    background_tasks: BackgroundTasks,
-    current_user: Dict[str, Any] = Depends(get_current_user_safe),
-    db: AsyncSession = Depends(get_db)
-):
-    """Create a new subscription or upgrade existing one."""
-    
-    from models.subscription import Subscription as SubModel, SubscriptionStatus as SubStatus, SubscriptionPlan as SubPlan
-
-    tenant_id = current_user.get("tenant_id") or get_current_tenant_id()
-    user_id = current_user.get("sub") or current_user.get("id")
-
-    # Look up existing subscription from database
-    existing_sub_result = await db.execute(
-        select(SubModel).where(
-            SubModel.user_id == user_id,
-            SubModel.status.in_([SubStatus.ACTIVE, SubStatus.TRIALING, SubStatus.PAST_DUE]),
-        ).limit(1)
-    )
-    existing_sub = existing_sub_result.scalar_one_or_none()
-
-    # Resolve plan_id from DB instead of using raw edition string
-    plan_lookup = await db.execute(
-        select(SubPlan).where(SubPlan.name.ilike(f"%{request.target_edition}%")).limit(1)
-    )
-    plan_record = plan_lookup.scalar_one_or_none()
-    resolved_plan_id = plan_record.id if plan_record else request.target_edition
-
-    tenant_info = {
-        "id": tenant_id,
-        "stripe_customer_id": existing_sub.stripe_customer_id if existing_sub else None,
-        "stripe_subscription_id": existing_sub.stripe_subscription_id if existing_sub else None,
-        "billing_email": current_user.get("email"),
-        "edition": Edition.COMMUNITY.value,
-        "trial_ends_at": None
-    }
-
-    # Initialize Stripe if not already done
-    if stripe is None:
-        raise HTTPException(status_code=503, detail="Payment processing not available")
-    settings = get_settings()
-    if settings.STRIPE_SECRET_KEY:
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-    else:
-        raise HTTPException(
-            status_code=503,
-            detail="Payment processing not configured"
-        )
-    
-    try:
-        # Create or update Stripe customer
-        if tenant_info["stripe_customer_id"]:
-            customer = stripe.Customer.retrieve(tenant_info["stripe_customer_id"])
-            # Update payment method if provided
-            if request.payment_method_id:
-                stripe.PaymentMethod.attach(
-                    request.payment_method_id,
-                    customer=tenant_info["stripe_customer_id"]
-                )
-                stripe.Customer.modify(
-                    tenant_info["stripe_customer_id"],
-                    invoice_settings={
-                        "default_payment_method": request.payment_method_id
-                    }
-                )
-        else:
-            # Create new customer
-            customer = stripe.Customer.create(
-                email=request.billing_email or tenant_info["billing_email"],
-                metadata={"tenant_id": str(tenant_id)}
-            )
-            tenant_info["stripe_customer_id"] = customer.id
-            if request.billing_email:
-                tenant_info["billing_email"] = request.billing_email
-        
-        # Get price ID for the edition
-        price_id = _get_stripe_price_id(request.target_edition, request.billing_period)
-        
-        if not price_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"No pricing available for {request.target_edition}"
-            )
-        
-        # Create or update subscription
-        if tenant_info["stripe_subscription_id"]:
-            # Update existing subscription
-            subscription = stripe.Subscription.retrieve(tenant_info["stripe_subscription_id"])
-            
-            # Update the subscription
-            updated_subscription = stripe.Subscription.modify(
-                tenant_info["stripe_subscription_id"],
-                items=[{
-                    "id": subscription["items"]["data"][0].id,
-                    "price": price_id
-                }],
-                proration_behavior="always_invoice"
-            )
-            
-            subscription = updated_subscription
-        else:
-            # Create new subscription
-            subscription = stripe.Subscription.create(
-                customer=customer.id,
-                items=[{"price": price_id}],
-                trial_period_days=get_settings().TRIAL_DAYS if request.start_trial else 0,
-                metadata={"tenant_id": str(tenant_id)}
-            )
-            tenant_info["stripe_subscription_id"] = subscription.id
-        
-        # Update tenant edition
-        old_edition = tenant_info["edition"]
-        tenant_info["edition"] = request.target_edition
-
-        if request.start_trial:
-            tenant_info["trial_ends_at"] = datetime.utcnow() + timedelta(days=get_settings().TRIAL_DAYS)
-
-        # Persist Stripe IDs to the subscription record in database
-        if existing_sub:
-            existing_sub.stripe_customer_id = tenant_info["stripe_customer_id"]
-            existing_sub.stripe_subscription_id = tenant_info["stripe_subscription_id"]
-            existing_sub.plan_id = resolved_plan_id
-            existing_sub.status = SubStatus.TRIALING if request.start_trial else SubStatus.ACTIVE
-        else:
-            import uuid as _uuid
-            from models.subscription import BillingPeriod as _BillingPeriod
-            new_sub = SubModel(
-                id=str(_uuid.uuid4()),
-                user_id=user_id,
-                tenant_id=tenant_id,
-                plan_id=resolved_plan_id,
-                status=SubStatus.TRIALING if request.start_trial else SubStatus.ACTIVE,
-                billing_period=_BillingPeriod(request.billing_period) if request.billing_period in ("monthly", "annual", "quarterly") else _BillingPeriod.MONTHLY,
-                started_at=datetime.utcnow(),
-                current_period_start=datetime.fromtimestamp(subscription.current_period_start),
-                current_period_end=datetime.fromtimestamp(subscription.current_period_end),
-                trial_end=datetime.fromtimestamp(subscription.trial_end) if getattr(subscription, 'trial_end', None) else None,
-                stripe_customer_id=tenant_info["stripe_customer_id"],
-                stripe_subscription_id=tenant_info["stripe_subscription_id"],
-            )
-            db.add(new_sub)
-
-        # Create billing event
-        billing_event = BillingEvent(
-            tenant_id=tenant_id,
-            event_type="subscription_created" if not existing_sub else "upgraded",
-            stripe_event_id=subscription.id,
-            status="completed",
-            event_data={
-                "previous_edition": old_edition,
-                "new_edition": request.target_edition,
-                "price_id": price_id,
-                "billing_period": request.billing_period
-            }
-        )
-        db.add(billing_event)
-        
-        await db.commit()
-        
-        # Clear caches
-        enforcer = LicenseEnforcer(db)
-        cache_key = f"tenant_info:{tenant_id}"
-        await enforcer.cache.delete(cache_key)
-        
-        # Send confirmation email in background
-        background_tasks.add_task(
-            _send_subscription_email,
-            tenant_info["billing_email"],
-            request.target_edition,
-            subscription
-        )
-        
-        return SubscriptionResponse(
-            subscription_id=subscription.id,
-            edition=request.target_edition,
-            status=subscription.status,
-            current_period_start=datetime.fromtimestamp(subscription.current_period_start),
-            current_period_end=datetime.fromtimestamp(subscription.current_period_end),
-            trial_end=datetime.fromtimestamp(subscription.trial_end) if subscription.trial_end else None,
-            cancel_at_period_end=subscription.cancel_at_period_end
-        )
-        
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error: {e}")
-        raise HTTPException(
-            status_code=400,
-            detail=f"Payment processing error: {str(e)}"
         )
 
 
@@ -679,47 +492,3 @@ def _metric_to_limit_type(metric_type: str) -> Optional[LimitType]:
     }
     
     return mapping.get(metric_type)
-
-
-def _get_stripe_price_id(edition: str, billing_period: str) -> Optional[str]:
-    """Get Stripe price ID for edition and billing period from config."""
-
-    settings = get_settings()
-
-    # Map edition names to config price IDs. Seed names are
-    # business_starter / business_growth / business_scale / enterprise.
-    # Note: Community is free, so no price ID needed.
-    if billing_period == "annual":
-        price_mapping = {
-            "business_starter": settings.STRIPE_PRICE_BUSINESS_STARTER_ANNUAL,
-            "business_growth": settings.STRIPE_PRICE_BUSINESS_GROWTH_ANNUAL,
-            "business_scale": settings.STRIPE_PRICE_BUSINESS_SCALE_ANNUAL,
-            "enterprise": settings.STRIPE_PRICE_ENTERPRISE_ANNUAL,
-        }
-    else:
-        price_mapping = {
-            "business_starter": settings.STRIPE_PRICE_BUSINESS_STARTER,
-            "business_growth": settings.STRIPE_PRICE_BUSINESS_GROWTH,
-            "business_scale": settings.STRIPE_PRICE_BUSINESS_SCALE,
-            "enterprise": settings.STRIPE_PRICE_ENTERPRISE,
-        }
-
-    price_id = price_mapping.get(edition)
-
-    # Return None if price ID is empty or not configured
-    if not price_id or price_id == "":
-        return None
-
-    return price_id
-
-
-async def _send_subscription_email(
-    email: str,
-    edition: str,
-    subscription: Any
-):
-    """Send subscription confirmation email."""
-    
-    # This would integrate with email service
-    logger.info(f"Sending subscription email to {email} for {edition}")
-    # Implementation would go here

@@ -41,6 +41,27 @@ PLAN_PRICE_MAP_ANNUAL = {
 }
 
 
+# Plans a customer can buy by card. Enterprise, On-Premise and Government are
+# contact-sales (pricing doc, "Current pricing").
+SELF_SERVE_PLANS = ("business_starter", "business_growth", "business_scale")
+
+BILLABLE_STATUSES = (
+    SubscriptionStatus.ACTIVE,
+    SubscriptionStatus.TRIALING,
+    SubscriptionStatus.PAST_DUE,
+)
+
+
+_NOT_SELF_SERVE = (
+    "Plan '{plan}' is not sold by card checkout. Business Starter, Growth and Scale "
+    "are; Enterprise, On-Premise and Government are contact-sales."
+)
+
+
+class CheckoutRequiredError(ValueError):
+    """The user has no Stripe subscription to change; they must check out first."""
+
+
 class StripeService:
     """Service for handling Stripe payment operations.
 
@@ -88,6 +109,152 @@ class StripeService:
                 f"Set {env_var} in your environment variables."
             )
         return price_id
+
+    def _plan_for_price_id(self, price_id: Optional[str]) -> Optional[str]:
+        """Reverse-map a configured Stripe Price ID to its plan name."""
+        if not price_id:
+            return None
+        for mapping in (PLAN_PRICE_MAP, PLAN_PRICE_MAP_ANNUAL):
+            for plan, env_var in mapping.items():
+                if getattr(self.settings, env_var, "") == price_id:
+                    return plan
+        return None
+
+    @staticmethod
+    def _item_price_id(item: Dict[str, Any]) -> Optional[str]:
+        """Price ID of a subscription item; payloads carry `price` and/or the legacy `plan`."""
+        for key in ("price", "plan"):
+            value = item.get(key)
+            if isinstance(value, dict) and value.get("id"):
+                return value["id"]
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    async def _get_user_subscription(self, user_id: str) -> Optional[Subscription]:
+        result = await self.db.execute(
+            select(Subscription)
+            .where(Subscription.user_id == user_id)
+            .order_by(Subscription.started_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _has_live_stripe_subscription(subscription: Optional[Subscription]) -> bool:
+        return bool(
+            subscription
+            and subscription.stripe_subscription_id
+            and subscription.status in BILLABLE_STATUSES
+        )
+
+    async def create_plan_checkout(
+        self,
+        user_id: str,
+        plan: str,
+        billing_period: str = "monthly",
+    ) -> Dict[str, Any]:
+        """The one self-serve purchase path: a Stripe Checkout Session.
+
+        Only Business tiers are sold by card; Enterprise is contact-sales.
+        A user who already pays through Stripe changes plan with
+        change_plan() instead, so checkout never opens a second subscription.
+        Any remaining in-app trial days carry over to the Stripe trial, with
+        card entry required.
+        """
+        if plan not in SELF_SERVE_PLANS:
+            raise ValueError(_NOT_SELF_SERVE.format(plan=plan))
+
+        existing = await self._get_user_subscription(user_id)
+        if self._has_live_stripe_subscription(existing):
+            raise ValueError(
+                "You already have a paid subscription. Change your plan from the billing page "
+                "instead of starting a new checkout."
+            )
+
+        trial_days = 0
+        if (
+            existing
+            and existing.status == SubscriptionStatus.TRIALING
+            and not existing.stripe_subscription_id
+            and existing.trial_end
+        ):
+            remaining_seconds = (existing.trial_end - datetime.utcnow()).total_seconds()
+            if remaining_seconds > 0:
+                trial_days = max(int(remaining_seconds // 86400) + 1, 1)
+
+        return await self.create_checkout_session(
+            user_id=user_id,
+            plan=plan,
+            billing_period=billing_period,
+            trial_days=trial_days,
+            collect_payment_method=trial_days > 0,
+        )
+
+    async def change_plan(
+        self,
+        user_id: str,
+        plan: str,
+        billing_period: str = "monthly",
+    ) -> Dict[str, Any]:
+        """Ask Stripe to move an existing paid subscription to another Business tier.
+
+        The prorated difference is invoiced at once, and with
+        payment_behavior=pending_if_incomplete Stripe applies the new price
+        only once that invoice is paid. The local plan_id is NOT written here:
+        the customer.subscription.updated webhook writes it from the price
+        Stripe actually applied.
+        """
+        if plan not in SELF_SERVE_PLANS:
+            raise ValueError(_NOT_SELF_SERVE.format(plan=plan))
+
+        subscription = await self._get_user_subscription(user_id)
+        if not self._has_live_stripe_subscription(subscription):
+            raise CheckoutRequiredError(
+                "No paid subscription to change. Choose a plan and complete checkout first."
+            )
+
+        price_id = self._get_price_id(plan, billing_period)
+        stripe = self._get_stripe()
+        stripe_sub = stripe.Subscription.retrieve(subscription.stripe_subscription_id)
+        items = (stripe_sub.get("items") or {}).get("data") or []
+        if not items:
+            raise ValueError("The Stripe subscription has no items to change.")
+        if self._item_price_id(items[0]) == price_id:
+            raise ValueError("You are already on that plan and billing period.")
+
+        updated = stripe.Subscription.modify(
+            subscription.stripe_subscription_id,
+            items=[{"id": items[0]["id"], "price": price_id}],
+            proration_behavior="always_invoice",
+            payment_behavior="pending_if_incomplete",
+        )
+        pending = bool(updated.get("pending_update"))
+        logger.info(
+            f"Requested Stripe plan change: user={user_id}, plan={plan}, "
+            f"billing_period={billing_period}, pending_payment={pending}"
+        )
+        return {
+            "status": "pending_payment" if pending else "submitted",
+            "plan": plan,
+            "billing_period": billing_period,
+        }
+
+    async def resume_subscription(self, user_id: str) -> Dict[str, Any]:
+        """Undo a scheduled cancellation in Stripe."""
+        subscription = await self._get_user_subscription(user_id)
+        if not self._has_live_stripe_subscription(subscription):
+            raise ValueError("No paid subscription to resume")
+
+        stripe = self._get_stripe()
+        stripe.Subscription.modify(
+            subscription.stripe_subscription_id,
+            cancel_at_period_end=False,
+        )
+        subscription.cancel_at_period_end = False
+        subscription.canceled_at = None
+        await self.db.commit()
+        return {"success": True, "message": "Subscription resumed"}
 
     async def create_checkout_session(
         self,
@@ -475,6 +642,31 @@ class StripeService:
         current_period_start = subscription_data.get("current_period_start")
         if current_period_start:
             subscription.current_period_start = datetime.fromtimestamp(current_period_start)
+
+        if "cancel_at_period_end" in subscription_data:
+            subscription.cancel_at_period_end = bool(subscription_data.get("cancel_at_period_end"))
+
+        # A plan change made in Stripe (change_plan, Customer Portal, Dashboard)
+        # lands here. The applied price is the only source of the paid plan_id;
+        # a change still waiting on payment sits in `pending_update` and the
+        # items keep the old price until it is paid.
+        items = (subscription_data.get("items") or {}).get("data") or []
+        applied_plan = self._plan_for_price_id(self._item_price_id(items[0])) if items else None
+        if applied_plan:
+            plan_row = (await self.db.execute(
+                select(SubscriptionPlan).where(SubscriptionPlan.name == applied_plan)
+            )).scalar_one_or_none()
+            if plan_row and plan_row.id != subscription.plan_id:
+                logger.info(
+                    f"Stripe applied plan {applied_plan} to {stripe_subscription_id} "
+                    f"(was plan_id={subscription.plan_id})"
+                )
+                subscription.plan_id = plan_row.id
+        elif items:
+            logger.warning(
+                f"Subscription {stripe_subscription_id} price {self._item_price_id(items[0])} "
+                "matches no configured STRIPE_PRICE_*; plan_id left unchanged"
+            )
 
         # Handle status-based access changes
         user = await self.db.get(User, subscription.user_id)

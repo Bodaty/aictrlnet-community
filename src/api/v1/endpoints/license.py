@@ -142,60 +142,43 @@ async def upgrade_license(
         )
 
     if not settings.STRIPE_SECRET_KEY or settings.STRIPE_SECRET_KEY == "sk_test_dummy":
-        # Stripe not configured. In production this is a misconfiguration we must
-        # NOT hide behind a fake checkout (customers would hit /mock-checkout) —
-        # fail loud so it gets caught. Mock is allowed only in non-production.
-        import os
-        if os.getenv("ENVIRONMENT", "").lower() == "production":
-            raise HTTPException(
-                status_code=503,
-                detail="Billing is not configured (STRIPE_SECRET_KEY missing). "
-                       "Refusing to return a mock checkout in production.",
-            )
-        # Dev / non-production: return a mock checkout so local testing works.
-        return LicenseUpgradeResponse(
-            subscription={
-                "id": "sub_upgraded",
-                "plan": request.target_plan,
-                "status": "pending_payment",
-                "current_period_start": datetime.utcnow().isoformat(),
-                "current_period_end": (datetime.utcnow() + timedelta(days=30)).isoformat(),
-                "features": {}
-            },
-            payment_intent=None,
-            requires_payment=True,
-            checkout_url="/mock-checkout"  # Mock checkout URL
+        raise HTTPException(
+            status_code=503,
+            detail="Billing is not configured (STRIPE_SECRET_KEY missing).",
         )
 
-    # Use real Stripe integration
+    # Same single purchase path as /subscription/checkout/session: Business
+    # tiers only, no second subscription, remaining trial days carried over.
+    # The plan itself is written only by the Stripe webhook.
     stripe_service = StripeService(db)
-
     try:
-        checkout_data = await stripe_service.create_checkout_session(
+        checkout_data = await stripe_service.create_plan_checkout(
             user_id=current_user.get("sub"),
-            plan=request.target_plan,
-            billing_period=request.billing_period
+            plan=request.target_plan.lower(),
+            billing_period=request.billing_period,
         )
-
-        return LicenseUpgradeResponse(
-            subscription={
-                "id": checkout_data.get("session_id"),
-                "plan": request.target_plan,
-                "status": "pending_payment",
-                "current_period_start": datetime.utcnow().isoformat(),
-                "current_period_end": (datetime.utcnow() + timedelta(days=30)).isoformat(),
-                "features": {}
-            },
-            payment_intent=checkout_data.get("session_id"),
-            requires_payment=True,
-            checkout_url=checkout_data.get("checkout_url")
-        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error creating Stripe checkout session: {e}")
         raise HTTPException(
             status_code=500,
             detail="Failed to create checkout session"
         )
+
+    return LicenseUpgradeResponse(
+        subscription={
+            "id": checkout_data.get("session_id"),
+            "plan": request.target_plan,
+            "status": "pending_payment",
+            "current_period_start": datetime.utcnow().isoformat(),
+            "current_period_end": (datetime.utcnow() + timedelta(days=30)).isoformat(),
+            "features": {}
+        },
+        payment_intent=checkout_data.get("session_id"),
+        requires_payment=True,
+        checkout_url=checkout_data.get("checkout_url")
+    )
 
 
 @router.post("/webhook/stripe")

@@ -28,7 +28,7 @@ from schemas.billing import (
     RedeemTrialCodeRequest,
     RedeemTrialCodeResponse,
 )
-from services.stripe_service import StripeService
+from services.stripe_service import StripeService, SELF_SERVE_PLANS
 from services.trial_code_service import redeem_trial_code, TrialCodeError
 from core.config import get_settings
 
@@ -105,7 +105,7 @@ async def start_trial(
         request = StartTrialRequest()
 
     # Only business plans are eligible for trial
-    if not request.plan.startswith("business"):
+    if request.plan not in SELF_SERVE_PLANS:
         raise HTTPException(
             status_code=400,
             detail="Free trials are only available for Business plans"
@@ -113,18 +113,35 @@ async def start_trial(
 
     stripe_service = StripeService(db)
 
+    # One free trial per user. Each call opens a new card-less Stripe trial,
+    # so without this a user whose trial ended could start another, forever.
+    # Allowed only when the user has no subscription yet, or is still inside
+    # the in-app trial that signup created.
+    now = datetime.utcnow()
+    history = (await db.execute(
+        select(Subscription).where(Subscription.user_id == user_id)
+    )).scalars().all()
+    trial_used = any(
+        sub.stripe_subscription_id
+        or sub.status != SubscriptionStatus.TRIALING
+        or (sub.trial_end is not None and sub.trial_end <= now)
+        for sub in history
+    )
+    if trial_used:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "trial_already_used",
+                "message": "Your free trial has already been used. Choose a plan to continue.",
+                "redirect": "/pricing",
+            },
+        )
+
     # Honor an existing in-app trial that is longer than the default
     # (e.g. redeemed trial codes) so starting Stripe checkout never
     # shortens a promised trial period.
     trial_days = get_settings().TRIAL_DAYS
-    trial_result = await db.execute(
-        select(Subscription).where(
-            Subscription.user_id == user_id,
-            Subscription.status == SubscriptionStatus.TRIALING,
-            Subscription.stripe_subscription_id.is_(None),
-        )
-    )
-    in_app_trial = trial_result.scalars().first()
+    in_app_trial = history[0] if history else None
     if in_app_trial and in_app_trial.trial_end:
         remaining_seconds = (in_app_trial.trial_end - datetime.utcnow()).total_seconds()
         if remaining_seconds > 0:
