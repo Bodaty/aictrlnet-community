@@ -32,12 +32,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SECRET_KEY", "JWT_SECRET_KEY", "JWT_SECRET"),
     )
     # SECURITY: keep this symmetric (HS256) and keep algorithms=[...] pinned at
-    # every jwt.decode() call site. python-jose <= 3.5.0 carries an UNPATCHED
-    # critical algorithm-confusion bug (CVE-2026-85394, no fixed release) that
-    # lets an attacker holding the service PUBLIC key forge HS256 tokens when
-    # algorithms are not restricted. HS256 + a secret signing key means there is
-    # no public key to hold, so we are not exposed. Switching to RS256/ES256, or
-    # dropping the algorithms= pin, makes that bug exploitable. Reviewed 2026-11-21.
+    # every jwt.decode() call site. Tokens are signed and verified with PyJWT;
+    # python-jose was removed because it carries an unpatched algorithm-confusion
+    # bug (CVE-2026-85394, no fixed release). Never decode with an algorithm
+    # list taken from the token header.
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     

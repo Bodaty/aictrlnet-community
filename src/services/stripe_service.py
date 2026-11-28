@@ -41,9 +41,8 @@ PLAN_PRICE_MAP_ANNUAL = {
 }
 
 
-# Plans a customer can buy by card. Enterprise, On-Premise and Government are
-# contact-sales (pricing doc, "Current pricing").
-SELF_SERVE_PLANS = ("business_starter", "business_growth", "business_scale")
+# Plans a customer can buy by card (core/plan_catalog.py).
+from core.plan_catalog import SELF_SERVE_PLANS  # noqa: E402
 
 BILLABLE_STATUSES = (
     SubscriptionStatus.ACTIVE,
@@ -366,8 +365,34 @@ class StripeService:
         handler = handlers.get(event_type)
         if handler:
             await handler(event_data)
+            await self._stamp_last_event(event_type, event_data)
         else:
             logger.debug(f"Unhandled webhook event type: {event_type}")
+
+    async def _stamp_last_event(self, event_type: str, event_data: Dict[str, Any]) -> None:
+        """Record the last Stripe event processed for a subscription.
+
+        The admin billing view shows it, so "did Stripe tell us?" has an answer
+        without opening the Stripe Dashboard. Never fails the webhook.
+        """
+        try:
+            stripe_subscription_id = (
+                event_data.get("id") if event_type.startswith("customer.subscription.")
+                else event_data.get("subscription")
+            )
+            if not stripe_subscription_id:
+                return
+            subscription = (await self.db.execute(
+                select(Subscription).where(Subscription.stripe_subscription_id == stripe_subscription_id)
+            )).scalars().first()
+            if not subscription:
+                return
+            meta = dict(subscription.meta_data or {})
+            meta["last_stripe_event"] = {"type": event_type, "at": datetime.utcnow().isoformat()}
+            subscription.meta_data = meta
+            await self.db.commit()
+        except Exception as exc:
+            logger.warning(f"Could not record the last Stripe event ({event_type}): {exc}")
 
     async def _handle_checkout_completed(self, session_data: Dict[str, Any]) -> None:
         """Handle successful checkout completion.

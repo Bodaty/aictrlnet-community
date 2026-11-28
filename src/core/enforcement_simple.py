@@ -628,17 +628,6 @@ class LicenseEnforcer:
         if current_edition == "community":
             upgrade_options = [
                 {
-                    "edition": "team",
-                    "price": "$149/month",
-                    "highlights": [
-                        "30 workflows",
-                        "10 adapters",
-                        "3 users",
-                        "Team collaboration",
-                        "Shared workspaces"
-                    ]
-                },
-                {
                     "edition": "business_starter",
                     "price": "$599/month",
                     "highlights": [

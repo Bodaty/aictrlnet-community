@@ -28,7 +28,7 @@ import os
 from typing import Callable, Optional, Tuple
 
 from fastapi import Request, Response
-from jose import JWTError, jwt
+import jwt
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.config import get_settings
@@ -173,7 +173,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
             if tenant_claim:
                 return tenant_claim
             return DEFAULT_TENANT_ID
-        except JWTError as e:
+        except jwt.PyJWTError as e:
             logger.debug("Not a JWT (%s) — trying OAuth2 path", e)
 
         # Fall through to OAuth2 opaque token verification

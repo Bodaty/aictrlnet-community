@@ -11,6 +11,7 @@ Example: "INSTITUTE90:90:40:2026-10-31,LIVE30:30:100"
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, date
+from core.trial_days import trial_days_left
 from typing import Dict, Optional
 import logging
 import uuid
@@ -189,7 +190,7 @@ async def redeem_trial_code(db: AsyncSession, user_id: str, raw_code: str) -> di
 
     await db.commit()
 
-    days_remaining = max(0, (trial_end - now).days)
+    days_remaining = trial_days_left(trial_end, now)
     logger.info(f"Trial code {code} redeemed by user {user_id}: trial_end={trial_end.isoformat()}")
     return {
         "code": code,

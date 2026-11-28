@@ -51,7 +51,7 @@ setup(
         "aiofiles>=23.0.0",
         "websockets>=12.0",
         # Auth/Security
-        "python-jose[cryptography]>=3.3.0",
+        "PyJWT[crypto]>=2.15.1",
         "passlib[bcrypt]>=1.7.4",
         "bcrypt>=4.1.0",
         "cryptography>=41.0.0",

@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-from jose import JWTError, jwt
+import jwt
 from fastapi import HTTPException, status, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -80,7 +80,7 @@ class ComponentAuth:
             
             return payload
             
-        except JWTError as e:
+        except jwt.PyJWTError as e:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Invalid token: {str(e)}"

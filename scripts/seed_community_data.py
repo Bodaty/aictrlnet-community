@@ -552,7 +552,7 @@ async def seed_subscription_plans(session):
             },
             "stripe_price_id_monthly": "price_community_cloud_monthly",  # Will be set when Stripe configured
             "stripe_price_id_annual": "price_community_cloud_annual",
-            "is_active": True
+            "is_active": False  # not sold (core/plan_catalog.py)
         }
     ]
     

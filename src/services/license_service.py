@@ -3,6 +3,7 @@
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
+from core.trial_days import trial_days_left
 from sqlalchemy import select, func, and_, or_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
@@ -88,8 +89,7 @@ class LicenseService:
             # Calculate trial days remaining if in trial
             trial_days_remaining = None
             if subscription.trial_end:
-                remaining = subscription.trial_end - datetime.utcnow()
-                trial_days_remaining = max(0, remaining.days)
+                trial_days_remaining = trial_days_left(subscription.trial_end)
             
             return {
                 "subscription_id": subscription.id,

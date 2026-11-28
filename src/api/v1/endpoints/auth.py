@@ -1,6 +1,7 @@
 """Authentication endpoints."""
 
 from datetime import datetime, timedelta
+from core.trial_days import trial_days_left
 from typing import Optional, Dict, Tuple
 from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -207,14 +208,44 @@ async def register(
             )
             db.add(trial_subscription)
         else:
-            logger.warning("Could not create trial subscription — business_starter plan not seeded")
+            # A Community-only install has no Business plans, so this is not an
+            # error per request; Business startup reports a missing plan loudly
+            # (lifespan_helpers._check_signup_trial_plan).
+            logger.warning(
+                "Signup created user %s without a trial: the business_starter plan is not seeded",
+                user_id,
+            )
     except Exception:
-        logger.warning("Could not create trial subscription — plan lookup failed")
+        logger.warning("Signup created user %s without a trial: the plan lookup failed", user_id, exc_info=True)
 
     await db.commit()
     await db.refresh(user)
 
+    await _publish_account_email(
+        "auth.email_verification_requested",
+        user,
+        f"{settings.FRONTEND_URL.rstrip('/')}/verify-email/{verification_token}",
+    )
+
     return user
+
+
+async def _publish_account_email(event_name: str, user: "User", link: str) -> None:
+    """Ask the account-email handler (Business: SendGrid) to send a link.
+
+    The event bus is in-process and nothing persists or logs its payloads,
+    so the one-time link does not leave this process except in the email.
+    """
+    try:
+        from events.event_bus import event_bus
+        await event_bus.publish(event_name, {
+            "user_id": str(user.id),
+            "email": user.email,
+            "full_name": getattr(user, "full_name", None),
+            "link": link,
+        })
+    except Exception as exc:
+        logger.error(f"Could not queue {event_name} for user {user.id}: {exc}")
 
 
 _DUMMY_PASSWORD_HASH: Optional[str] = None
@@ -459,7 +490,7 @@ async def read_users_me(
     if trial_sub and trial_sub.trial_end:
         now = datetime.utcnow()
         trial_active = trial_sub.status == SubscriptionStatus.TRIALING and trial_sub.trial_end > now
-        trial_days = max(0, (trial_sub.trial_end - now).days) if trial_active else 0
+        trial_days = trial_days_left(trial_sub.trial_end, now) if trial_active else 0
         trial_end_str = trial_sub.trial_end.isoformat()
 
     # Check for edition/subscription mismatch
@@ -521,7 +552,7 @@ async def logout(
     # Best-effort per-token denylist if the refresh token was supplied.
     if body and body.refresh_token:
         try:
-            from jose import jwt as _jwt
+            import jwt as _jwt
             from core.token_revocation import revoke_refresh_jti
             settings = get_settings()
             payload = _jwt.decode(
@@ -579,13 +610,16 @@ async def request_password_reset(
             expires_delta=timedelta(hours=1)
         )
         
-        # In production, send email with reset link
-        logger.debug(f"Password reset token generated for {user.email}")
-        
         # Store token in database for validation
         user.password_reset_token = reset_token
         user.password_reset_expires = datetime.utcnow() + timedelta(hours=1)
         await db.commit()
+
+        await _publish_account_email(
+            "auth.password_reset_requested",
+            user,
+            f"{get_settings().FRONTEND_URL.rstrip('/')}/password-reset?token={reset_token}",
+        )
     
     return {"message": "If the email exists, a password reset link has been sent"}
 
@@ -597,7 +631,7 @@ async def confirm_password_reset(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Confirm password reset with token."""
-    from jose import jwt, JWTError
+    import jwt
 
     # Throttle token-guessing per IP.
     await enforce_rate_limit("pwreset_confirm_ip", client_ip(request), limit=20, window_seconds=3600)
@@ -614,7 +648,7 @@ async def confirm_password_reset(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid reset token"
             )
-    except JWTError:
+    except jwt.PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired reset token"
@@ -687,7 +721,7 @@ async def verify_email(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Verify email with token."""
-    from jose import jwt, JWTError
+    import jwt
     
     try:
         # Decode token
@@ -701,7 +735,7 @@ async def verify_email(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid verification token"
             )
-    except JWTError:
+    except jwt.PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired verification token"
@@ -743,6 +777,8 @@ async def resend_verification_email(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already verified"
         )
+    # Each call sends an email: cap it like the password-reset request.
+    await enforce_rate_limit("verify_resend_user", str(current_user.id), limit=5, window_seconds=3600)
     
     # Generate new verification token
     verification_token = create_access_token(
@@ -752,9 +788,12 @@ async def resend_verification_email(
     
     current_user.email_verification_token = verification_token
     await db.commit()
-    
-    # In production, send email with verification link
-    logger.debug(f"Email verification token generated for {current_user.email}")
+
+    await _publish_account_email(
+        "auth.email_verification_requested",
+        current_user,
+        f"{get_settings().FRONTEND_URL.rstrip('/')}/verify-email/{verification_token}",
+    )
     
     return {"message": "Verification email sent"}
 
@@ -771,7 +810,7 @@ async def refresh_access_token(
     db: AsyncSession = Depends(get_db),
 ) -> Token:
     """Refresh access token using refresh token."""
-    from jose import jwt, JWTError
+    import jwt
 
     # Throttle refresh-token guessing/replay per IP.
     await enforce_rate_limit("token_refresh_ip", client_ip(request), limit=60, window_seconds=3600)
@@ -788,7 +827,7 @@ async def refresh_access_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token"
             )
-    except JWTError:
+    except jwt.PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token"

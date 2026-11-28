@@ -1,6 +1,7 @@
 """User-related endpoints."""
 
 from datetime import datetime
+from core.trial_days import trial_days_left
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,7 +102,7 @@ async def get_current_user(
             if trial_sub and trial_sub.trial_end:
                 now = datetime.utcnow()
                 trial_active = trial_sub.status == SubscriptionStatus.TRIALING and trial_sub.trial_end > now
-                trial_days_remaining = max(0, (trial_sub.trial_end - now).days) if trial_active else 0
+                trial_days_remaining = trial_days_left(trial_sub.trial_end, now) if trial_active else 0
                 trial_end_str = trial_sub.trial_end.isoformat()
         except Exception:
             pass
@@ -113,10 +114,12 @@ async def get_current_user(
             "name": current_user.full_name or current_user.username or "Test User",
             "edition": edition,
             "roles": ["admin"] if current_user.is_superuser else ["user"],
+            "is_superuser": bool(current_user.is_superuser),
             "permissions": [],
             "trial_active": trial_active,
             "trial_days_remaining": trial_days_remaining,
             "trial_end": trial_end_str,
+            "email_verified": bool(get_safe_attr(current_user, 'email_verified', False)),
             "metadata": {
                 "last_login": str(get_safe_attr(current_user, 'last_login_at')) if get_safe_attr(current_user, 'last_login_at') else None,
                 "created_at": str(get_safe_attr(current_user, 'created_at')) if get_safe_attr(current_user, 'created_at') else None,

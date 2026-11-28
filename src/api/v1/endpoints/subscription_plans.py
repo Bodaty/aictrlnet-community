@@ -6,6 +6,7 @@ Business edition replaces these with its full SubscriptionService.
 """
 
 from datetime import datetime, timedelta
+from core.trial_days import trial_days_left
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -141,7 +142,7 @@ async def get_current_subscription(
     trial_end = subscription.trial_end
     days_remaining = None
     if is_trial and trial_end:
-        days_remaining = max(0, (trial_end - now).days)
+        days_remaining = trial_days_left(trial_end, now)
 
     # Determine if billing portal is available (requires Stripe customer)
     has_billing = bool(subscription.stripe_customer_id)

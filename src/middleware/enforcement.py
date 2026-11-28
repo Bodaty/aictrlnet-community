@@ -207,11 +207,11 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
             if token == "dev-token-for-testing":
                 return None
 
-            from jose import jwt, JWTError
+            import jwt
             try:
                 payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
                 user_id = payload.get("sub")
-            except JWTError:
+            except jwt.PyJWTError:
                 return None
 
             if not user_id:

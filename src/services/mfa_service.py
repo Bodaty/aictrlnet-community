@@ -44,7 +44,7 @@ class MFAService:
         # Get tenant info to check edition
         tenant_info = await self.license_enforcer._get_tenant_info(user.tenant_id)
         
-        # MFA is available for Community Cloud ($49/month) and above
+        # MFA is available on Business and Enterprise plans
         # In simple enforcement, we only have basic editions
         if tenant_info["edition"] == "community":
             return False  # Free Community edition doesn't have MFA
@@ -62,7 +62,7 @@ class MFAService:
         """Get number of backup codes based on edition."""
         tenant_info = await self.license_enforcer._get_tenant_info(user.tenant_id)
         
-        # Community Cloud gets 8, Business/Enterprise get 12
+        # Community gets 8, Business/Enterprise get 12
         if tenant_info["edition"] == "community":
             return 8
         return 12
@@ -77,7 +77,7 @@ class MFAService:
         # Check edition limits
         user = await self.get_user(user_id)
         if not await self._can_use_mfa(user):
-            raise HTTPException(403, "MFA not available in your edition. Upgrade to Community Cloud or higher.")
+            raise HTTPException(403, "MFA not available in your edition. Upgrade to a Business plan.")
         
         # Check if already enrolled
         if user.mfa_enabled and not await self._supports_multiple_devices(user):

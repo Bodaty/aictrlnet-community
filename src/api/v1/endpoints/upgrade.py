@@ -2,6 +2,7 @@
 
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
+from core.trial_days import trial_days_left
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
@@ -239,7 +240,7 @@ async def start_feature_trial(
                 features=list(enforcer.EDITION_FEATURES.get(Edition(existing_trial.edition_required), set())),
                 started_at=existing_trial.started_at,
                 expires_at=existing_trial.expires_at,
-                days_remaining=(existing_trial.expires_at - datetime.utcnow()).days
+                days_remaining=trial_days_left(existing_trial.expires_at)
             )
 
         # If trial exists but expired, return error
@@ -288,7 +289,7 @@ async def start_feature_trial(
             features=list(enforcer.EDITION_FEATURES.get(Edition(trial.edition_required), set())),
             started_at=trial.started_at,
             expires_at=trial.expires_at,
-            days_remaining=(trial.expires_at - datetime.utcnow()).days
+            days_remaining=trial_days_left(trial.expires_at)
         )
 
     except HTTPException:

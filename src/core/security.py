@@ -6,7 +6,7 @@ import uuid
 
 from datetime import datetime, timedelta
 from typing import Optional, Union, TYPE_CHECKING
-from jose import JWTError, jwt
+import jwt
 from passlib.context import CryptContext
 
 # Silence the passlib 1.7.4 + bcrypt 4.x compatibility warning that fires on
@@ -199,7 +199,7 @@ async def get_current_user(
         token_type = payload.get("type", "access")
         if token_type not in ("access",):
             raise credentials_exception
-    except JWTError:
+    except jwt.PyJWTError:
         # JWT decode failed — try OAuth2 access token (Business+ feature).
         # Pass request so _try_oauth2 can set tenant ContextVar + state.
         oauth2_user = await _try_oauth2_token_auth(token, db, request=request)
@@ -343,7 +343,7 @@ async def verify_token(token: str, db=None) -> Optional[dict]:
             "roles": ["user"],
             "tenant_id": payload.get("tenant_id", DEFAULT_TENANT_ID),
         }
-    except JWTError:
+    except jwt.PyJWTError:
         return None
 
 

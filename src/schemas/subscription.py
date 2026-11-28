@@ -60,6 +60,14 @@ class SubscriptionPlanResponse(BaseModel):
     limits: Dict[str, Any]
     highlights: List[str]
     discount: Optional[str] = None
+    # How the plan is sold (core/plan_catalog.py): free | self_serve | contact_sales.
+    slug: Optional[str] = None
+    sales_model: Optional[str] = None
+    # Shown in place of a price for contact-sales plans ("From $12,000/mo", "Quoted").
+    price_display: Optional[str] = None
+    # Expert hours included a month (card plans), and the add-on rate.
+    expert_hours: Optional[int] = None
+    extra_expert_hour_usd: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
@@ -139,7 +147,7 @@ class ResumeSubscriptionResponse(BaseModel):
 class SubTierPlan(BaseModel):
     """Sub-tier plan within a primary tier."""
     name: str = Field(..., description="Sub-tier name (e.g., 'Starter', 'Growth', 'Scale')")
-    badge: Optional[str] = Field(None, description="Badge label (e.g., 'Most Popular', 'Full Autonomous AI')")
+    badge: Optional[str] = Field(None, description="Factual tag (e.g., 'Self-hosted')")
     plan: SubscriptionPlanResponse = Field(..., description="Full plan details")
 
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
@@ -148,12 +156,15 @@ class PrimaryTier(BaseModel):
     """Primary tier for progressive disclosure UX."""
     tier: str = Field(..., description="Tier identifier (community, business, enterprise)")
     display_name: str = Field(..., description="Display name for the tier")
-    badge: Optional[str] = Field(None, description="Tier badge (e.g., 'Most Popular')")
+    badge: Optional[str] = Field(None, description="Factual tag (e.g., 'Self-hosted')")
     cta: str = Field(..., description="Call-to-action text (e.g., 'Get Started', 'View Tiers')")
     expandable: bool = Field(False, description="Whether this tier has sub-tiers")
     plan: Optional[SubscriptionPlanResponse] = Field(None, description="Plan details (for non-expandable tiers)")
     base_price: Optional[float] = Field(None, description="Base price for 'From $X' display (for expandable tiers)")
     sub_tiers: Optional[List[SubTierPlan]] = Field(None, description="Sub-tier options (for expandable tiers)")
+    price_display: Optional[str] = Field(None, description="Shown instead of a price (contact-sales tiers)")
+    link: Optional[str] = Field(None, description="External link for the CTA (e.g. the Community download)")
+    note: Optional[str] = Field(None, description="One line under the tier (e.g. the free trial)")
 
     model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
