@@ -4,8 +4,8 @@ Resolves {{dotted.path}} patterns from a context dict and {{env.VAR}} from
 os.environ.  Works recursively on strings, dicts, and lists so it can be
 applied to entire parameter trees in one call.
 
-Also provides ``get_adapter_credentials`` to fetch user-configured adapter
-API keys from the database so workflow nodes honour UI-configured settings.
+Also resolves user-configured adapter credentials (``resolve_adapter_credentials``)
+from the database so workflow nodes honour UI-configured settings.
 """
 
 import logging
@@ -72,55 +72,20 @@ def resolve_templates(value: Any, context: Dict[str, Any]) -> Any:
     return value
 
 
-async def get_adapter_credentials(adapter_type: str) -> Optional[Dict[str, Any]]:
-    """Look up user-configured credentials for *adapter_type* from the DB.
-
-    Returns the decrypted credentials dict if an enabled config exists,
-    otherwise ``None``.  Falls back gracefully on any error so workflow
-    execution is never blocked by a missing config row.
-    """
-    try:
-        from core.database import get_session_maker
-        from models.adapter_config import UserAdapterConfig
-        from core.crypto import decrypt_data
-        from sqlalchemy import select
-
-        async with get_session_maker()() as session:
-            query = (
-                select(UserAdapterConfig)
-                .where(
-                    UserAdapterConfig.adapter_type == adapter_type,
-                    UserAdapterConfig.enabled == True,
-                )
-                .order_by(UserAdapterConfig.updated_at.desc())
-                .limit(1)
-            )
-            result = await session.execute(query)
-            config = result.scalar_one_or_none()
-
-            if config and config.credentials:
-                credentials = decrypt_data(config.credentials)
-                logger.info(
-                    f"Loaded UI-configured credentials for adapter '{adapter_type}'"
-                )
-                return credentials
-
-    except Exception as exc:
-        logger.debug(
-            f"Could not load adapter credentials for '{adapter_type}': {exc}"
-        )
-
-    return None
-
-
 # Sentinel tenant the workflow runtime injects when no real org is in scope
 # (workflow_execution.py defaults context["tenant_id"] to this). Treated like
 # "no tenant" for credential resolution so it falls through to the shared key.
 _DEFAULT_TENANT = "default-tenant"
 
 
+def _shared_tenant_is_many_customers() -> bool:
+    """True on the hosted service, where the default tenant holds every self-signup."""
+    from core.config import get_deployment_type
+    return get_deployment_type() == "cloud"
+
+
 async def get_adapter_credentials_for_tenant(
-    adapter_type: str, tenant_id: Optional[str]
+    adapter_type: str, tenant_id: Optional[str], user_id: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """Resolve adapter credentials scoped to a tenant (GEO Phase B2 tiered model).
 
@@ -130,10 +95,30 @@ async def get_adapter_credentials_for_tenant(
       2. A shared/global row (``tenant_id IS NULL`` — the Bodaty free-tier key).
       3. ``None`` — the adapter falls back to its env key (e.g. PERPLEXITY_API_KEY).
 
-    Unlike ``get_adapter_credentials``, this never returns another tenant's row:
+    It never returns another tenant's row:
     step 2 matches NULL explicitly, not "any tenant", so there is no cross-tenant
     credential leak. Falls back gracefully (returns None) on any error.
+
+    On the hosted service every self-signup shares the default tenant, so the
+    shared row of step 2 is some other customer's saved key. There, a
+    default-tenant caller resolves only rows ``user_id`` saved itself (the
+    running user, or the workflow owner for unattended runs), with no shared
+    fallback. Self-hosted installs, where the default tenant is the one
+    organisation, keep the shared row.
     """
+    if (not tenant_id or tenant_id == _DEFAULT_TENANT) and _shared_tenant_is_many_customers():
+        if not user_id or user_id == "system":
+            # Scheduled and triggered runs carry no owner yet, so there is no one
+            # whose saved key may be used. The adapter falls back to its env key
+            # (the platform's own, as for any user without a saved key); one with
+            # no env key fails downstream.
+            logger.warning(
+                f"No run-as owner for an unattended run on the shared hosted tenant: "
+                f"saved credentials for adapter '{adapter_type}' are not used"
+            )
+            return None
+        return await get_adapter_credentials_for_user(adapter_type, user_id)
+
     try:
         from core.database import get_session_maker
         from models.adapter_config import UserAdapterConfig
@@ -286,8 +271,10 @@ async def resolve_adapter_credentials(
     auth_type = getattr(adapter_class, "AUTH_TYPE", "api_key") if adapter_class else "api_key"
 
     if auth_type != "oauth2":
-        # api_key (default): unchanged per-tenant resolution; never raises.
-        return await get_adapter_credentials_for_tenant(adapter_type, tenant_id) or {}
+        # api_key (default): per-tenant resolution; never raises. The user (or the
+        # owner of an unattended run) scopes it where the default tenant is shared.
+        run_as = user_id if (user_id and user_id != "system") else owner_id
+        return await get_adapter_credentials_for_tenant(adapter_type, tenant_id, run_as) or {}
 
     # oauth2: per-user fresh token, with run-as-owner fallback for unattended/system runs.
     provider = getattr(adapter_class, "OAUTH_PROVIDER", None) or adapter_type

@@ -344,7 +344,7 @@ class BaseNode(ABC):
         ``{}`` config — which both broke construction (adapters expect an
         AdapterConfig) and left the adapter unauthenticated/uninitialised, so a
         credentialed engine like Perplexity could never run. Credentials come
-        from the UI-configured adapter row (``get_adapter_credentials``); the
+        from the UI-configured adapter row (``resolve_adapter_credentials``); the
         adapter itself falls back to its env key (e.g. PERPLEXITY_API_KEY) when
         none is stored. Per-org tenant-scoped credential resolution lands in B2.
         """

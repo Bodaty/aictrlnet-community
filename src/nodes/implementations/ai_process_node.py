@@ -14,6 +14,7 @@ from .. import capacity, content_refs
 from ..template_utils import (
     resolve_templates,
     get_adapter_credentials_for_tenant,
+    resolve_send_fallback_user,
 )
 from events.event_bus import event_bus
 from adapters.registry import adapter_registry
@@ -275,7 +276,7 @@ class AIProcessNode(BaseNode):
         # one org's LLM key can't leak to another. context["tenant_id"] is
         # threaded into every node by the workflow runtime.
         credentials = await get_adapter_credentials_for_tenant(
-            adapter_id, tenant_id
+            adapter_id, tenant_id, resolve_send_fallback_user(context)
         ) or {}
 
         # Create adapter instance with proper config + credentials.

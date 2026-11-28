@@ -206,6 +206,11 @@ class Settings(BaseSettings):
     # Explicit opt-in for the static dev bearer token. Never set outside local;
     # prod/staging leave it false. Enforced together with ENVIRONMENT=development.
     ALLOW_DEV_TOKENS: bool = Field(default=False, env="ALLOW_DEV_TOKENS")
+    # "cloud" for the hosted multi-tenant service, "self-hosted" for a customer
+    # install. Read it through get_deployment_type(), which also recognises
+    # Cloud Run when this is unset. The raw field stays None when unset so code
+    # that reads it directly (core/enforcement.py) keeps its current default.
+    DEPLOYMENT_TYPE: Optional[str] = Field(default=None, env="DEPLOYMENT_TYPE")
     USE_CREATE_ALL: bool = Field(default=False, env="USE_CREATE_ALL")  # Default to migrations even in dev
     # The pollers a service starts on its own (scheduler, sweeps, dispatchers,
     # purges; core/background_workers.py). Off only on a stack running the test
@@ -638,6 +643,19 @@ def get_settings() -> Settings:
     # Force reload of environment variables
     edition = os.getenv("AICTRLNET_EDITION", "community")
     return Settings(EDITION=edition)
+
+
+def get_deployment_type() -> str:
+    """"cloud" or "self-hosted" (or an explicit value such as "test").
+
+    An explicit DEPLOYMENT_TYPE wins. Unset, a process on Cloud Run (which
+    always sets K_SERVICE) is the hosted service; anything else, such as the
+    self-hosted compose on a customer's machine, is self-hosted.
+    """
+    explicit = (os.getenv("DEPLOYMENT_TYPE") or "").strip().lower()
+    if explicit:
+        return explicit
+    return "cloud" if os.getenv("K_SERVICE") else "self-hosted"
 
 
 # Don't create a global instance - use get_settings() instead

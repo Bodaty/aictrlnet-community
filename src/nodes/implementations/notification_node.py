@@ -173,7 +173,9 @@ class NotificationNode(BaseNode):
         """
         if credentials is None:
             credentials = await get_adapter_credentials_for_tenant(
-                adapter_id, getattr(self, "_tenant_id", None)
+                adapter_id,
+                getattr(self, "_tenant_id", None),
+                getattr(self, "_send_fallback_user", None),
             ) or {}
         config = AdapterConfig(
             name=adapter_id,
