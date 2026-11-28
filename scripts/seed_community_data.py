@@ -56,6 +56,11 @@ logger.info(f"🌍 Running seed script for environment: {ENVIRONMENT}")
 
 async def seed_users(session):
     """Create default users."""
+    from seed_profile import known_password_accounts_allowed
+    if not known_password_accounts_allowed():
+        raise RuntimeError(
+            f"Refusing to create accounts with published passwords (ENVIRONMENT={ENVIRONMENT!r})"
+        )
     users_data = []
     
     # Default tier preferences for all users
@@ -750,7 +755,16 @@ async def main():
         try:
             # Seed users (dev/test logins with published passwords — never under
             # the minimal profile; an administrator is created at install instead)
-            if not minimal:
+            from seed_profile import known_password_accounts_allowed
+            seed_known_password_accounts = (
+                not minimal and known_password_accounts_allowed()
+            )
+            if not minimal and not seed_known_password_accounts:
+                logger.warning(
+                    "ENVIRONMENT=%r: not creating the dev/test accounts (their passwords "
+                    "are published) or the demo API key", ENVIRONMENT,
+                )
+            if seed_known_password_accounts:
                 user_count = await seed_users(session)
                 logger.info(f"✅ Created {user_count} users")
             
@@ -768,7 +782,7 @@ async def main():
             logger.info(f"✅ Created {template_count} workflow templates")
             
             # Seed API keys (a fixed development key for admin@ — demo only)
-            if not minimal:
+            if seed_known_password_accounts:
                 key_count = await seed_api_keys(session)
                 logger.info(f"✅ Created {key_count} API keys")
             
@@ -779,7 +793,7 @@ async def main():
             # Ensure seeded test users have a real Subscription matching their edition
             # (otherwise /subscription/current falls back to community-free and tier
             # filters treat dev/admin as Community even if user.edition says otherwise).
-            if not minimal:
+            if seed_known_password_accounts:
                 from seed_test_user_subscriptions import ensure_test_user_subscriptions
                 sub_changes = await ensure_test_user_subscriptions(session)
                 logger.info(f"✅ Synced {sub_changes} test-user subscription(s)")

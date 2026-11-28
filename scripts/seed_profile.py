@@ -64,3 +64,30 @@ class SeedFailures:
             for failure in self.failures:
                 print(f"   - {failure}")
             sys.exit(1)
+
+
+# ENVIRONMENT values under which accounts with published passwords may be
+# seeded. Read straight from the environment like the rest of this module; an
+# unset value counts as production, the same fail-safe core.config applies.
+_PRODUCTION_ENVIRONMENTS = ("production", "prod")
+# Hosted test environments get them only on an explicit opt-in
+# (SEED_ALLOW_KNOWN_PASSWORDS=1; `make seed-staging` sets it).
+_STAGING_ENVIRONMENTS = ("staging", "stage")
+
+
+def known_password_accounts_allowed():
+    """False wherever dev@, admin@ and test@ must not be created.
+
+    Production (or unset): never. Staging: only with SEED_ALLOW_KNOWN_PASSWORDS=1.
+
+    Their passwords are in the repo (README, seeds, test fixtures), so on a
+    deployment those logins are a published admin credential. On 25 Nov 2026
+    dev@aictrlnet.com signed in to production with testpass123: the hosted seed
+    job ran with ENVIRONMENT=development and nothing here looked at it.
+    """
+    environment = _normalised("ENVIRONMENT")
+    if environment is None or environment in _PRODUCTION_ENVIRONMENTS:
+        return False
+    if environment in _STAGING_ENVIRONMENTS:
+        return (os.environ.get("SEED_ALLOW_KNOWN_PASSWORDS") or "").strip() == "1"
+    return True
