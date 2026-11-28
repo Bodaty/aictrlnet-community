@@ -424,14 +424,19 @@ async def _try_oauth2_token_auth(
             )
             user = result.scalar_one_or_none()
             if user and user.is_active:
-                # Prefer the OAuth2 client's tenant (this is what the
-                # subscription is scoped to). Fall back to user.tenant_id
-                # if client lookup failed.
-                resolved_tenant = None
-                if client_row and client_row.tenant_id:
-                    resolved_tenant = str(client_row.tenant_id)
-                elif getattr(user, "tenant_id", None):
-                    resolved_tenant = str(user.tenant_id)
+                # The token acts in its user's own tenant. A user-created client
+                # registered under a different tenant is refused, never trusted.
+                # MCP dynamic-registration clients live in a sandbox tenant and
+                # carry tokens the user consented to, so they act in the
+                # consenting user's tenant.
+                resolved_tenant = str(user.tenant_id) if getattr(user, "tenant_id", None) else None
+                is_dcr_client = bool(client_row) and (
+                    client_row.created_by == "__dcr__"
+                    or (client_row.client_metadata or {}).get("dcr") is True
+                )
+                if client_row and client_row.tenant_id and resolved_tenant and not is_dcr_client \
+                        and str(client_row.tenant_id) != resolved_tenant:
+                    return None
                 if resolved_tenant:
                     set_current_tenant_id(resolved_tenant)
                     if request is not None:
