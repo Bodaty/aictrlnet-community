@@ -66,6 +66,7 @@ from core.security import (
 from core.config import get_settings
 from core.cache import get_cache
 from core.rate_limit import enforce_rate_limit, client_ip
+from core.tenant_binding import bind_request_tenant, tenant_of_account
 from core.tenant_context import DEFAULT_TENANT_ID, get_current_tenant_id
 from core.user_utils import get_safe_attr
 import logging
@@ -73,7 +74,10 @@ import logging
 from models import User
 from models.subscription import Subscription, SubscriptionPlan, SubscriptionStatus, BillingPeriod
 from services.mfa_service import MFAService
-from schemas.mfa import LoginRequest, LoginResponse, MFAVerifyRequest, MFAVerifyResponse
+from schemas.mfa import (
+    LoginRequest, LoginResponse, MFAVerifyRequest, MFAVerifyResponse,
+    MFAEnrollStartRequest, MFAEnrollStartResponse, MFAEnrollCompleteRequest, MFAEnrollCompleteResponse,
+)
 from schemas.user import UserCreate
 
 logger = logging.getLogger(__name__)
@@ -263,11 +267,7 @@ async def _dummy_password_hash() -> str:
 async def _bind_tenant(db: AsyncSession, tenant_id: Optional[str]) -> None:
     """Run the rest of a pre-tenant auth step under the account's tenant, from
     a source the server signed or stored (never a client-supplied value)."""
-    if tenant_id:
-        bind_session_tenant(db, str(tenant_id))
-        if db.in_transaction():
-            await db.commit()  # the binding applies from the next transaction
-
+    await bind_request_tenant(db, tenant_id)
 
 def _password_hash(user) -> Optional[str]:
     """The account's stored password hash, or None when it has none the
@@ -312,18 +312,10 @@ async def _account_tenant(identifier: str) -> Optional[str]:
 
     Sign-in comes before any tenant is known, so the request's session is the
     default tenant's, and row-level security hides every other tenant's users
-    from it: their logins always failed. This one lookup reads only the tenant
-    id, on a session allowed to see every tenant; everything else about the
-    login then runs under that tenant. None when nothing (or more than one
-    tenant) matches, and the login proceeds as before.
+    from it. None when nothing (or more than one tenant) matches, and the
+    login proceeds as before. See core/tenant_binding.py.
     """
-    async with get_session_maker()() as admin:
-        admin.info["is_admin"] = True
-        tenants = set((await admin.execute(
-            select(User.tenant_id).where((User.email == identifier) | (User.username == identifier))
-        )).scalars().all())
-    return next(iter(tenants)) if len(tenants) == 1 else None
-
+    return await tenant_of_account(identifier)
 
 @router.post("/login", response_model=LoginResponse)
 async def login(
@@ -895,6 +887,85 @@ async def refresh_access_token(
     })
 
     return Token(access_token=access_token, refresh_token=new_refresh_token)
+
+
+async def _forced_enrollment_session(session_token: str, db: AsyncSession) -> dict:
+    """The server-side session a sign-in stored when the tenant requires MFA,
+    with the request bound to the tenant stored in it (never the client's)."""
+    cache = await get_cache()
+    session_data = await cache.get(f"mfa_enrollment:{session_token}")
+    if not session_data:
+        raise HTTPException(401, "Sign-in session expired. Please log in again.")
+    await _bind_tenant(db, session_data.get("tenant_id"))
+    return session_data
+
+
+@router.post("/mfa/enroll/start", response_model=MFAEnrollStartResponse)
+async def start_forced_mfa_enrollment(
+    request: MFAEnrollStartRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Begin the MFA enrollment a tenant's policy requires, before any access token.
+
+    The sign-in returned ``mfa_enrollment_required`` and a session token; until
+    now nothing could use it, so a user of a tenant that mandates MFA could
+    never finish signing in.
+    """
+    await enforce_rate_limit(
+        "mfa_enroll", request.session_token, limit=10, window_seconds=600,
+        detail="Too many attempts. Please log in again.",
+    )
+    session_data = await _forced_enrollment_session(request.session_token, db)
+    enrollment = await MFAService(db).init_mfa_enrollment(session_data["user_id"])
+    return MFAEnrollStartResponse(**enrollment)
+
+
+@router.post("/mfa/enroll/complete", response_model=MFAEnrollCompleteResponse)
+async def complete_forced_mfa_enrollment(
+    request: MFAEnrollCompleteRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm the authenticator code, turn MFA on, and finish signing in.
+
+    The session token is single-use: it is deleted once the sign-in completes.
+    """
+    await enforce_rate_limit(
+        "mfa_enroll", request.session_token, limit=10, window_seconds=600,
+        detail="Too many attempts. Please log in again.",
+    )
+    session_data = await _forced_enrollment_session(request.session_token, db)
+    service = MFAService(db)
+    result = await service.complete_mfa_enrollment(session_data["user_id"], request.code)
+
+    settings = get_settings()
+    user = await service.get_user(session_data["user_id"])
+    access_token = create_access_token(
+        data={
+            "sub": session_data["user_id"],
+            "email": user.email,
+            "is_superuser": user.is_superuser,
+            "mfa_verified": True,
+            "tenant_id": user.tenant_id or get_current_tenant_id(),
+            "token_version": user.token_version or 0,
+        },
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    refresh_token = create_refresh_token(data={
+        "sub": session_data["user_id"],
+        "tenant_id": user.tenant_id or get_current_tenant_id(),
+        "token_version": user.token_version or 0,
+    })
+
+    cache = await get_cache()
+    await cache.delete(f"mfa_enrollment:{request.session_token}")
+    user.last_login_at = datetime.utcnow()
+    await db.commit()
+
+    return MFAEnrollCompleteResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        backup_codes=result.get("backup_codes", []),
+    )
 
 
 @router.post("/mfa/verify", response_model=MFAVerifyResponse)

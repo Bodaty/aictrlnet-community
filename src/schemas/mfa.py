@@ -109,3 +109,26 @@ class LoginResponse(BaseModel):
     mfa_enrollment_required: bool = False
     session_token: Optional[str] = None
     expires_in: Optional[int] = None
+
+
+class MFAEnrollStartRequest(BaseModel):
+    """Start the enrollment a tenant's MFA policy requires, from the sign-in session."""
+    session_token: str = Field(..., description="The session token the sign-in returned")
+
+
+class MFAEnrollStartResponse(BaseModel):
+    qr_code: str
+    manual_entry_key: str
+    expires_in: int
+
+
+class MFAEnrollCompleteRequest(BaseModel):
+    session_token: str = Field(..., description="The session token the sign-in returned")
+    code: str = Field(..., min_length=6, max_length=8, description="TOTP code from the authenticator")
+
+
+class MFAEnrollCompleteResponse(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = None
+    token_type: str = "bearer"
+    backup_codes: List[str] = []

@@ -431,11 +431,10 @@ class AICtrlNetApp:
             workflow_catalog_websocket
         )
         
-        # Workflow execution updates
-        self.app.websocket("/ws/workflows/{execution_id}")(workflow_execution_websocket)
-        
-        # Catalog updates
+        # Catalog updates, registered before the {execution_id} route, which
+        # would otherwise take "catalog" as an execution id; then execution updates.
         self.app.websocket("/ws/workflows/catalog")(workflow_catalog_websocket)
+        self.app.websocket("/ws/workflows/{execution_id}")(workflow_execution_websocket)
     
     def _get_features(self):
         """Get edition-specific features."""

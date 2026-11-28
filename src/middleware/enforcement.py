@@ -211,6 +211,7 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
             try:
                 payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
                 user_id = payload.get("sub")
+                token_tenant = payload.get("tenant_id")
             except jwt.PyJWTError:
                 return None
 
@@ -221,6 +222,12 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
             from models import User
 
             async with get_session_maker()() as db:
+                # The user's rows are in the token's (signed) tenant; an unbound
+                # session is the default tenant's and would never see them, so a
+                # trial in any other tenant never expired.
+                if token_tenant:
+                    from core.database import bind_session_tenant
+                    bind_session_tenant(db, str(token_tenant))
                 # Only check users on business edition (trial users)
                 user_result = await db.execute(
                     select(User).where(User.id == user_id)
@@ -236,7 +243,7 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
                         "message": "Your Business trial has ended. Choose a plan to continue using HitLai.",
                         "options": {
                             "subscribe": "/pricing",
-                            "self_hosted": "https://aictrlnet.com/download",
+                            "self_hosted": "https://aictrlnet.com/community",
                         }
                     }
 
@@ -260,7 +267,7 @@ class EnforcementMiddleware(BaseHTTPMiddleware):
                         "message": "Your Business trial has ended. Choose a plan to continue using HitLai.",
                         "options": {
                             "subscribe": "/pricing",
-                            "self_hosted": "https://aictrlnet.com/download",
+                            "self_hosted": "https://aictrlnet.com/community",
                         }
                     }
 

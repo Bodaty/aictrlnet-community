@@ -305,6 +305,15 @@ async def verify_token(token: str, db=None) -> Optional[dict]:
             from sqlalchemy import select
             from models.user import User
 
+            # Callers without an HTTP request (the WebSocket handshakes) arrive
+            # on the default tenant's session, where row-level security hides
+            # every other tenant's users. Run the lookup, and the rest of the
+            # caller's work on this session, under the token's signed tenant.
+            token_tenant = payload.get("tenant_id")
+            if token_tenant:
+                from core.tenant_binding import bind_request_tenant
+                await bind_request_tenant(db, str(token_tenant))
+
             result = await db.execute(select(User).where(User.id == user_id))
             user = result.scalar_one_or_none()
 
@@ -360,21 +369,22 @@ async def _try_api_key_auth(
     didn't) set.
     """
     try:
-        from core.tenant_context import set_current_tenant_id
+        from core.tenant_binding import bind_request_tenant, tenant_of_api_key
         from services.api_key_service import APIKeyService
+
+        # The request's session is the default tenant's, and row-level
+        # security hides other tenants' keys and users from it: bind the
+        # key's own tenant (read from the stored key, never a header) first.
+        key_tenant = await tenant_of_api_key(api_key_value)
+        if key_tenant:
+            await bind_request_tenant(db, key_tenant)
+            request.state.tenant_id = key_tenant
 
         svc = APIKeyService(db)
         ip_address = request.client.host if request.client else None
         user, key = await svc.verify_api_key(api_key_value, ip_address=ip_address)
         if user and key:
             request.state.api_key = key
-            # Re-sync tenant ContextVar from the authenticated user.
-            # The middleware's default-fallback or a prior (ignored)
-            # X-Tenant-ID header attempt is superseded here.
-            user_tenant = getattr(user, "tenant_id", None)
-            if user_tenant:
-                set_current_tenant_id(str(user_tenant))
-                request.state.tenant_id = str(user_tenant)
             return user
     except Exception:
         pass
@@ -404,8 +414,18 @@ async def _try_oauth2_token_auth(
         from aictrlnet_business.services.oauth2_service_async import (  # type: ignore
             OAuth2ServiceAsync,
         )
+        from core.tenant_binding import bind_request_tenant, tenant_of_oauth2_token
         from core.tenant_context import set_current_tenant_id
         from models.user import User
+
+        # Bind the client's tenant before reading the token and its user:
+        # row-level security hides other tenants' rows from the default
+        # tenant's session the request starts on.
+        token_tenant = await tenant_of_oauth2_token(token)
+        if token_tenant:
+            await bind_request_tenant(db, token_tenant)
+            if request is not None:
+                request.state.tenant_id = token_tenant
 
         svc = OAuth2ServiceAsync(db)
         access_token = await svc.verify_access_token(token)
