@@ -30,12 +30,16 @@ class WorkflowService:
         metadata: Dict[str, Any] = None,
         *,
         actor_is_admin: bool = False,
+        owner_id: Optional[str] = None,
     ) -> Workflow:
         """Create a new workflow.
 
         Automatically assigns current tenant_id. A reserved name needs
-        ``actor_is_admin`` (ReservedWorkflowName, a 422).
+        ``actor_is_admin`` (ReservedWorkflowName, a 422). ``owner_id`` (the creator)
+        becomes its run-as owner.
         """
+        from services.run_as import owner_for
+
         from services.workflow_identity import check_workflow_name
 
         check_workflow_name(name, actor_is_admin)
@@ -52,6 +56,7 @@ class WorkflowService:
             workflow_metadata=metadata or {},
             active=True,
             tenant_id=tenant_id,
+            run_as_user_id=owner_for(owner_id),
             created_at=datetime.utcnow()
         )
         

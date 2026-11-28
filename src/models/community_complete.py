@@ -64,6 +64,11 @@ class WorkflowDefinition(Base, UUIDMixin, TimestampMixin, TenantMixin):
     autonomy_locked: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("false"), default=False
     )
+    # Whose connections an unattended run (schedule, work item, trigger) uses to resolve
+    # credentials. Server-only: no request schema carries it (migration rr1un2as3ow4).
+    run_as_user_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     
     # Relationships. Not loaded with the definition: a workflow's whole run
     # history (and, through each run, its steps) grows without bound, and

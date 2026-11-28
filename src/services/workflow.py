@@ -27,6 +27,8 @@ from .workflow_identity import (  # noqa: F401
 AUTONOMY_FIELDS = ("autonomy_level", "autonomy_locked")
 
 
+from services.run_as import owner_for
+
 class AutonomyChangeForbidden(PermissionError):
     """A non-admin update would change a workflow's autonomy level or lock."""
 
@@ -180,6 +182,7 @@ class WorkflowService:
             definition=definition_dict,
             tags=workflow_data.tags,
             tenant_id=tenant_id or get_current_tenant_id(),  # Ensure tenant_id is never None
+            run_as_user_id=owner_for(actor_id),
             workflow_metadata={
                 "category": workflow_data.category,
                 "is_template": workflow_data.is_template,
@@ -200,8 +203,9 @@ class WorkflowService:
         description: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
         tenant_id: Optional[str] = None,
+        owner_id: Optional[str] = None,
     ) -> WorkflowDefinition:
-        """Create a workflow from a template."""
+        """Create a workflow from a template; ``owner_id`` (the creator) becomes its run-as owner."""
         template_service = create_workflow_template_service()
 
         # Convert Pydantic model to dict if necessary
@@ -225,6 +229,7 @@ class WorkflowService:
             tags=template_dict.get("tags", []),
             active=True,  # Templates create active workflows by default
             tenant_id=tenant_id or get_current_tenant_id(),  # Ensure tenant_id is never None
+            run_as_user_id=owner_for(owner_id),
             workflow_metadata={
                 "template_id": str(template_dict.get("id")),  # Convert UUID to string
                 "category": template_dict.get("category"),

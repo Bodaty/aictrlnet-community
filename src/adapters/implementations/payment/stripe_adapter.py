@@ -23,6 +23,10 @@ class StripeAdapter(BaseAdapter):
     """Adapter for Stripe payment processing."""
 
     LIST_EVENTS_MAX = 1000
+    # What a person enters to connect it (a solution's Connections page renders these).
+    CONNECTION_FIELDS = [
+        {"key": "api_key", "label": "Secret or restricted key", "required": True, "secret": True},
+    ]
     
     def __init__(self, config: AdapterConfig):
         # Ensure category is set correctly

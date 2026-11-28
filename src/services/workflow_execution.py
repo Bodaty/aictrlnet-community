@@ -238,6 +238,13 @@ class WorkflowExecutionService:
         }
         if preview:
             run_context["preview_real_steps"] = list((trigger_metadata or {}).get("preview_real_steps") or [])
+        if not user_id:
+            # An unattended start: the workflow's owner stands behind its connections.
+            from services.run_as import CONTEXT_KEY, run_as_owner
+
+            owner = await run_as_owner(self.db, workflow)
+            if owner:
+                run_context[CONTEXT_KEY] = owner
 
         # Create execution record
         execution = WorkflowExecution(
@@ -467,6 +474,8 @@ class WorkflowExecutionService:
                 # via context.get("db")
                 workflow_name = execution.workflow.name if execution.workflow else ""
                 user_id = str(execution.user_id) if execution.user_id else "system"
+                from services.run_as import node_context_owner
+                run_owner = node_context_owner(execution.context)
                 tenant_id = str(execution.tenant_id) if getattr(execution, "tenant_id", None) else "default-tenant"
                 # A workflow whose definition carries `phi: true` is a PHI pipeline:
                 # its AI steps must state their sampling explicitly (see AdapterRequest).
@@ -489,6 +498,9 @@ class WorkflowExecutionService:
                     ni.context["workflow_id"] = str(execution.workflow_id)
                     ni.context["workflow_definition_id"] = str(execution.workflow_id)
                     ni.context["user_id"] = user_id
+                    if run_owner:
+                        ni.context["workflow_owner_id"] = run_owner
+                        ni.context["owner_id"] = run_owner
                     ni.context["tenant_id"] = tenant_id
                     ni.context["workflow_instance_id"] = str(execution_id)
                     ni.context["is_dry_run"] = is_dry_run

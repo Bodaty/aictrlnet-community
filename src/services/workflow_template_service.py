@@ -127,6 +127,8 @@ def _list_category_json_files(system_dir: Path, categories: Optional[set] = None
     return found
 
 
+from services.run_as import owner_for
+
 class WorkflowTemplateService:
     """Service for managing workflow templates."""
     
@@ -662,7 +664,8 @@ class WorkflowTemplateService:
             active=True,
             tags=template.tags,
             workflow_metadata=full_metadata if full_metadata else None,
-            tenant_id=tenant_id
+            tenant_id=tenant_id,
+            run_as_user_id=owner_for(user_id),
         )
         db.add(workflow_def)
         await db.flush()  # Get the ID without committing

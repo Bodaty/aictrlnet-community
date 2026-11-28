@@ -31,6 +31,8 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
+from services.run_as import owner_for
+
 class NLPService:
     """Service for NLP-driven workflow generation."""
     
@@ -356,7 +358,7 @@ class NLPService:
                     workflow = await self._create_workflow_from_nlp(
                         prompt, ai_workflow, generation_method,
                         tenant_id=context.get('tenant_id') or get_current_tenant_id() if context else get_current_tenant_id(),
-                        context=context
+                        context=context, owner_id=user_id
                     )
 
                     if return_transparency:
@@ -384,7 +386,7 @@ class NLPService:
                         workflow = await self._create_workflow_from_nlp(
                             prompt, enhanced_workflow, generation_method,
                             tenant_id=context.get('tenant_id') or get_current_tenant_id() if context else get_current_tenant_id(),
-                            context=context
+                            context=context, owner_id=user_id
                         )
                         
                         # Validate generated workflow
@@ -404,7 +406,7 @@ class NLPService:
                         
                         if not workflow_validation.allowed:
                             # Generate safe fallback workflow
-                            workflow = await self._create_fallback_workflow(prompt, context)
+                            workflow = await self._create_fallback_workflow(prompt, context, owner_id=user_id)
                             generation_method = "security_fallback"
                             confidence_score = 0.4
                         
@@ -453,7 +455,7 @@ class NLPService:
                 workflow = await self._create_workflow_from_nlp(
                     prompt, template_workflow, generation_method,
                     tenant_id=context.get('tenant_id') or get_current_tenant_id() if context else get_current_tenant_id(),
-                    context=context
+                    context=context, owner_id=user_id
                 )
                 
                 if return_transparency:
@@ -468,7 +470,7 @@ class NLPService:
             # Step 4: Fallback to basic workflow
             generation_method = "intelligent_fallback"
             confidence_score = 0.5
-            workflow = await self._create_fallback_workflow(prompt, context)
+            workflow = await self._create_fallback_workflow(prompt, context, owner_id=user_id)
 
             if return_transparency:
                 logger.info(f"Building transparency response for fallback workflow, return_transparency={return_transparency}")
@@ -487,7 +489,7 @@ class NLPService:
         except Exception as e:
             logger.error(f"Error processing natural language: {e}", exc_info=True)
             # Always return something usable
-            workflow = await self._create_fallback_workflow(prompt, context)
+            workflow = await self._create_fallback_workflow(prompt, context, owner_id=user_id)
             if return_transparency:
                 return await self._build_transparency_response(
                     workflow, "error_fallback", [], [], {},
@@ -995,9 +997,11 @@ Return ONLY a single number (the index). Example: 5
         workflow_config: Dict[str, Any],
         generation_method: str,
         tenant_id: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        owner_id: Optional[str] = None,
     ) -> WorkflowDefinition:
-        """Create a workflow from NLP-generated configuration."""
+        """Create a workflow from NLP-generated configuration; ``owner_id`` (the person asking)
+        becomes its run-as owner."""
         # The caller's name if it gave one, else one generated from the prompt
         name = (context or {}).get("workflow_name") or self._generate_workflow_name(prompt)
         
@@ -1164,7 +1168,8 @@ Return ONLY a single number (the index). Example: 5
             definition=definition,
             active=True,  # NLP workflows are active by default
             tags=["nlp_generated", generation_method],
-            tenant_id=tenant_id or get_current_tenant_id()  # Ensure tenant_id is never None
+            tenant_id=tenant_id or get_current_tenant_id(),  # Ensure tenant_id is never None
+            run_as_user_id=owner_for(owner_id),
         )
         
         # Re-set RLS tenant context before commit — intermediate commits in the
@@ -1289,7 +1294,8 @@ Return ONLY a single number (the index). Example: 5
 
         return workflow
     
-    async def _create_fallback_workflow(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> WorkflowDefinition:
+    async def _create_fallback_workflow(self, prompt: str, context: Optional[Dict[str, Any]] = None,
+                                        owner_id: Optional[str] = None) -> WorkflowDefinition:
         """Create an intelligent fallback workflow based on intent analysis."""
         # Analyze intent even for fallback
         intent = await self._analyze_intent(prompt)
@@ -1396,7 +1402,7 @@ Return ONLY a single number (the index). Example: 5
         return await self._create_workflow_from_nlp(
             prompt, workflow_config, "intelligent_fallback",
             tenant_id=context.get('tenant_id') or get_current_tenant_id() if context else get_current_tenant_id(),
-            context=context
+            context=context, owner_id=owner_id
         )
     
     def _convert_steps_to_workflow(self, steps: List[Dict[str, Any]], prompt: str) -> Dict[str, Any]:

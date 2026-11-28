@@ -9,6 +9,7 @@ from datetime import datetime
 from core.database import get_db
 from core.security import get_current_active_user
 from core.authz import is_superuser
+from core.user_utils import get_safe_user_id
 from core.exceptions import ValidationError
 from services.workflow_identity import ReservedWorkflowName
 from mcp_server.services import (
@@ -151,6 +152,7 @@ async def create_workflow_via_mcp(
             workflow_definition=request.workflow_definition,
             execute_immediately=request.execute_immediately,
             actor_is_admin=is_superuser(current_user),
+            owner_id=get_safe_user_id(current_user),
         )
         
         return MCPWorkflowResponse(**result)

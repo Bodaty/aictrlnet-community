@@ -85,6 +85,8 @@ from schemas.workflow_node import (
     WorkflowValidationResult
 )
 
+from services.run_as import owner_for
+
 router = APIRouter()
 
 
@@ -535,6 +537,8 @@ async def duplicate_workflow(
         workflow_metadata=metadata,
         autonomy_level=source.autonomy_level,
         autonomy_locked=bool(source.autonomy_locked),
+        # The copy is its copier's: never the source's owner.
+        run_as_user_id=owner_for(get_safe_user_id(current_user)),
     )
     db.add(copy)
     await db.commit()
@@ -1675,7 +1679,8 @@ async def create_manual_workflow(
             definition=grant_if_protected(final_definition, get_safe_user_id(current_user)),
             active=True,
             tags=["manual_created", workflow_category],
-            tenant_id=get_safe_attr(current_user, 'tenant_id', None) or get_current_tenant_id()
+            tenant_id=get_safe_attr(current_user, 'tenant_id', None) or get_current_tenant_id(),
+            run_as_user_id=owner_for(get_safe_user_id(current_user)),
         )
         
         db.add(workflow)

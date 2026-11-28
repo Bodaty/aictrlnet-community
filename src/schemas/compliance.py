@@ -87,6 +87,10 @@ class ComplianceReport(BaseModel):
     compliance_score: float
     total_requirements: int
     passed_requirements: int
+    requirements_needing_evidence: List[str] = []
+    requirements_in_standard: Optional[int] = None
+    requirements_checked: Optional[int] = None
+    coverage_label: Optional[str] = None
     violations: List[ComplianceViolation]
     recommendations: List[str]
     next_review_date: datetime

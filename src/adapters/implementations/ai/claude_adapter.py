@@ -15,6 +15,65 @@ from adapters.models import (
 )
 from adapters.tool_calling import ToolCallingMixin, ToolCallingRequest, ToolCallingResponse
 from events.event_bus import event_bus
+from llm.tier_resolver import PROVIDER_DEFAULT_MODELS
+
+CLAUDE_DEFAULT_MODEL = PROVIDER_DEFAULT_MODELS["anthropic"]
+# The GEO answer-engine series is measured on this model with web_search_20250305; it moves
+# only by a deliberate switch recorded in the GEO ledger, not with the default model.
+GEO_ANSWER_MODEL = "claude-opus-4-8"
+# The cheapest current model: the health check only needs a 200.
+HEALTH_CHECK_MODEL = "claude-haiku-5-5"
+
+# Per million tokens (input, output), Anthropic first-party prices; matched by prefix,
+# longest first. A model not listed is priced as the default model.
+MODEL_PRICES = {
+    "claude-fable-5-2": (8.0, 40.0),
+    "claude-fable-5-1": (10.0, 50.0),
+    "claude-fable-5": (10.0, 50.0),
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+# Models whose effort defaults to medium; the adapter asks for high, the depth the
+# models it replaced ran at by default. Others default to high (or reject effort).
+_MEDIUM_DEFAULT_EFFORT = ("claude-opus-5-5", "claude-haiku-5-5")
+
+
+def _price_for(model: str):
+    for prefix in sorted(MODEL_PRICES, key=len, reverse=True):
+        if (model or "").startswith(prefix):
+            return MODEL_PRICES[prefix]
+    return MODEL_PRICES[CLAUDE_DEFAULT_MODEL]
+
+
+def _output_config(model: str, requested_effort: Optional[str]) -> Optional[Dict[str, Any]]:
+    if requested_effort:
+        return {"effort": requested_effort}
+    if (model or "").startswith(_MEDIUM_DEFAULT_EFFORT):
+        return {"effort": "high"}
+    return None
+
+
+def _forced_tool_instruction(tool_choice: Optional[str]) -> Optional[str]:
+    if not tool_choice or tool_choice in ("auto", "none"):
+        return None
+    if tool_choice == "required":
+        return "You must call one of the tools before you answer."
+    return f"You must call the {tool_choice} tool before you answer."
+
+
+def _strict_compatible(schema: Dict[str, Any]) -> bool:
+    """strict needs an object schema that closes its properties and names the required ones."""
+    return (isinstance(schema, dict) and schema.get("type") == "object"
+            and schema.get("additionalProperties") is False and "required" in schema)
 
 
 logger = logging.getLogger(__name__)
@@ -107,7 +166,7 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
                 category="answer_engine",
                 parameters={
                     "query": {"type": "string", "description": "The question to answer"},
-                    "model": {"type": "string", "default": "claude-opus-4-8"},
+                    "model": {"type": "string", "default": GEO_ANSWER_MODEL},
                     "max_tokens": {"type": "integer"},
                 },
                 required_parameters=["query"],
@@ -122,7 +181,7 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
                     "model": {"type": "string", "description": "Model to use (e.g., claude-3-opus-20240229)"},
                     "messages": {"type": "array", "description": "Array of message objects"},
                     "max_tokens": {"type": "integer", "description": "Maximum tokens to generate", "default": 1024},
-                    "temperature": {"type": "number", "description": "Sampling temperature (0-1)", "default": 1.0},
+                    "effort": {"type": "string", "description": "low, medium, high, xhigh or max (models that support effort)"},
                     "system": {"type": "string", "description": "System prompt"},
                     "stream": {"type": "boolean", "description": "Stream the response", "default": False}
                 },
@@ -138,8 +197,7 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
                 parameters={
                     "model": {"type": "string", "description": "Model to use"},
                     "prompt": {"type": "string", "description": "Text prompt"},
-                    "max_tokens": {"type": "integer", "description": "Maximum tokens", "default": 1024},
-                    "temperature": {"type": "number", "description": "Temperature (0-1)", "default": 1.0}
+                    "max_tokens": {"type": "integer", "description": "Maximum tokens", "default": 1024}
                 },
                 required_parameters=["model", "prompt"],
                 async_supported=True,
@@ -210,7 +268,7 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
                 duration_ms=(datetime.utcnow() - start_time).total_seconds() * 1000,
             )
 
-        model = params.get("model") or "claude-opus-4-8"
+        model = params.get("model") or GEO_ANSWER_MODEL
         data = {
             "model": model,
             "max_tokens": params.get("max_tokens", 1024),
@@ -308,9 +366,12 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
                 "model": request.parameters["model"],
                 "messages": messages,
                 "max_tokens": request.parameters.get("max_tokens", 1024),
-                "temperature": request.parameters.get("temperature", 1.0),
                 "stream": request.parameters.get("stream", False)
             }
+            # No temperature/top_p/top_k: current Claude models reject sampling parameters.
+            output_config = _output_config(data["model"], request.parameters.get("effort"))
+            if output_config:
+                data["output_config"] = output_config
             
             if system:
                 data["system"] = system
@@ -477,7 +538,7 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
                 "model": request.parameters["model"],
                 "messages": [{"role": "user", "content": request.parameters["prompt"]}],
                 "max_tokens": request.parameters.get("max_tokens", 1024),
-                "temperature": request.parameters.get("temperature", 1.0)
+                "effort": request.parameters.get("effort"),
             },
             context=request.context
         )
@@ -531,31 +592,16 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
         return claude_messages
     
     def _estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        """Estimate cost based on model and tokens."""
-        # Claude 3 pricing per 1M tokens
-        pricing = {
-            "claude-3-opus-20240229": {"input": 15.0, "output": 75.0},
-            "claude-3-sonnet-20240229": {"input": 3.0, "output": 15.0},
-            "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
-            "claude-2.1": {"input": 8.0, "output": 24.0},
-            "claude-2.0": {"input": 8.0, "output": 24.0},
-            "claude-instant-1.2": {"input": 0.8, "output": 2.4}
-        }
-        
-        # Default to Haiku pricing if model not found
-        model_pricing = pricing.get(model, pricing["claude-3-haiku-20240307"])
-        
-        input_cost = (input_tokens / 1_000_000) * model_pricing["input"]
-        output_cost = (output_tokens / 1_000_000) * model_pricing["output"]
-        
-        return input_cost + output_cost
-    
+        """Estimate cost from the model's per-million-token price (MODEL_PRICES)."""
+        input_price, output_price = _price_for(model)
+        return (input_tokens / 1_000_000) * input_price + (output_tokens / 1_000_000) * output_price
+
     async def _perform_health_check(self) -> Dict[str, Any]:
         """Perform Claude-specific health check."""
         try:
             # Simple test message
             test_data = {
-                "model": "claude-3-haiku-20240307",
+                "model": HEALTH_CHECK_MODEL,
                 "messages": [{"role": "user", "content": "Hi"}],
                 "max_tokens": 10
             }
@@ -628,8 +674,21 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
             "max_tokens": request.max_tokens or 4096,
             "messages": api_messages,
             "tools": anthropic_tools if request.tools else [],
-            "temperature": request.temperature
         }
+        # No temperature: current Claude models reject sampling parameters.
+        output_config = _output_config(request.model, None)
+        if output_config:
+            payload["output_config"] = output_config
+
+        # A forced tool_choice ("any" or a named tool) is a 400 on current models: ask
+        # for it in the system prompt, with auto, and keep arguments schema-valid with
+        # strict where the tool's schema allows it.
+        forced = _forced_tool_instruction(request.tool_choice)
+        if forced and request.tools:
+            system_text = f"{system_text}\n\n{forced}" if system_text else forced
+            for tool in anthropic_tools:
+                if _strict_compatible(tool["input_schema"]):
+                    tool["strict"] = True
 
         # Add system prompt (with prompt caching if enabled)
         if system_text:
@@ -645,12 +704,10 @@ class ClaudeAdapter(BaseAdapter, ToolCallingMixin):
                 payload["system"] = system_text
 
         # Handle tool_choice
-        if request.tool_choice == "required":
-            payload["tool_choice"] = {"type": "any"}
-        elif request.tool_choice == "none":
+        if request.tool_choice == "none":
             payload["tool_choice"] = {"type": "none"}
-        elif request.tool_choice != "auto":
-            payload["tool_choice"] = {"type": "tool", "name": request.tool_choice}
+        elif forced and request.tools:
+            payload["tool_choice"] = {"type": "auto"}
 
         logger.info(f"Claude chat_with_tools: {[t['name'] for t in anthropic_tools]}")
 

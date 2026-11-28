@@ -15,6 +15,7 @@ from adapters.models import (
 )
 from adapters.tool_calling import ToolCallingMixin, ToolCallingRequest, ToolCallingResponse
 from events.event_bus import event_bus
+from llm.tier_resolver import PROVIDER_DEFAULT_MODELS
 
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 # `web_search` tool. The Chat Completions search models are retired:
 # `gpt-4o-search-preview` returned HTTP 404 "deprecated" on every combo of both
 # scheduled GEO legs on 2026-09-01 while the workflow still reported completed.
-OPENAI_ANSWER_MODEL_DEFAULT = "gpt-5.6"
+OPENAI_ANSWER_MODEL_DEFAULT = PROVIDER_DEFAULT_MODELS["openai"]
 
 
 class OpenAIAdapter(BaseAdapter, ToolCallingMixin):

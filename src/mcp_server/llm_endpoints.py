@@ -20,6 +20,8 @@ from datetime import datetime
 from llm.client import LLMClient
 from llm.models import LLMRequest
 from core.security import get_current_user
+from core.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
 from schemas.mcp import (
     MCPLLMRequest, MCPLLMResponse, MCPLLMMessage, MCPLLMChoice, MCPLLMUsage,
     MCPEmbeddingRequest, MCPEmbeddingResponse, MCPEmbeddingData,
@@ -243,6 +245,7 @@ async def get_mcp_models():
 async def handle_mcp_tool_execution(
     request: Dict[str, Any],
     current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Execute tools/functions via MCP protocol.
@@ -269,12 +272,24 @@ async def handle_mcp_tool_execution(
                 params=tool_input.get("params", {})
             )
         elif tool_name == "workflow":
-            from services.workflow import WorkflowService
-            workflow_service = WorkflowService()
-            result = await workflow_service.execute_workflow(
-                workflow_id=tool_input.get("workflow_id"),
-                inputs=tool_input.get("inputs", {})
+            # The REST execute endpoint itself: its licence check, its access check
+            # (an inactive user, another tenant's workflow) and its execution path, as
+            # the caller. No second path to keep in step with it.
+            from api.v1.endpoints.workflows import execute_workflow as rest_execute_workflow
+            from core.security import get_current_active_user
+            from schemas.workflow_execution import WorkflowExecuteRequest
+
+            workflow_id = tool_input.get("workflow_id")
+            if not workflow_id:
+                raise HTTPException(status_code=422, detail="The workflow tool needs 'workflow_id'")
+            caller = await get_current_active_user(current_user)
+            execution = await rest_execute_workflow(
+                workflow_id=str(workflow_id),
+                request=WorkflowExecuteRequest(input_data=tool_input.get("inputs") or {}, trigger_source="mcp"),
+                db=db,
+                current_user=caller,
             )
+            result = execution.model_dump(mode="json") if hasattr(execution, "model_dump") else execution
         else:
             raise HTTPException(status_code=400, detail=f"Unknown tool: {tool_name}")
         

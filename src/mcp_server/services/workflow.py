@@ -25,9 +25,11 @@ class MCPWorkflowService:
         execute_immediately: bool = False,
         *,
         actor_is_admin: bool = False,
+        owner_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a workflow via MCP protocol. A reserved name needs
-        ``actor_is_admin``: ReservedWorkflowName is raised, not reported."""
+        ``actor_is_admin``: ReservedWorkflowName is raised, not reported. The caller
+        (``owner_id``) becomes its run-as owner."""
         from services.workflow_identity import check_workflow_name
 
         name = workflow_definition.get("name", f"MCP Workflow {uuid.uuid4().hex[:8]}")
@@ -51,6 +53,7 @@ class MCPWorkflowService:
                     "original_definition": workflow_definition
                 },
                 actor_is_admin=actor_is_admin,
+                owner_id=owner_id,
             )
             
             result = {

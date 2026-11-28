@@ -94,6 +94,48 @@ PROVIDER_TO_ADAPTER = {
     "vllm": ["vllm"],
 }
 
+# A cloud provider's own default model: what a step routed to that provider runs
+# when neither the step nor the org names a model. The adapters use the same values.
+PROVIDER_DEFAULT_MODELS = {
+    "anthropic": "claude-opus-5-5",
+    "openai": "gpt-5.6",
+    "deepseek": "deepseek-chat",
+}
+
+# Adapter registry key -> the provider whose models it serves. Adapters missing
+# here (llm-service, llamacpp, huggingface, scripted) serve whatever the
+# deployment runs, so they take the resolved model unchanged.
+ADAPTER_PROVIDER = {
+    "claude": "anthropic",
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "deepseek": "deepseek",
+    "ollama": "ollama",
+    "vllm": "vllm",
+}
+
+
+def model_for_adapter(adapter_id: Optional[str], resolved_model: str) -> str:
+    """The model to send a step's adapter when the step names none.
+
+    `resolved_model` (org preferred → system default) is kept when the adapter's
+    provider serves it. Otherwise: the provider's own default for a cloud
+    provider, the balanced tier for Ollama. A vLLM adapter has no default of its
+    own, so it is refused with what to set.
+    """
+    provider = ADAPTER_PROVIDER.get(adapter_id or "")
+    if provider is None or provider_for_model_name(resolved_model) == provider:
+        return resolved_model
+    if provider in PROVIDER_DEFAULT_MODELS:
+        return PROVIDER_DEFAULT_MODELS[provider]
+    if provider == "ollama":
+        return SYSTEM_TIER_DEFAULTS[ModelTier.BALANCED]
+    raise ValueError(
+        f"The step's adapter is '{adapter_id}' and no {provider} model is set: "
+        f"'{resolved_model}' is not one. Set the step's model, the organisation's "
+        f"preferred model, or DEFAULT_LLM_MODEL to a '{provider}:' model."
+    )
+
 
 def normalize_provider(name: Optional[str]) -> Optional[str]:
     """Map a provider string to its canonical key (case/whitespace-insensitive).

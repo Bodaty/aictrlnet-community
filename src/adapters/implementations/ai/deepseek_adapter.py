@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from adapters.base_adapter import BaseAdapter
+from llm.tier_resolver import PROVIDER_DEFAULT_MODELS
 from adapters.models import (
     AdapterCapability,
     AdapterConfig,
@@ -142,7 +143,7 @@ class DeepSeekAdapter(BaseAdapter):
             )
 
         params = request.parameters if hasattr(request, "parameters") else request
-        model = params.get("model", "deepseek-chat")
+        model = params.get("model", PROVIDER_DEFAULT_MODELS["deepseek"])
         messages = params.get("messages", [])
 
         payload = {

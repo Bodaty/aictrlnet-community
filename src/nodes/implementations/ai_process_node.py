@@ -217,6 +217,7 @@ class AIProcessNode(BaseNode):
             from core.tenant_context import get_current_tenant_id
             tenant_id = get_current_tenant_id()
         self._org_llm_settings_cache = None
+        self._resolved_adapter_id = None
 
         # Content by reference: the step's text and images come from a resolver and
         # its output goes to a sink, so neither enters run history. A step of a
@@ -316,6 +317,7 @@ class AIProcessNode(BaseNode):
         # Lets _maybe_upgrade_model_for_narrative decide whether narrative routing
         # (model upgrade) applies. Only Ollama-family adapters get upgraded.
         params["_resolved_adapter_id"] = adapter_id
+        self._resolved_adapter_id = adapter_id
         # The run's tenant, for lookups made on the step's behalf (the persona).
         params["_tenant_id"] = tenant_id
         # A step of a workflow marked `phi: true` sends a PHI-pipeline request: its
@@ -466,12 +468,21 @@ class AIProcessNode(BaseNode):
         return self._org_llm_settings_cache
 
     async def _resolve_default_model(self) -> str:
-        """Default model when the node sets none: org preferred (trial-gated) → env default."""
-        from llm.tier_resolver import resolve_model
+        """Default model when the node sets none: org preferred (trial-gated) → env default,
+        kept only if the step's adapter serves it (else that provider's own default)."""
+        from llm.tier_resolver import model_for_adapter, resolve_model
 
         resolution = resolve_model(org_settings=getattr(self, "_org_llm_settings_cache", None))
-        logger.info(f"aiProcess default model: {resolution.model} (source={resolution.source})")
-        return resolution.model
+        adapter_id = getattr(self, "_resolved_adapter_id", None)
+        model = model_for_adapter(adapter_id, resolution.model)
+        if model != resolution.model:
+            logger.info(
+                f"aiProcess default model: {model} (adapter {adapter_id} does not serve "
+                f"{resolution.model}, source={resolution.source})"
+            )
+        else:
+            logger.info(f"aiProcess default model: {model} (source={resolution.source})")
+        return model
 
     async def _enforce_trial_restriction(self, adapter_id: str, tenant_id: Optional[str]) -> str:
         """In trial mode, override node-specific adapters to system default.
